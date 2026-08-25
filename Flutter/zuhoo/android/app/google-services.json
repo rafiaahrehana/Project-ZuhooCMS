@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "691763760356",
+    "project_id": "zuhoocms",
+    "storage_bucket": "zuhoocms.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:691763760356:android:72e5f33ace916905bb30f1",
+        "android_client_info": {
+          "package_name": "com.cms.zuhoo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCf1Fgk-RYOTmHQbMBOxDtEAsy6vTM7obE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
