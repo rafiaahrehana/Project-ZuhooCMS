@@ -206,3 +206,13 @@ final clientsProvider =
 final clientDetailProvider = FutureProvider.autoDispose.family<Client, int>(
   (ref, id) => ref.watch(crmRepositoryProvider).client(id),
 );
+
+/// Clients still trading with, as a bare list.
+///
+/// What a picker reads. Distinct from [clientsProvider], which is the paged
+/// browsing list and includes clients that have been closed — offering one of
+/// those in a picker is a mistake waiting to be made.
+final activeClientsProvider =
+    FutureProvider.autoDispose<List<Client>>((ref) {
+  return ref.read(crmRepositoryProvider).activeClients();
+});

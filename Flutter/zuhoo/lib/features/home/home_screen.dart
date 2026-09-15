@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/nav_registry.dart';
 import '../../app/router.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/permission_controller.dart';
@@ -9,29 +10,17 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/stat_card.dart';
-import '../accounting/accounting_models.dart' show AccountingPermissions;
-import '../admin/admin_models.dart';
-import '../ai/ai_models.dart';
-import '../assets_periods/assets_periods_models.dart' show ClosingPermissions;
+import '../alerts/notification_navigation.dart';
+import '../alerts/notification_repository.dart';
+import '../approvals/approval_repository.dart';
 import '../attendance/attendance_controller.dart';
-import '../attendance/attendance_models.dart'
-    show AttendanceAdminPermissions;
 import '../attendance/punch_card.dart';
-import '../biometric/biometric_models.dart' show BiometricPermissions;
-import '../catalogue/catalogue_models.dart' show CataloguePermissions;
-import '../crm/crm_models.dart' show CrmPermissions;
-import '../hrpolicy/hrpolicy_models.dart' show HrPolicyPermissions;
-import '../kb/kb_models.dart';
 import '../leave/leave_models.dart';
 import '../leave/leave_repository.dart';
-import '../payables/payables_models.dart' show PayablesPermissions;
-import '../payslips/payslip_models.dart' show PayrollPermissions;
 import '../profile/employee_repository.dart';
-import '../receivables/receivables_models.dart' show ReceivablesPermissions;
-import '../salary/salary_models.dart' show SalaryPermissions;
-import '../support_admin/support_admin_models.dart';
-import '../workflow/workflow_models.dart';
+import 'dashboard_registry.dart';
 import 'home_repository.dart';
+import '../../app/shell.dart';
 
 /// The employee's dashboard.
 ///
@@ -50,6 +39,8 @@ class HomeScreen extends ConsumerWidget {
     await Future.wait([
       ref.read(attendanceControllerProvider.notifier).refresh(),
       ref.read(leaveControllerProvider.notifier).refresh(),
+      ref.read(approvalInboxProvider.notifier).refresh(),
+      ref.read(notificationsControllerProvider.notifier).refresh(),
     ]);
   }
 
@@ -61,32 +52,63 @@ class HomeScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: bos.bgPage,
-      body: RefreshIndicator(
-        color: bos.brand,
-        backgroundColor: bos.bgCard,
-        onRefresh: () => _refresh(ref),
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+      // No AppBar on this one tab (the greeting doubles as its header), which
+      // is exactly why the menu button used to misfire here: as the first
+      // child of a RefreshIndicator's ListView, sitting flush against the top
+      // of the screen with no SafeArea, it was competing with the pull-to-
+      // refresh drag recognizer for the same touch — and losing more often
+      // than not. Pulling it out to a fixed header above the scrollable body
+      // removes it from that gesture arena entirely.
+      body: SafeArea(
+        child: Column(
           children: [
-            _Greeting(
-              name: employee.value?.firstName ??
-                  user?.displayFirstName ??
-                  '',
-              role: employee.value?.roleLabel,
-              imageUrl: employee.value?.imageUrl ?? user?.profileImageUrl,
-              initials: employee.value?.initials ?? user?.initials ?? '?',
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: _Greeting(
+                name:
+                    employee.value?.firstName ?? user?.displayFirstName ?? '',
+                role: employee.value?.roleLabel,
+                imageUrl: employee.value?.imageUrl ?? user?.profileImageUrl,
+                initials: employee.value?.initials ?? user?.initials ?? '?',
+              ),
             ),
-            const SizedBox(height: 18),
-            const PunchCard(compact: true),
-            const SizedBox(height: 18),
-            const _Stats(),
-            const SizedBox(height: 22),
-            const _TeamToday(),
-            const _Pipeline(),
-            const _QuickActions(),
-            const SizedBox(height: 22),
-            const _LeaveBalances(),
-            const _NoticeBoard(),
+            Expanded(
+              child: RefreshIndicator(
+                color: bos.brand,
+                backgroundColor: bos.bgCard,
+                onRefresh: () => _refresh(ref),
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+                  children: [
+                    // "What do I need to do right now" leads: anything
+                    // waiting on a decision, my own status, then the fastest
+                    // way to start something new. Company/team pulse (Team
+                    // today, Pipeline) — informational rather than
+                    // actionable for most viewers — follows rather than
+                    // leads, and configured-but-passive content (leave
+                    // balances, the notice board) comes last.
+                    const _PendingApprovalsBanner(),
+                    const PunchCard(compact: true),
+                    const SizedBox(height: 18),
+                    const _Stats(),
+                    const SizedBox(height: 22),
+<<<<<<< Updated upstream
+=======
+                    const _TeamToday(),
+                    const _Pipeline(),
+                    const _CompanySnapshot(),
+>>>>>>> Stashed changes
+                    const _QuickActions(),
+                    const SizedBox(height: 22),
+                    const _RecentNotifications(),
+                    const _TeamToday(),
+                    const _Pipeline(),
+                    const _LeaveBalances(),
+                    const _NoticeBoard(),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -114,11 +136,22 @@ class _Greeting extends StatelessWidget {
     final greeting = hour < 12
         ? 'Good morning'
         : hour < 17
-            ? 'Good afternoon'
-            : 'Good evening';
+        ? 'Good afternoon'
+        : 'Good evening';
 
     return Row(
       children: [
+        // Home is the one tab with no app bar — the greeting *is* its header —
+        // so the way into the drawer has to live here or it does not exist on
+        // this screen at all.
+        Padding(
+          padding: const EdgeInsets.only(right: 4),
+          child: IconButton(
+            icon: const Icon(Icons.menu_rounded),
+            tooltip: 'All modules',
+            onPressed: () => appShellScaffoldKey.currentState?.openDrawer(),
+          ),
+        ),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -187,8 +220,8 @@ class _Stats extends ConsumerWidget {
         value: available == null
             ? null
             : available == available.roundToDouble()
-                ? available.round().toString()
-                : available.toStringAsFixed(1),
+            ? available.round().toString()
+            : available.toStringAsFixed(1),
         icon: Icons.beach_access_rounded,
         tone: bos.info,
         onTap: () => context.go(Routes.leave),
@@ -208,27 +241,98 @@ class _Stats extends ConsumerWidget {
       ),
     ];
 
-    // A fixed height, not an aspect ratio. An aspect ratio ties the tile's
-    // height to the screen's width, so the same layout that fits a 411dp phone
-    // clips its label on a 320dp one — and clips it on every phone once the
-    // reader turns their font size up. The extent below is what the tallest
-    // content actually needs (icon + figure + a two-line label), and it grows
-    // with the text scale rather than pretending the scale is always 1.
-    final scale = MediaQuery.textScalerOf(context).scale(1);
-    final extent = 134 + (scale - 1).clamp(0.0, 1.5) * 48;
+    // Rows of two, not a grid. A grid has to be told a tile height before it
+    // can lay anything out, so the height was a formula — and a formula that
+    // has to predict wrapped text and font metrics gets it wrong: this one
+    // ran five pixels short and clipped "Attendance this month" the moment a
+    // reader turned their font size up. Nothing here predicts anything now;
+    // the cards report their own height, IntrinsicHeight makes the pair in
+    // each row match, and there is no number left to be wrong. It is also
+    // what every other StatCard row in the app already does.
+    return Column(
+      children: [
+        for (var i = 0; i < cards.length; i += 2) ...[
+          if (i > 0) const SizedBox(height: 12),
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: cards[i]),
+                const SizedBox(width: 12),
+                // An odd card keeps its half of the row rather than
+                // stretching across it.
+                Expanded(
+                  child: i + 1 < cards.length
+                      ? cards[i + 1]
+                      : const SizedBox.shrink(),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      itemCount: cards.length,
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        mainAxisExtent: extent,
+/// "What do I need to do right now" starts here — a count of everything
+/// waiting on this account's decision, from the same aggregator the
+/// Approvals screen itself reads. Absent entirely for anyone who holds none
+/// of the approve permissions it aggregates, and silent (not an error
+/// banner) if the fetch fails — a dashboard widget failing quietly beats one
+/// that blocks the rest of the home screen from rendering.
+class _PendingApprovalsBanner extends ConsumerWidget {
+  const _PendingApprovalsBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final perms = ref.watch(permissionControllerProvider);
+    if (!canSeeApprovalInbox(perms)) return const SizedBox.shrink();
+
+    final async = ref.watch(approvalInboxProvider);
+    final count = async.value?.length ?? 0;
+    if (async.isLoading && async.value == null) {
+      return const SizedBox.shrink();
+    }
+    if (count == 0) return const SizedBox.shrink();
+
+    final bos = Theme.of(context).bos;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Material(
+        color: bos.warningSoft,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => context.push(Routes.approvals),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: bos.warning.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.fact_check_outlined, size: 20, color: bos.warning),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    count == 1
+                        ? '1 approval needs your decision'
+                        : '$count approvals need your decision',
+                    style: TextStyle(
+                      color: bos.text,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, size: 20, color: bos.muted),
+              ],
+            ),
+          ),
+        ),
       ),
-      itemBuilder: (context, index) => cards[index],
     );
   }
 }
@@ -239,261 +343,26 @@ class _QuickActions extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bos = Theme.of(context).bos;
-    final canAskAi =
-        ref.watch(permissionControllerProvider).has(AiPermissions.chat);
-    final canReadKb =
-        ref.watch(permissionControllerProvider).has(KbPermissions.view);
-    // Any one of the setup tabs is enough to make the screen worth opening;
-    // it decides for itself which of them to show.
-    final canSetUp = ref.watch(permissionControllerProvider).hasAny(const [
-      AdminPermissions.departmentView,
-      AdminPermissions.designationView,
-      AdminPermissions.announcementView,
-      AdminPermissions.serviceCategoryView,
-    ]);
-    // Same idea for the catalogue: any one of its tabs is worth the trip.
-    final canSeeCatalogue =
-        ref.watch(permissionControllerProvider).hasAny(const [
-      CataloguePermissions.serviceView,
-      CataloguePermissions.templateView,
-      CataloguePermissions.packageView,
-    ]);
-    final canDesignWorkflows =
-        ref.watch(permissionControllerProvider).has(WorkflowPermissions.view);
-    final canSeeTerminals =
-        ref.watch(permissionControllerProvider).has(BiometricPermissions.view);
-    final canRunPayroll = ref.watch(permissionControllerProvider).hasAny(const [
-      PayrollPermissions.view,
-      PayrollPermissions.process,
-      PayrollPermissions.approve,
-    ]);
-    final canSetPay = ref.watch(permissionControllerProvider).hasAny(const [
-      SalaryPermissions.view,
-      SalaryPermissions.create,
-    ]);
-    final canSeeBooks = ref.watch(permissionControllerProvider).hasAny(const [
-      AccountingPermissions.accountView,
-      AccountingPermissions.entryView,
-      AccountingPermissions.ledgerView,
-    ]);
-    final canSeeReports = ref
-        .watch(permissionControllerProvider)
-        .has(AccountingPermissions.ledgerView);
-    final canSeePayables =
-        ref.watch(permissionControllerProvider).hasAny(const [
-      PayablesPermissions.billView,
-      PayablesPermissions.vendorView,
-    ]);
-    final canSeeReceipts =
-        ref.watch(permissionControllerProvider).hasAny(const [
-      ReceivablesPermissions.receiptView,
-      ReceivablesPermissions.invoiceView,
-    ]);
-    final canCloseBooks = ref.watch(permissionControllerProvider).hasAny(const [
-      ClosingPermissions.periodView,
-      ClosingPermissions.assetView,
-    ]);
-    final canSeeTeamAttendance = ref
-        .watch(permissionControllerProvider)
-        .has(AttendanceAdminPermissions.view);
-    final canSeeContacts =
-        ref.watch(permissionControllerProvider).hasAny(const [
-      CrmPermissions.contactView,
-      CrmPermissions.tagView,
-    ]);
-    final canSetHrRules =
-        ref.watch(permissionControllerProvider).hasAny(const [
-      HrPolicyPermissions.holidayView,
-      HrPolicyPermissions.policyView,
-      HrPolicyPermissions.shiftView,
-      HrPolicyPermissions.letterView,
-    ]);
-    // The support desk is role-gated rather than permission-gated — see
-    // support_admin_models.dart for why each surface has its own list.
-    final canRunSupportDesk = ref.watch(currentUserProvider)?.hasAnyRole(const [
-          ...supportAgentAdminRoles,
-          ...supportCategoryAdminRoles,
-          ...slaAdminRoles,
-          ...supportAuditRoles,
-        ]) ??
-        false;
+    final user = ref.watch(currentUserProvider);
+    final perms = ref.watch(permissionControllerProvider);
 
-    // `push` marks a destination that lives outside the tab bar: it stacks on
-    // top and backs out again, rather than switching which tab is selected.
-    final actions = <({String label, IconData icon, String path, bool push})>[
-      (
+    // Sourced from the same registry the drawer reads, so the two surfaces
+    // can never independently drift the way two hand-maintained copies did.
+    // "Search everything" and "My profile" sit outside it: neither is a
+    // sidebar module in Angular either — its nearest equivalent for both is
+    // the top bar, not the grouped nav.
+    final actions = <NavDestination>[
+      const NavDestination(
         label: 'Search everything',
         icon: Icons.search_rounded,
         path: Routes.search,
-        push: true
       ),
-      if (canAskAi)
-        (
-          label: 'Ask AI',
-          icon: Icons.auto_awesome_rounded,
-          path: Routes.ai,
-          push: true
-        ),
-      (
-        label: 'Raise a request',
-        icon: Icons.add_task_rounded,
-        path: Routes.requests,
-        push: true
-      ),
-      (
-        label: 'Apply for leave',
-        icon: Icons.event_note_rounded,
-        path: Routes.leave,
-        push: false
-      ),
-      (
-        label: 'My attendance',
-        icon: Icons.history_rounded,
-        path: Routes.attendance,
-        push: false
-      ),
-      (
-        label: 'My payslips',
-        icon: Icons.receipt_long_rounded,
-        path: Routes.payslips,
-        push: true
-      ),
-      (
-        label: 'CRM',
-        icon: Icons.trending_up_rounded,
-        path: Routes.crm,
-        push: true
-      ),
-      (
-        label: 'Finance',
-        icon: Icons.account_balance_wallet_outlined,
-        path: Routes.finance,
-        push: true
-      ),
-      (
-        label: 'Support',
-        icon: Icons.support_agent_rounded,
-        path: Routes.support,
-        push: true
-      ),
-      if (canReadKb)
-        (
-          label: 'Knowledge base',
-          icon: Icons.menu_book_outlined,
-          path: Routes.kb,
-          push: true
-        ),
-      if (canSetUp)
-        (
-          label: 'Company setup',
-          icon: Icons.tune_rounded,
-          path: Routes.admin,
-          push: true
-        ),
-      if (canSeeCatalogue)
-        (
-          label: 'Catalogue',
-          icon: Icons.local_offer_outlined,
-          path: Routes.catalogue,
-          push: true
-        ),
-      if (canRunSupportDesk)
-        (
-          label: 'Support desk',
-          icon: Icons.headset_mic_outlined,
-          path: Routes.supportAdmin,
-          push: true
-        ),
-      if (canDesignWorkflows)
-        (
-          label: 'Workflows',
-          icon: Icons.account_tree_outlined,
-          path: Routes.workflows,
-          push: true
-        ),
-      if (canSeeTerminals)
-        (
-          label: 'Terminals',
-          icon: Icons.fingerprint_rounded,
-          path: Routes.biometric,
-          push: true
-        ),
-      if (canRunPayroll)
-        (
-          label: 'Payroll',
-          icon: Icons.request_quote_outlined,
-          path: Routes.payroll,
-          push: true
-        ),
-      if (canSetPay)
-        (
-          label: 'Pay and loans',
-          icon: Icons.badge_outlined,
-          path: Routes.salary,
-          push: true
-        ),
-      if (canSeeBooks)
-        (
-          label: 'Books',
-          icon: Icons.menu_book_outlined,
-          path: Routes.accounting,
-          push: true
-        ),
-      // Every report reads the ledger, so that one permission gates them all.
-      if (canSeeReports)
-        (
-          label: 'Reports',
-          icon: Icons.insights_outlined,
-          path: Routes.reports,
-          push: true
-        ),
-      if (canSeePayables)
-        (
-          label: 'Payables',
-          icon: Icons.outbox_outlined,
-          path: Routes.payables,
-          push: true
-        ),
-      if (canSeeReceipts)
-        (
-          label: 'Receipts',
-          icon: Icons.inbox_outlined,
-          path: Routes.receivables,
-          push: true
-        ),
-      if (canCloseBooks)
-        (
-          label: 'Month end',
-          icon: Icons.calendar_month_outlined,
-          path: Routes.closing,
-          push: true
-        ),
-      if (canSetHrRules)
-        (
-          label: 'HR rules',
-          icon: Icons.rule_folder_outlined,
-          path: Routes.hrPolicy,
-          push: true
-        ),
-      if (canSeeContacts)
-        (
-          label: 'Contacts',
-          icon: Icons.contacts_outlined,
-          path: Routes.contacts,
-          push: true
-        ),
-      if (canSeeTeamAttendance)
-        (
-          label: 'Who is in',
-          icon: Icons.groups_outlined,
-          path: Routes.teamAttendance,
-          push: true
-        ),
-      (
+      ...flattenGroups(buildNavGroups(user, perms)),
+      const NavDestination(
         label: 'My profile',
         icon: Icons.person_outline_rounded,
         path: Routes.profile,
-        push: false
+        push: false,
       ),
     ];
 
@@ -525,14 +394,114 @@ class _QuickActions extends ConsumerWidget {
                     color: bos.muted,
                   ),
                   onTap: () => actions[i].push
-                      ? context.push(actions[i].path)
-                      : context.go(actions[i].path),
+                      ? context.push(
+                          actions[i].path,
+                          extra: actions[i].initialTabLabel,
+                        )
+                      : context.go(
+                          actions[i].path,
+                          extra: actions[i].initialTabLabel,
+                        ),
                 ),
               ],
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A glance at what just happened, not the whole inbox — the Alerts tab is
+/// one tap away for the rest. Reads the same controller the bell badge and
+/// the Alerts screen already keep warm, so this adds no extra request of its
+/// own.
+class _RecentNotifications extends ConsumerWidget {
+  const _RecentNotifications();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final items = ref.watch(notificationsControllerProvider).value?.items;
+    if (items == null || items.isEmpty) return const SizedBox.shrink();
+
+    final recent = items.take(3).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          'Recent notifications',
+          icon: Icons.notifications_outlined,
+          trailing: TextButton(
+            onPressed: () => context.go(Routes.alerts),
+            child: const Text('See all'),
+          ),
+        ),
+        AppCard(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              for (var i = 0; i < recent.length; i++) ...[
+                if (i > 0) Divider(height: 1, indent: 34, color: bos.borderLight),
+                _RecentNotificationRow(notification: recent[i]),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 22),
+      ],
+    );
+  }
+}
+
+class _RecentNotificationRow extends ConsumerWidget {
+  const _RecentNotificationRow({required this.notification});
+
+  final AppNotification notification;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final unread = !notification.read;
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+      leading: Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Container(
+          height: 8,
+          width: 8,
+          decoration: BoxDecoration(
+            color: unread ? bos.brand : Colors.transparent,
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
+      title: Text(
+        notification.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: bos.text,
+          fontSize: 13.5,
+          fontWeight: unread ? FontWeight.w700 : FontWeight.w600,
+        ),
+      ),
+      subtitle: Text(
+        Fmt.relative(notification.createdAt),
+        style: TextStyle(color: bos.muted, fontSize: 11.5),
+      ),
+      onTap: () async {
+        if (unread) {
+          await ref
+              .read(notificationsControllerProvider.notifier)
+              .markRead(notification.id);
+        }
+        if (context.mounted) {
+          await openNotification(context, ref, notification);
+        }
+      },
     );
   }
 }
@@ -642,6 +611,21 @@ class _NoticeBoard extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SectionHeader('Notice board', icon: Icons.campaign_outlined),
+        if (board.offline) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                Icon(Icons.cloud_off_rounded, size: 14, color: bos.muted),
+                const SizedBox(width: 6),
+                Text(
+                  'Offline — showing the last saved copy',
+                  style: TextStyle(color: bos.muted, fontSize: 11.5),
+                ),
+              ],
+            ),
+          ),
+        ],
         AppCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -737,7 +721,7 @@ class _TeamToday extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bos = Theme.of(context).bos;
-    final snapshot = ref.watch(hrSnapshotProvider).valueOrNull;
+    final snapshot = ref.watch(hrSnapshotProvider).value;
     if (snapshot == null) return const SizedBox.shrink();
 
     return Column(
@@ -802,7 +786,7 @@ class _Pipeline extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bos = Theme.of(context).bos;
-    final snapshot = ref.watch(crmSnapshotProvider).valueOrNull;
+    final snapshot = ref.watch(crmSnapshotProvider).value;
     if (snapshot == null) return const SizedBox.shrink();
 
     return Column(
@@ -833,6 +817,71 @@ class _Pipeline extends ConsumerWidget {
           ],
         ),
         const SizedBox(height: 22),
+      ],
+    );
+  }
+}
+
+/// The company-wide, permission-gated card grid — port of Angular's own
+/// `WIDGET_REGISTRY` dashboard. Distinct from [_TeamToday]/[_Pipeline] above,
+/// which read two purpose-built, trimmed endpoints for a quick at-a-glance
+/// row each; this reads the one untrimmed `/dashboard/summary` Angular's
+/// registry is built on, and gates each card independently rather than
+/// hiding a whole block behind one permission.
+class _CompanySnapshot extends ConsumerWidget {
+  const _CompanySnapshot();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final summary = ref.watch(dashboardSummaryProvider).value;
+    if (summary == null) return const SizedBox.shrink();
+
+    final perms = ref.watch(permissionControllerProvider);
+    final bySection = visibleDashboardWidgets(perms);
+    if (bySection.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final section in DashboardSection.values)
+          if (bySection[section] case final widgets? when widgets.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SectionHeader(section.label, icon: section.icon),
+                  // Deliberately not the IntrinsicHeight+stretch pairing
+                  // _Stats/_TeamToday/_Pipeline use above: those each show a
+                  // small, known set of fields, but this grid renders
+                  // whatever figure a tenant's live data happens to produce,
+                  // and IntrinsicHeight's own intrinsic-vs-actual layout
+                  // rounding can overflow by a pixel or two on exactly the
+                  // kind of long, unpredictable value this pulls (a currency
+                  // figure with more digits than the row's other card).
+                  // Letting each card size to its own content is what stays
+                  // correct no matter what a company's numbers look like.
+                  for (var i = 0; i < widgets.length; i += 2) ...[
+                    if (i > 0) const SizedBox(height: 10),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: widgets[i].build(context, summary, bos),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: i + 1 < widgets.length
+                              ? widgets[i + 1].build(context, summary, bos)
+                              : const SizedBox.shrink(),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
       ],
     );
   }

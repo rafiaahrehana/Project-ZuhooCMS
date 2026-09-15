@@ -11,9 +11,14 @@ import 'attendance_controller.dart';
 import 'attendance_models.dart';
 import 'punch_card.dart';
 import 'timesheets_tab.dart';
+import '../../app/shell.dart';
 
 class AttendanceScreen extends ConsumerWidget {
-  const AttendanceScreen({super.key});
+  const AttendanceScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
+
+  static const _tabLabels = ['Overview', 'Timesheets'];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -24,11 +29,17 @@ class AttendanceScreen extends ConsumerWidget {
         .watch(permissionControllerProvider)
         .has(AttendancePermissions.shiftAssignmentCreate);
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : _tabLabels.indexOf(initialTabLabel!).clamp(0, _tabLabels.length - 1);
+
     return DefaultTabController(
       length: 2,
+      initialIndex: initialIndex,
       child: Scaffold(
         backgroundColor: bos.bgPage,
         appBar: AppBar(
+          leading: const AppDrawerButton(),
           title: const Text('Attendance'),
           actions: [
             if (canAssignShift)

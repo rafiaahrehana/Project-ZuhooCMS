@@ -86,8 +86,8 @@ class BiometricDevice {
         ? null
         : (portNumber > 0 ? '$ipAddress:$portNumber' : ipAddress!);
     return [
-      if (location != null) location!,
-      if (address != null) address,
+      ?location,
+      ?address,
     ].join(' · ');
   }
 
@@ -210,7 +210,7 @@ class BiometricDeviceRequest {
       'location': clean(location),
       'department': clean(department),
       'notes': clean(notes),
-      if (matchThreshold != null) 'matchThreshold': matchThreshold,
+      'matchThreshold': ?matchThreshold,
     };
   }
 }

@@ -88,6 +88,7 @@ class _WorkflowScreenState extends ConsumerState<WorkflowScreen> {
   Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
     final permissions = ref.watch(permissionControllerProvider);
+    final inForceOnly = ref.watch(workflowScopeProvider);
 
     if (!permissions.loaded && permissions.codes.isEmpty) {
       return Scaffold(
@@ -127,14 +128,35 @@ class _WorkflowScreenState extends ConsumerState<WorkflowScreen> {
             )
           : null,
       body: ConfigList<WorkflowTemplate>(
-        async: ref.watch(workflowsProvider),
-        onRefresh: ref.read(workflowsProvider.notifier).refresh,
+        // A switched-off workflow still governs every request already walking
+        // through it. "In force" answers what a new request can be put on,
+        // which is a narrower list and its own endpoint.
+        async: inForceOnly
+            ? ref.watch(activeWorkflowsProvider)
+            : ref.watch(workflowsProvider),
+        onRefresh: () async {
+          ref.invalidate(activeWorkflowsProvider);
+          await ref.read(workflowsProvider.notifier).refresh();
+        },
         emptyIcon: Icons.account_tree_outlined,
-        emptyTitle: 'No workflows yet',
+        emptyTitle: inForceOnly ? 'None in force' : 'No workflows yet',
         emptyMessage:
             'A workflow is the ordered set of stages a request moves through — '
             'who does what, in what order, and what has to be signed off.',
         errorMessage: 'Could not load the workflows.',
+        header: Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: FilterBar(
+            selected: inForceOnly ? 'in-force' : null,
+            options: const [
+              (value: null, label: 'All workflows'),
+              (value: 'in-force', label: 'In force'),
+            ],
+            onSelected: (value) => ref
+                .read(workflowScopeProvider.notifier)
+                .set(value == 'in-force'),
+          ),
+        ),
         itemBuilder: (context, row) => ConfigRow(
           title: row.name,
           active: row.active,
@@ -414,3 +436,16 @@ class _StageCard extends StatelessWidget {
     );
   }
 }
+
+/// Whether the list is showing only the workflows in force.
+class WorkflowScopeController extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool inForceOnly) => state = inForceOnly;
+}
+
+final workflowScopeProvider =
+    NotifierProvider<WorkflowScopeController, bool>(
+  WorkflowScopeController.new,
+);

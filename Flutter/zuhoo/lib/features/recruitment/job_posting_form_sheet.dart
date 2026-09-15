@@ -122,7 +122,7 @@ class _JobPostingFormSheetState extends ConsumerState<_JobPostingFormSheet> {
       if (_isEdit) {
         await ref
             .read(jobsProvider.notifier)
-            .update(widget.existing!.id, request);
+            .updateItem(widget.existing!.id, request);
       } else {
         await ref.read(jobsProvider.notifier).create(request);
       }

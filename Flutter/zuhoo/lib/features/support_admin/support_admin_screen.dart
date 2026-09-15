@@ -9,6 +9,7 @@ import '../../shared/widgets/config_list.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
 import '../support/support_models.dart' show ticketPriorities;
+import 'audit_detail_screen.dart';
 import 'support_admin_models.dart';
 import 'support_admin_repository.dart';
 import 'support_admin_sheets.dart';
@@ -20,7 +21,9 @@ import 'support_admin_sheets.dart';
 /// four; a company owner sees only the trail; a platform administrator sees the
 /// policies but not the trail.
 class SupportAdminScreen extends ConsumerWidget {
-  const SupportAdminScreen({super.key});
+  const SupportAdminScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,8 +71,13 @@ class SupportAdminScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -374,6 +382,12 @@ class _SlaTab extends ConsumerStatefulWidget {
   ConsumerState<_SlaTab> createState() => _SlaTabState();
 }
 
+/// The filter value standing for "only what is actually promised now".
+///
+/// Not a priority, so it cannot collide with one — the priorities are the
+/// backend's own SCREAMING_SNAKE values and none of them is lower case.
+const _inForce = 'in-force';
+
 class _SlaTabState extends ConsumerState<_SlaTab> {
   int? _busyId;
 
@@ -441,13 +455,25 @@ class _SlaTabState extends ConsumerState<_SlaTab> {
     final canWrite =
         ref.watch(currentUserProvider)?.hasAnyRole(slaAdminRoles) ?? false;
 
+    // "In force" is its own endpoint rather than a filter over the list: a
+    // policy can be switched off, and what is promised now is a different
+    // question from what has ever been written down.
+    final inForceOnly = filter == _inForce;
+
     return ConfigList<SlaPolicy>(
-      async: ref.watch(slaPoliciesProvider),
-      onRefresh: ref.read(slaPoliciesProvider.notifier).refresh,
+      async: inForceOnly
+          ? ref.watch(activeSlaPoliciesProvider)
+          : ref.watch(slaPoliciesProvider),
+      onRefresh: () async {
+        ref.invalidate(activeSlaPoliciesProvider);
+        await ref.read(slaPoliciesProvider.notifier).refresh();
+      },
       emptyIcon: Icons.timer_outlined,
       emptyTitle: filter == null
           ? 'Nothing is promised yet'
-          : 'No policy at that priority',
+          : inForceOnly
+              ? 'Nothing is in force'
+              : 'No policy at that priority',
       emptyMessage:
           'An SLA policy sets how quickly a ticket at a given priority must be '
           'answered and resolved.',
@@ -457,6 +483,7 @@ class _SlaTabState extends ConsumerState<_SlaTab> {
         onSelected: ref.read(slaPriorityFilterProvider.notifier).set,
         options: [
           (value: null, label: 'All priorities'),
+          (value: _inForce, label: 'In force'),
           for (final priority in ticketPriorities)
             (value: priority, label: Fmt.label(priority)),
         ],
@@ -545,6 +572,10 @@ class _AuditRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: AppCard(
+        // The row is a summary; what an investigation needs — the recorded
+        // changes, the address, and the two ways of widening the search —
+        // is a tap away rather than crammed in here.
+        onTap: () => AuditDetailScreen.open(context, id: entry.id),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

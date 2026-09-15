@@ -9,6 +9,7 @@ import '../../shared/widgets/config_list.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
 import '../../shared/widgets/stat_card.dart';
+import '../../shared/widgets/search_field.dart';
 import '../reports/report_models.dart' show Ageing;
 import 'payables_models.dart';
 import 'payables_repository.dart';
@@ -16,7 +17,9 @@ import 'payables_sheets.dart';
 
 /// What the company owes, and to whom.
 class PayablesScreen extends ConsumerWidget {
-  const PayablesScreen({super.key});
+  const PayablesScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -64,8 +67,13 @@ class PayablesScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -584,38 +592,55 @@ class _VendorsTabState extends ConsumerState<_VendorsTab> {
     final canEdit = permissions.has(PayablesPermissions.vendorUpdate);
     final canDelete = permissions.has(PayablesPermissions.vendorDelete);
 
-    return ConfigList<Vendor>(
-      async: ref.watch(vendorsProvider),
-      onRefresh: ref.read(vendorsProvider.notifier).refresh,
-      emptyIcon: Icons.storefront_outlined,
-      emptyTitle: 'No vendors yet',
-      emptyMessage:
-          'A vendor is somebody the company buys from. Bills are entered '
-          'against them and paid down over time.',
-      errorMessage: 'Could not load the vendors.',
-      itemBuilder: (context, vendor) => ConfigRow(
-        title: vendor.name,
-        active: vendor.active,
-        subtitle: [
-          if (vendor.contactPerson != null) vendor.contactPerson!,
-          if (vendor.paymentTerms != null) vendor.paymentTerms!,
-          if (vendor.email != null) vendor.email!,
-        ].join(' · '),
-        trailingLabel:
-            vendor.owesMoney ? Fmt.money(vendor.outstandingBalance) : null,
-        busy: _busyId == vendor.id,
-        onEdit:
-            canEdit ? () => showVendorSheet(context, existing: vendor) : null,
-        onToggle: canEdit ? () => _toggle(vendor) : null,
-        actions: [
-          if (canDelete)
-            RowAction(
-              label: 'Remove',
-              destructive: true,
-              onSelected: () => _delete(vendor),
+    // Above the list rather than in ConfigList's `header`, which is hidden
+    // when the list comes back empty — searching to no results would take the
+    // search box away with them and leave no way to clear the term.
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: AppSearchField(
+            hint: 'Search vendors',
+            onChanged: (value) =>
+                ref.read(vendorSearchProvider.notifier).set(value),
+          ),
+        ),
+        Expanded(
+          child: ConfigList<Vendor>(
+            async: ref.watch(vendorsProvider),
+            onRefresh: ref.read(vendorsProvider.notifier).refresh,
+            emptyIcon: Icons.storefront_outlined,
+            emptyTitle: 'No vendors yet',
+            emptyMessage:
+                'A vendor is somebody the company buys from. Bills are entered '
+                'against them and paid down over time.',
+            errorMessage: 'Could not load the vendors.',
+            itemBuilder: (context, vendor) => ConfigRow(
+              title: vendor.name,
+              active: vendor.active,
+              subtitle: [
+                if (vendor.contactPerson != null) vendor.contactPerson!,
+                if (vendor.paymentTerms != null) vendor.paymentTerms!,
+                if (vendor.email != null) vendor.email!,
+              ].join(' · '),
+              trailingLabel:
+                  vendor.owesMoney ? Fmt.money(vendor.outstandingBalance) : null,
+              busy: _busyId == vendor.id,
+              onEdit:
+                  canEdit ? () => showVendorSheet(context, existing: vendor) : null,
+              onToggle: canEdit ? () => _toggle(vendor) : null,
+              actions: [
+                if (canDelete)
+                  RowAction(
+                    label: 'Remove',
+                    destructive: true,
+                    onSelected: () => _delete(vendor),
+                  ),
+              ],
             ),
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 }

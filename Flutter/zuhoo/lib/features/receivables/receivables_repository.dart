@@ -41,7 +41,7 @@ class ReceivablesRepository {
         CreditNote.fromJson,
         page: page,
         size: size,
-        query: {if (invoiceId != null) 'invoiceId': invoiceId},
+        query: {'invoiceId': ?invoiceId},
       );
 
   Future<CreditNote> issueCreditNote(CreditNoteRequest request) async {
@@ -64,7 +64,7 @@ class ReceivablesRepository {
         Refund.fromJson,
         page: page,
         size: size,
-        query: {if (status != null) 'status': status},
+        query: {'status': ?status},
       );
 
   /// Sends the money back. Empty response.

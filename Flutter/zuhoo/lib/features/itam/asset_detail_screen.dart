@@ -7,6 +7,7 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/employee_picker.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
 import 'asset_form_sheet.dart';
 import 'itam_models.dart';
 import 'itam_repository.dart';
@@ -117,6 +118,34 @@ class _AssetDetailScreenState extends ConsumerState<AssetDetailScreen> {
     setState(() => _asset = updated);
   }
 
+  /// Writes the asset off.
+  ///
+  /// Different from deleting it: a disposed asset stays on the register as
+  /// disposed, which is what an audit needs. The reason is optional to the
+  /// backend but asked for here, because it is the only record of why.
+  Future<void> _dispose() async {
+    final reason = await askForText(
+      context,
+      title: 'Write off ${_asset.name}?',
+      message: 'It stays on the register as disposed and cannot be assigned '
+          'or serviced again. Say why — nothing else records it.',
+      label: 'Reason',
+      action: 'Write it off',
+      required: true,
+      destructive: true,
+    );
+    if (reason == null || !mounted) return;
+
+    await _run(
+      () => ref.read(itamRepositoryProvider).disposeAsset(
+            _asset.id,
+            reason: reason,
+          ),
+      '${_asset.name} written off.',
+      'Could not write that off.',
+    );
+  }
+
   /// Removes the asset from the register and leaves the screen.
   ///
   /// The backend refuses this while the machine is still assigned to somebody,
@@ -181,6 +210,8 @@ class _AssetDetailScreenState extends ConsumerState<AssetDetailScreen> {
               onSelected: (value) {
                 if (value == 'edit') {
                   _edit();
+                } else if (value == 'dispose') {
+                  _dispose();
                 } else if (value == 'delete') {
                   _delete();
                 }
@@ -188,6 +219,13 @@ class _AssetDetailScreenState extends ConsumerState<AssetDetailScreen> {
               itemBuilder: (context) => [
                 if (canUpdate)
                   const PopupMenuItem(value: 'edit', child: Text('Edit asset')),
+                // Disposing keeps the asset on the books; deleting takes it
+                // off them. Offered only while it is still something.
+                if (canUpdate && !_asset.isDisposed)
+                  const PopupMenuItem(
+                    value: 'dispose',
+                    child: Text('Write it off'),
+                  ),
                 if (canDelete)
                   const PopupMenuItem(value: 'delete', child: Text('Delete')),
               ],

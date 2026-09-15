@@ -4,6 +4,7 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/paged_response.dart';
 import '../../core/providers.dart';
+import '../support/support_models.dart' show ticketPriorities;
 import 'support_admin_models.dart';
 
 /// Running the support desk.
@@ -186,6 +187,55 @@ class SupportAdminRepository {
       query: query,
     );
   }
+
+  /// One entry in full. The list rows carry a summary; this is where the
+  /// recorded changes, the address it came from and the browser live.
+  Future<SupportAuditEntry> auditEntry(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_audit/$id');
+    return SupportAuditEntry.fromJson(json);
+  }
+
+  /// Everything that has happened to one record. A bare list, not a page —
+  /// the trail for a single resource is short by nature.
+  Future<List<SupportAuditEntry>> auditForResource(int resourceId) async {
+    final list = await _api.get<List<dynamic>>('$_audit/resource/$resourceId');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(SupportAuditEntry.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Everything one person has done. A page, unlike the resource lookup.
+  Future<PagedResponse<SupportAuditEntry>> auditForUser(
+    int userId, {
+    int page = 0,
+    int size = 25,
+  }) =>
+      _api.getPaged(
+        '$_audit/user/$userId',
+        SupportAuditEntry.fromJson,
+        page: page,
+        size: size,
+      );
+
+  /// The SLA policies actually in force, rather than every one ever written.
+  Future<List<SlaPolicy>> activeSlaPolicies() async {
+    final list = await _api.get<List<dynamic>>('$_sla/active');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(SlaPolicy.fromJson)
+        .toList(growable: false);
+  }
+
+  /// The agent record behind a user account, if there is one.
+  ///
+  /// Answers 404 for anybody who is not an agent, which is most people — the
+  /// caller treats that as "not an agent" rather than as a failure.
+  Future<SupportAgent> agentForUser(int userId) async {
+    final json =
+        await _api.get<Map<String, dynamic>>('/v1/support/agents/user/$userId');
+    return SupportAgent.fromJson(json);
+  }
 }
 
 final supportAdminRepositoryProvider = Provider<SupportAdminRepository>(
@@ -307,9 +357,15 @@ class SlaPoliciesController extends AsyncNotifier<List<SlaPolicy>> {
   }
 
   Future<List<SlaPolicy>> _load() async {
+    // The filter also carries a sentinel meaning "only the ones in force",
+    // which is a different endpoint rather than a priority. Passing it
+    // through would build /sla-policies/priority/in-force and 400.
+    final filter = ref.read(slaPriorityFilterProvider);
+    final priority = ticketPriorities.contains(filter) ? filter : null;
+
     final page = await ref
         .read(supportAdminRepositoryProvider)
-        .slaPolicies(priority: ref.read(slaPriorityFilterProvider));
+        .slaPolicies(priority: priority);
     return page.content;
   }
 
@@ -383,3 +439,33 @@ final supportAuditProvider =
     AsyncNotifierProvider<SupportAuditController, List<SupportAuditEntry>>(
   SupportAuditController.new,
 );
+
+
+/// One audit entry in full.
+final auditEntryProvider =
+    FutureProvider.autoDispose.family<SupportAuditEntry, int>(
+  (ref, id) => ref.read(supportAdminRepositoryProvider).auditEntry(id),
+);
+
+/// The trail for one record.
+final auditForResourceProvider =
+    FutureProvider.autoDispose.family<List<SupportAuditEntry>, int>(
+  (ref, resourceId) =>
+      ref.read(supportAdminRepositoryProvider).auditForResource(resourceId),
+);
+
+/// The trail for one person.
+final auditForUserProvider =
+    FutureProvider.autoDispose.family<List<SupportAuditEntry>, int>(
+  (ref, userId) async {
+    final page =
+        await ref.read(supportAdminRepositoryProvider).auditForUser(userId);
+    return page.content;
+  },
+);
+
+/// The SLA policies in force.
+final activeSlaPoliciesProvider =
+    FutureProvider.autoDispose<List<SlaPolicy>>((ref) {
+  return ref.read(supportAdminRepositoryProvider).activeSlaPolicies();
+});

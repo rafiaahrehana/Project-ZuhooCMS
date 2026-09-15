@@ -7,7 +7,7 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/date_field.dart';
 import '../../shared/widgets/form_sheet.dart';
 import '../../shared/widgets/primitives.dart';
-import '../finance/finance_models.dart' show paymentMethods;
+import '../finance/finance_models.dart' show payrollPaymentMethods, paymentMethodLabel;
 import 'payroll_models.dart';
 import 'payroll_repository.dart';
 
@@ -230,8 +230,11 @@ class _PayRunSheetState extends ConsumerState<_PayRunSheet> {
             prefixIcon: Icon(Icons.account_balance_rounded),
           ),
           items: [
-            for (final method in paymentMethods)
-              DropdownMenuItem(value: method, child: Text(Fmt.label(method))),
+            for (final method in payrollPaymentMethods)
+              DropdownMenuItem(
+                value: method,
+                child: Text(paymentMethodLabel(method)),
+              ),
           ],
           onChanged: (value) => setState(() => _method = value ?? _method),
         ),

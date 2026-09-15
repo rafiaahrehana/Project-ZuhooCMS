@@ -5,6 +5,10 @@ import '../search/search_models.dart';
 /// controller called it.
 abstract final class AiPermissions {
   static const chat = 'AI_CHAT';
+
+  /// Configuring it: which provider answers, what it is told, what it costs.
+  /// A separate code, and a much smaller group of people.
+  static const admin = 'AI_ADMIN';
 }
 
 /// POST /api/search/ask response.

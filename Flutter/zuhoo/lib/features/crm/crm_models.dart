@@ -171,6 +171,7 @@ class Lead {
     this.activitiesCount,
     this.tags = const [],
     this.possibleDuplicate,
+    this.aiSummary,
   });
 
   final int id;
@@ -192,6 +193,11 @@ class Lead {
   final String? lastContactDate;
   final String? lastActivityAt;
   final String? convertedClientName;
+
+  /// A drafted read on the lead. Only ever populated by
+  /// `GET /crm/leads/{id}/summary` — the list and the plain detail both leave
+  /// it null, and asking for it is what writes it.
+  final String? aiSummary;
   final int? activitiesCount;
   final List<Tag> tags;
   final DuplicateMatch? possibleDuplicate;
@@ -237,6 +243,7 @@ class Lead {
         assignedToName: json['assignedToName'] as String?,
         lastContactDate: json['lastContactDate'] as String?,
         lastActivityAt: json['lastActivityAt'] as String?,
+        aiSummary: json['aiSummary'] as String?,
         convertedClientName: json['convertedClientName'] as String?,
         activitiesCount: (json['activitiesCount'] as num?)?.toInt(),
         tags: Tag.listFrom(json['tags']),
@@ -584,7 +591,7 @@ class ChangeStageRequest {
 
   Map<String, dynamic> toJson() => {
         'stage': stage,
-        if (lostReasonCode != null) 'lostReasonCode': lostReasonCode,
+        'lostReasonCode': ?lostReasonCode,
         if (lostReason != null && lostReason!.trim().isNotEmpty)
           'lostReason': lostReason!.trim(),
         if (linkToExistingClientId != null)
@@ -631,8 +638,8 @@ class CreateLeadRequest {
       if (clean(email) != null) 'email': clean(email),
       if (clean(phone) != null) 'phone': clean(phone),
       if (clean(jobTitle) != null) 'jobTitle': clean(jobTitle),
-      if (priority != null) 'priority': priority,
-      if (estimatedValue != null) 'estimatedValue': estimatedValue,
+      'priority': ?priority,
+      'estimatedValue': ?estimatedValue,
       if (clean(notes) != null) 'notes': clean(notes),
     };
   }
@@ -711,10 +718,10 @@ class UpdateLeadRequest {
       if (clean(phone) != null) 'phone': clean(phone),
       if (clean(jobTitle) != null) 'jobTitle': clean(jobTitle),
       if (clean(industry) != null) 'industry': clean(industry),
-      if (status != null) 'status': status,
-      if (source != null) 'source': source,
-      if (priority != null) 'priority': priority,
-      if (estimatedValue != null) 'estimatedValue': estimatedValue,
+      'status': ?status,
+      'source': ?source,
+      'priority': ?priority,
+      'estimatedValue': ?estimatedValue,
       if (clean(notes) != null) 'notes': clean(notes),
     };
   }
@@ -763,7 +770,7 @@ class CreateClientRequest {
         'clientCompanyName': clean(clientCompanyName),
       if (clean(industry) != null) 'industry': clean(industry),
       if (clean(website) != null) 'website': clean(website),
-      if (employeeCount != null) 'employeeCount': employeeCount,
+      'employeeCount': ?employeeCount,
     };
   }
 }
@@ -808,8 +815,8 @@ class UpdateClientRequest {
         'clientCompanyName': clean(clientCompanyName),
       if (clean(industry) != null) 'industry': clean(industry),
       if (clean(website) != null) 'website': clean(website),
-      if (status != null) 'status': status,
-      if (employeeCount != null) 'employeeCount': employeeCount,
+      'status': ?status,
+      'employeeCount': ?employeeCount,
     };
   }
 }
@@ -875,10 +882,10 @@ class OpportunityRequest {
       // Deliberately unconditional: see the class comment.
       'description': clean(description),
       'nextStep': clean(nextStep),
-      if (clientId != null) 'clientId': clientId,
-      if (amount != null) 'amount': amount,
-      if (expectedCloseDate != null) 'expectedCloseDate': expectedCloseDate,
-      if (source != null) 'source': source,
+      'clientId': ?clientId,
+      'amount': ?amount,
+      'expectedCloseDate': ?expectedCloseDate,
+      'source': ?source,
     };
   }
 }
@@ -915,8 +922,8 @@ class ClientContact {
 
   /// What they do and where, for the row's subtitle.
   String get role => [
-        if (jobTitle != null) jobTitle!,
-        if (department != null) department!,
+        ?jobTitle,
+        ?department,
       ].join(' · ');
 
   factory ClientContact.fromJson(Map<String, dynamic> json) => ClientContact(
@@ -1049,10 +1056,157 @@ class CrmActivityRequest {
       'type': type,
       'subject': subject.trim(),
       if (trimmed != null && trimmed.isNotEmpty) 'description': trimmed,
-      if (scheduledAt != null) 'scheduledAt': scheduledAt,
-      if (completed != null) 'completed': completed,
-      if (clientId != null) 'clientId': clientId,
-      if (opportunityId != null) 'opportunityId': opportunityId,
+      'scheduledAt': ?scheduledAt,
+      'completed': ?completed,
+      'clientId': ?clientId,
+      'opportunityId': ?opportunityId,
     };
   }
+}
+
+
+/// Narrowing the lead list.
+///
+/// A POST rather than a GET because there are fourteen of these and a query
+/// string carrying all of them would be unreadable. Every field is optional,
+/// and an empty filter is the same as asking for everything.
+class LeadFilter {
+  const LeadFilter({
+    this.keyword,
+    this.status,
+    this.source,
+    this.priority,
+    this.assignedToId,
+    this.tagId,
+    this.expectedCloseDateFrom,
+    this.expectedCloseDateTo,
+    this.hasActivity,
+    this.isConverted,
+    this.isUnassigned,
+    this.isHighPriority,
+    this.sortBy = 'createdAt',
+    this.sortDirection = 'DESC',
+  });
+
+  final String? keyword;
+  final String? status;
+  final String? source;
+  final String? priority;
+  final int? assignedToId;
+  final int? tagId;
+  final String? expectedCloseDateFrom;
+  final String? expectedCloseDateTo;
+
+  /// Whether anything has been logged against the lead at all.
+  final bool? hasActivity;
+
+  final bool? isConverted;
+  final bool? isUnassigned;
+  final bool? isHighPriority;
+
+  /// createdAt, lastActivityAt, expectedCloseDate or priority. Anything else
+  /// is rejected by the backend rather than ignored.
+  final String sortBy;
+
+  /// ASC or DESC.
+  final String sortDirection;
+
+  static const sortOptions = <String>[
+    'createdAt',
+    'lastActivityAt',
+    'expectedCloseDate',
+    'priority',
+  ];
+
+  /// Whether this narrows anything at all. Used to decide whether the list
+  /// goes through the filter endpoint or the plain view endpoints.
+  bool get isEmpty =>
+      (keyword == null || keyword!.trim().isEmpty) &&
+      status == null &&
+      source == null &&
+      priority == null &&
+      assignedToId == null &&
+      tagId == null &&
+      expectedCloseDateFrom == null &&
+      expectedCloseDateTo == null &&
+      hasActivity == null &&
+      isConverted == null &&
+      isUnassigned == null &&
+      isHighPriority == null &&
+      sortBy == 'createdAt' &&
+      sortDirection == 'DESC';
+
+  LeadFilter copyWith({
+    String? keyword,
+    String? status,
+    String? source,
+    String? priority,
+    String? expectedCloseDateFrom,
+    String? expectedCloseDateTo,
+    bool? hasActivity,
+    bool? isConverted,
+    bool? isUnassigned,
+    bool? isHighPriority,
+    String? sortBy,
+    String? sortDirection,
+    bool clearStatus = false,
+    bool clearSource = false,
+    bool clearPriority = false,
+  }) =>
+      LeadFilter(
+        keyword: keyword ?? this.keyword,
+        status: clearStatus ? null : (status ?? this.status),
+        source: clearSource ? null : (source ?? this.source),
+        priority: clearPriority ? null : (priority ?? this.priority),
+        assignedToId: assignedToId,
+        tagId: tagId,
+        expectedCloseDateFrom:
+            expectedCloseDateFrom ?? this.expectedCloseDateFrom,
+        expectedCloseDateTo: expectedCloseDateTo ?? this.expectedCloseDateTo,
+        hasActivity: hasActivity ?? this.hasActivity,
+        isConverted: isConverted ?? this.isConverted,
+        isUnassigned: isUnassigned ?? this.isUnassigned,
+        isHighPriority: isHighPriority ?? this.isHighPriority,
+        sortBy: sortBy ?? this.sortBy,
+        sortDirection: sortDirection ?? this.sortDirection,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (keyword != null && keyword!.trim().isNotEmpty)
+          'keyword': keyword!.trim(),
+        'status': ?status,
+        'source': ?source,
+        'priority': ?priority,
+        'assignedToId': ?assignedToId,
+        'tagId': ?tagId,
+        if (expectedCloseDateFrom != null)
+          'expectedCloseDateFrom': expectedCloseDateFrom,
+        if (expectedCloseDateTo != null)
+          'expectedCloseDateTo': expectedCloseDateTo,
+        'hasActivity': ?hasActivity,
+        'isConverted': ?isConverted,
+        'isUnassigned': ?isUnassigned,
+        'isHighPriority': ?isHighPriority,
+        'sortBy': sortBy,
+        'sortDirection': sortDirection,
+      };
+}
+
+/// What came of importing a CSV of leads.
+///
+/// The skipped lines are the useful half: each one says which row and why,
+/// which is what somebody needs to fix the file and try again.
+class LeadImportResult {
+  const LeadImportResult({required this.created, required this.skipped});
+
+  final int created;
+  final List<String> skipped;
+
+  factory LeadImportResult.fromJson(Map<String, dynamic> json) =>
+      LeadImportResult(
+        created: (json['created'] as num?)?.toInt() ?? 0,
+        skipped: (json['skipped'] as List<dynamic>? ?? const [])
+            .whereType<String>()
+            .toList(growable: false),
+      );
 }

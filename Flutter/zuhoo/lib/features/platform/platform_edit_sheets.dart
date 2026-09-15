@@ -246,7 +246,7 @@ class _EditPlatformUserSheetState
     final changedPassword = _password.text.isNotEmpty;
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await ref.read(platformUsersProvider.notifier).update(
+      await ref.read(platformUsersProvider.notifier).updateItem(
             widget.user.id,
             UpdatePlatformUserRequest(
               firstName: _firstName.text,

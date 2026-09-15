@@ -5,7 +5,9 @@ import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
+import 'notification_navigation.dart';
 import 'notification_repository.dart';
+import '../../app/shell.dart';
 
 class AlertsScreen extends ConsumerWidget {
   const AlertsScreen({super.key});
@@ -19,6 +21,7 @@ class AlertsScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: bos.bgPage,
       appBar: AppBar(
+        leading: const AppDrawerButton(),
         title: const Text('Alerts'),
         actions: [
           if (hasUnread)
@@ -110,14 +113,23 @@ class _NotificationTile extends ConsumerWidget {
     final bos = Theme.of(context).bos;
     final unread = !notification.read;
 
-    return AppCard(
+    final hasTarget = (notification.link ?? '').trim().isNotEmpty;
+
+    final card = AppCard(
       // Unread rows sit on the brand tint. A dot alone is easy to miss on a
       // phone held at arm's length; the whole row changing is not.
       color: unread ? bos.brandSoft : bos.bgCard,
-      onTap: unread
-          ? () => ref
-              .read(notificationsControllerProvider.notifier)
-              .markRead(notification.id)
+      onTap: unread || hasTarget
+          ? () async {
+              if (unread) {
+                await ref
+                    .read(notificationsControllerProvider.notifier)
+                    .markRead(notification.id);
+              }
+              if (context.mounted) {
+                await openNotification(context, ref, notification);
+              }
+            }
           : null,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -163,8 +175,49 @@ class _NotificationTile extends ConsumerWidget {
               ],
             ),
           ),
+          if (hasTarget) ...[
+            const SizedBox(width: 6),
+            Icon(Icons.chevron_right_rounded, size: 18, color: bos.muted),
+          ],
         ],
       ),
+    );
+
+    // Only an unread notification gets the gesture — marking an already-read
+    // one read again is a no-op with nothing to swipe for. `confirmDismiss`
+    // always returns false: this marks it read in place rather than removing
+    // the row, since there is no "delete a notification" endpoint to back a
+    // real dismiss with.
+    if (!unread) return card;
+
+    return Dismissible(
+      key: ValueKey('notification-${notification.id}'),
+      direction: DismissDirection.startToEnd,
+      background: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        alignment: Alignment.centerLeft,
+        decoration: BoxDecoration(
+          color: bos.successSoft,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.done_rounded, color: bos.success, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              'Mark read',
+              style: TextStyle(color: bos.success, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+      confirmDismiss: (_) async {
+        await ref
+            .read(notificationsControllerProvider.notifier)
+            .markRead(notification.id);
+        return false;
+      },
+      child: card,
     );
   }
 }

@@ -18,7 +18,9 @@ import 'assets_periods_repository.dart';
 /// Two jobs that only come up at month end, which is why they share a screen
 /// rather than each having one.
 class ClosingScreen extends ConsumerWidget {
-  const ClosingScreen({super.key});
+  const ClosingScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -60,8 +62,13 @@ class ClosingScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -498,7 +505,12 @@ class _AssetCard extends StatelessWidget {
                           if (asset.assetTag != null) asset.assetTag!,
                           if (asset.category != null) asset.category!,
                           if (asset.acquisitionDate != null)
-                            'from ${Fmt.dateShort(asset.acquisitionDate)}',
+                            // With the year: unlike the periods and fiscal
+                            // years above — which sit under a chip naming
+                            // theirs — an asset's acquisition date is
+                            // unbounded, and "from 26 Feb" on something with
+                            // 96 months still to run reads as this year.
+                            'from ${Fmt.date(asset.acquisitionDate)}',
                         ].join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

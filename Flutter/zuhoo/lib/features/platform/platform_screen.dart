@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,11 +11,13 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/search_field.dart';
 import 'context_models.dart';
 import 'context_screen.dart';
 import 'platform_create_sheets.dart';
 import 'platform_edit_sheets.dart';
 import 'platform_expenses_tab.dart';
+import 'plans_screen.dart';
 import 'platform_models.dart';
 import 'platform_repository.dart';
 
@@ -26,7 +27,9 @@ import 'platform_repository.dart';
 /// only platform staff have any business in it. The backend re-checks the same
 /// thing on every call, so this is a courtesy rather than the security.
 class PlatformScreen extends ConsumerWidget {
-  const PlatformScreen({super.key});
+  const PlatformScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -81,10 +84,12 @@ class PlatformScreen extends ConsumerWidget {
     final createOn =
         <String, ({String label, IconData icon, Future<void> Function(BuildContext) open})>{
       if (canStaff) ...{
+        // The Companies tab is where plans get assigned, so it is also where
+        // the catalogue of them lives.
         'Companies': (
-          label: 'New plan',
+          label: 'Plans',
           icon: Icons.workspace_premium_outlined,
-          open: showNewSubscriptionPlanSheet,
+          open: (context) async => PlansScreen.open(context),
         ),
         'Staff': (
           label: 'New staff',
@@ -100,8 +105,13 @@ class PlatformScreen extends ConsumerWidget {
         ),
     };
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : labels.indexOf(initialTabLabel!).clamp(0, labels.length - 1);
+
     return DefaultTabController(
       length: labels.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -169,7 +179,7 @@ class _CompaniesTab extends ConsumerWidget {
             emptyTitle: 'No companies',
             emptyMessage: 'No tenants match that filter.',
             errorMessage: 'Could not load the tenant list.',
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             itemBuilder: (context, company) => _CompanyCard(company: company),
           ),
         ),
@@ -178,58 +188,17 @@ class _CompaniesTab extends ConsumerWidget {
   }
 }
 
-class _CompanySearch extends ConsumerStatefulWidget {
+class _CompanySearch extends ConsumerWidget {
   const _CompanySearch();
 
   @override
-  ConsumerState<_CompanySearch> createState() => _CompanySearchState();
-}
-
-class _CompanySearchState extends ConsumerState<_CompanySearch> {
-  final _controller = TextEditingController();
-  Timer? _debounce;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  /// Debounced, because every keystroke would otherwise refetch the whole
-  /// tenant list — the search is server-side.
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
-      ref.read(companySearchProvider.notifier).set(value);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: TextField(
-        controller: _controller,
-        onChanged: _onChanged,
-        textInputAction: TextInputAction.search,
-        decoration: InputDecoration(
-          hintText: 'Search companies',
-          isDense: true,
-          prefixIcon: const Icon(Icons.search_rounded),
-          suffixIcon: _controller.text.isEmpty
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  tooltip: 'Clear',
-                  onPressed: () {
-                    _controller.clear();
-                    _debounce?.cancel();
-                    ref.read(companySearchProvider.notifier).set('');
-                    setState(() {});
-                  },
-                ),
-        ),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: AppSearchField(
+        hint: 'Search companies',
+        onChanged: (value) =>
+            ref.read(companySearchProvider.notifier).set(value),
       ),
     );
   }
@@ -884,7 +853,7 @@ class _StaffTab extends ConsumerWidget {
       emptyTitle: 'No platform staff',
       emptyMessage: 'Zuhoo staff accounts appear here.',
       errorMessage: 'Could not load platform staff.',
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
       itemBuilder: (context, user) => AppCard(
         child: Row(
           children: [
@@ -947,7 +916,10 @@ class _StaffTab extends ConsumerWidget {
               onPressed: () => showEditPlatformUserSheet(context, user: user),
               icon: const Icon(Icons.edit_outlined, size: 18),
               tooltip: 'Edit',
-              visualDensity: VisualDensity.compact,
+              // 44, not the 40 `visualDensity: compact` gives — see
+              // MessageBanner's dismiss. The row stays tight because
+              // the glyph is still 18; only the tap box grows.
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
             ),
           ],
         ),

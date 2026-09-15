@@ -101,6 +101,12 @@ class PushService {
   Future<void> init() async {
     if (!_supported) return;
 
+    // Create the channel once on start, so it exists before any messages arrive.
+    await _local
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(_androidChannel);
+
     await _local.initialize(
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -112,20 +118,28 @@ class PushService {
       onDidReceiveNotificationResponse: _onNotificationTapped,
     );
 
-    await FirebaseMessaging.instance.requestPermission();
+    try {
+      await FirebaseMessaging.instance.requestPermission();
 
-    // A message that arrives while the app is on screen. Still shown as a
-    // local notification rather than, say, an in-app banner — a data-only
-    // FCM message has no other visible form, and consistency with the
-    // background case (which can only ever show a system notification)
-    // matters more than a nicer foreground treatment would.
-    FirebaseMessaging.onMessage.listen(
-      (message) => _showDataMessage(message.data, _local),
-    );
+      // A message that arrives while the app is on screen. Still shown as a
+      // local notification rather than, say, an in-app banner — a data-only
+      // FCM message has no other visible form, and consistency with the
+      // background case (which can only ever show a system notification)
+      // matters more than a nicer foreground treatment would.
+      FirebaseMessaging.onMessage.listen(
+        (message) => _showDataMessage(message.data, _local),
+      );
 
-    _refreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
-      if (_ref.read(currentUserProvider) != null) unawaited(_register(token));
-    });
+      _refreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
+        if (_ref.read(currentUserProvider) != null) {
+          unawaited(_register(token));
+        }
+      });
+    } catch (_) {
+      // No Google Play services, or Firebase never came up in main() — this
+      // device gets local notifications for whatever already arrived (below)
+      // but not push. Not fatal to the rest of the app either way.
+    }
 
     // The process was fully killed and Android relaunched it because the
     // person tapped the local notification the background handler created.
@@ -144,7 +158,9 @@ class PushService {
   void _handlePayload(String? payload) {
     if (payload == null || payload.isEmpty) return;
     try {
-      _navigateFor((jsonDecode(payload) as Map).cast<String, dynamic>());
+      unawaited(
+        _navigateFor((jsonDecode(payload) as Map).cast<String, dynamic>()),
+      );
     } catch (_) {
       // A malformed payload should not crash the tap handler.
     }
@@ -195,8 +211,15 @@ class PushService {
   /// screen in this app takes a record id from its route today (each one
   /// fetches its own list on open), so a tap lands on the right tab and the
   /// person finds the item themselves from there.
-  void _navigateFor(Map<String, dynamic> data) {
-    final isClient = _ref.read(currentUserProvider)?.isClient ?? false;
+  Future<void> _navigateFor(Map<String, dynamic> data) async {
+    // Wait for the auth controller to finish its initial load (session restore)
+    // before choosing a route. If we push while the router is still showing the
+    // splash screen (isLoading), GoRouter will redirect to splash and the
+    // notification's destination will be lost.
+    final user = await _ref.read(authControllerProvider.future);
+    if (user == null) return;
+
+    final isClient = user.isClient;
     final path = isClient
         ? _clientRouteFor(data['type'] as String?)
         : _staffRouteFor(data['type'] as String?);

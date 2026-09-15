@@ -18,7 +18,9 @@ import 'accounting_sheets.dart';
 /// can be edited — that is the point of a ledger — so it reads rather than
 /// acts, apart from ticking a line off against a bank statement.
 class AccountingScreen extends ConsumerWidget {
-  const AccountingScreen({super.key});
+  const AccountingScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,8 +70,13 @@ class AccountingScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -858,13 +865,23 @@ class _LedgerRow extends StatelessWidget {
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      Text(
-                        [
-                          Fmt.date(line.transactionDate),
-                          if (line.referenceNumber != null)
-                            line.referenceNumber!,
-                        ].join(' · '),
-                        style: TextStyle(color: bos.muted, fontSize: 11.5),
+                      // Flexible, because this line is the widest thing in
+                      // the card and the only one that was not allowed to
+                      // shrink: at a 1.5 text scale "16 Aug 2026 ·
+                      // DEMO-RCPT-0001" pushed the row 58 pixels past its
+                      // own card. The account name above it was already
+                      // ellipsised, which is why the card looked handled.
+                      Flexible(
+                        child: Text(
+                          [
+                            Fmt.date(line.transactionDate),
+                            if (line.referenceNumber != null)
+                              line.referenceNumber!,
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: bos.muted, fontSize: 11.5),
+                        ),
                       ),
                       if (line.isReconciled) ...[
                         const SizedBox(width: 6),
@@ -909,7 +926,10 @@ class _LedgerRow extends StatelessWidget {
                 onPressed: onReconcile,
                 icon: const Icon(Icons.fact_check_outlined, size: 18),
                 tooltip: 'Mark as reconciled',
-                visualDensity: VisualDensity.compact,
+                // 44, not the 40 `visualDensity: compact` gives — see
+                // MessageBanner's dismiss. The row stays tight because
+                // the glyph is still 18; only the tap box grows.
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               ),
           ],
         ),

@@ -291,6 +291,19 @@ class Shift {
     return minutes / 60;
   }
 
+  /// "Off Fri, Sat" — the stored "FRI,SAT" said neither which days it meant
+  /// nor that they were the days *off*, which is the one thing a reader
+  /// needs from it. Null when nothing is stored, so the row simply omits it.
+  String? get weeklyOffLabel {
+    final days = (weeklyOffDays ?? '')
+        .split(',')
+        .map((d) => d.trim())
+        .where((d) => d.isNotEmpty)
+        .map((d) => d[0].toUpperCase() + d.substring(1).toLowerCase())
+        .toList();
+    return days.isEmpty ? null : 'Off ${days.join(', ')}';
+  }
+
   /// "09:00 — 17:30", from whatever precision the backend sent.
   String get window {
     String short(String? time) {

@@ -7,6 +7,7 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import 'crm_controllers.dart';
+import 'activity_timeline.dart';
 import 'crm_models.dart';
 import 'crm_repository.dart';
 import 'opportunity_form_sheet.dart';
@@ -262,6 +263,8 @@ class _OpportunityDetailScreenState
                   opportunity: opportunity,
                   onMove: (stage) => _moveTo(opportunity, stage),
                 ),
+              const SizedBox(height: 20),
+              ActivityTimeline(opportunityId: opportunity.id),
             ],
           ),
         ),

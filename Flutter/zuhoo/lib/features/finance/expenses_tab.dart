@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
+import 'edit_expense_sheet.dart';
+import 'vendor_expenses_screen.dart';
 import 'finance_models.dart';
 import 'finance_repository.dart';
 
@@ -148,6 +152,32 @@ class _ExpenseCardState extends ConsumerState<_ExpenseCard> {
     }
   }
 
+  Future<void> _delete() async {
+    final confirmed = await confirmAction(
+      context,
+      title: 'Delete this claim?',
+      message: 'It goes for good, decided or not. Only a company owner can '
+          'do this.',
+      action: 'Delete',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(expensesProvider.notifier).remove(widget.expense.id);
+      messenger.showSnackBar(const SnackBar(content: Text('Deleted.')));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not delete that claim.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// Both decisions carry a note. A rejection without a reason leaves the
   /// claimant guessing what to fix; an approval note is what an auditor reads.
   Future<String?> _promptForNotes({required bool approved}) {
@@ -226,6 +256,19 @@ class _ExpenseCardState extends ConsumerState<_ExpenseCard> {
     final canReject = permissions.has(FinancePermissions.expenseReject);
     final canDecide = expense.isPending && (canApprove || canReject);
 
+    // Editing is open to whoever claimed it as well as to somebody holding
+    // EXPENSE_UPDATE — the service falls back to "your own" — so this offers
+    // it on any pending claim and lets the backend refuse if it must.
+    final canEdit = expense.isPending;
+
+    // Reimbursing is the step after approval, and deleting is owner-only.
+    final canMarkPaid = expense.awaitingReimbursement;
+    final canDelete = ref.watch(currentUserProvider)?.hasAnyRole(
+              const ['COMPANY_OWNER'],
+            ) ??
+        false;
+    final hasMenu = canEdit || canMarkPaid || canDelete;
+
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -248,18 +291,81 @@ class _ExpenseCardState extends ConsumerState<_ExpenseCard> {
               ),
               const SizedBox(width: 8),
               StatusChip(expense.status, dense: true),
+              if (hasMenu && !_busy)
+                SizedBox(
+                  height: 28,
+                  width: 28,
+                  child: PopupMenuButton<String>(
+                    padding: EdgeInsets.zero,
+                    iconSize: 18,
+                    onSelected: (value) => switch (value) {
+                      'edit' => showEditExpenseSheet(context, expense: expense),
+                      'paid' => showMarkPaidSheet(context, expense: expense),
+                      _ => _delete(),
+                    },
+                    itemBuilder: (context) => [
+                      if (canEdit)
+                        const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                      if (canMarkPaid)
+                        const PopupMenuItem(
+                          value: 'paid',
+                          child: Text('Mark reimbursed'),
+                        ),
+                      if (canDelete)
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Text(
+                            'Delete',
+                            style: TextStyle(color: bos.danger),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 4),
-          Text(
-            [
-              expense.expenseNumber,
-              if (expense.category != null) Fmt.label(expense.category),
-              if (expense.vendorName != null) expense.vendorName!,
-            ].join('  ·  '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: bos.muted, fontSize: 11.5),
+          Row(
+            children: [
+              Flexible(
+                child: Text(
+                  [
+                    expense.expenseNumber,
+                    if (expense.category != null) Fmt.label(expense.category),
+                  ].join('  ·  '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: bos.muted, fontSize: 11.5),
+                ),
+              ),
+              if (expense.vendorName != null) ...[
+                Text(
+                  '  ·  ',
+                  style: TextStyle(color: bos.muted, fontSize: 11.5),
+                ),
+                Flexible(
+                  child: GestureDetector(
+                    // Expenses are matched on the vendor name as typed —
+                    // there is no vendor record behind them — so a misspelt
+                    // name is simply a different supplier as far as this goes.
+                    onTap: () => VendorExpensesScreen.open(
+                      context,
+                      vendorName: expense.vendorName!,
+                    ),
+                    child: Text(
+                      expense.vendorName!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: bos.brand,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 12),
           Row(

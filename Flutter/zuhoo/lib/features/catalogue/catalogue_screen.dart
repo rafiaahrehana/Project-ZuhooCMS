@@ -8,7 +8,7 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/config_list.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
-import '../crm/crm_controllers.dart' show clientsProvider;
+import '../crm/crm_controllers.dart' show activeClientsProvider;
 import '../crm/crm_models.dart' show Client;
 import '../requests/new_package_sheet.dart' show showNewPackageSheet;
 import '../requests/request_models.dart' show RequestPermissions;
@@ -25,7 +25,9 @@ import 'catalogue_repository.dart';
 /// Each tab is gated on the permission its own endpoints check, so somebody
 /// sees only what they could actually load.
 class CatalogueScreen extends ConsumerWidget {
-  const CatalogueScreen({super.key});
+  const CatalogueScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -87,8 +89,13 @@ class CatalogueScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -304,15 +311,52 @@ class _TemplatesTabState extends ConsumerState<_TemplatesTab> {
     final canEdit = permissions.has(CataloguePermissions.templateUpdate);
     final canDelete = permissions.has(CataloguePermissions.templateDelete);
 
+    // Narrowing by category is its own endpoint rather than a query
+    // parameter, so choosing one changes where the list comes from.
+    final categoryId = ref.watch(templateCategoryProvider);
+
+    // The categories on offer are whatever the templates themselves carry —
+    // there is no separate list of them on this screen, and inventing one
+    // would show categories with nothing in them.
+    final categories = <int, String>{
+      for (final row in ref.watch(templatesProvider).value ??
+          const <ServiceTemplate>[])
+        if (row.categoryId != null && row.categoryName != null)
+          row.categoryId!: row.categoryName!,
+    };
+
     return ConfigList<ServiceTemplate>(
-      async: ref.watch(templatesProvider),
-      onRefresh: ref.read(templatesProvider.notifier).refresh,
+      async: categoryId == null
+          ? ref.watch(templatesProvider)
+          : ref.watch(templatesInCategoryProvider(categoryId)),
+      onRefresh: () async {
+        if (categoryId != null) {
+          ref.invalidate(templatesInCategoryProvider(categoryId));
+        }
+        await ref.read(templatesProvider.notifier).refresh();
+      },
       emptyIcon: Icons.dashboard_customize_outlined,
-      emptyTitle: 'No templates yet',
+      emptyTitle: categoryId == null ? 'No templates yet' : 'Nothing here',
       emptyMessage:
           'A template is a service definition you can reuse — its form fields, '
           'the documents it asks for, and the stages it runs through.',
       errorMessage: 'Could not load the templates.',
+      header: categories.isEmpty
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: FilterBar(
+                selected: categoryId?.toString(),
+                options: [
+                  const (value: null, label: 'All'),
+                  for (final entry in categories.entries)
+                    (value: entry.key.toString(), label: entry.value),
+                ],
+                onSelected: (value) => ref
+                    .read(templateCategoryProvider.notifier)
+                    .set(value == null ? null : int.tryParse(value)),
+              ),
+            ),
       itemBuilder: (context, row) => ConfigRow(
         title: row.name,
         active: row.active,
@@ -408,15 +452,37 @@ class _PackagesTabState extends ConsumerState<_PackagesTab> {
     final canSubscribe =
         ref.watch(permissionControllerProvider).has(RequestPermissions.view);
 
+    // A switched-off package keeps every subscription already on it and
+    // simply stops being offered, so "what can be sold now" and "what exists"
+    // are different questions with different endpoints behind them.
+    final onSaleOnly = ref.watch(packageScopeProvider);
+
     return ConfigList<ServicePackage>(
-      async: ref.watch(packagesProvider),
-      onRefresh: ref.read(packagesProvider.notifier).refresh,
+      async: onSaleOnly
+          ? ref.watch(activePackagesProvider)
+          : ref.watch(packagesProvider),
+      onRefresh: () async {
+        ref.invalidate(activePackagesProvider);
+        await ref.read(packagesProvider.notifier).refresh();
+      },
       emptyIcon: Icons.inventory_2_outlined,
-      emptyTitle: 'No packages yet',
+      emptyTitle: onSaleOnly ? 'Nothing on sale' : 'No packages yet',
       emptyMessage:
           'A package bundles services and sells them on a cycle, with an '
           'allowance of requests included.',
       errorMessage: 'Could not load the packages.',
+      header: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: FilterBar(
+          selected: onSaleOnly ? 'on-sale' : null,
+          options: const [
+            (value: null, label: 'All packages'),
+            (value: 'on-sale', label: 'On sale'),
+          ],
+          onSelected: (value) =>
+              ref.read(packageScopeProvider.notifier).set(value == 'on-sale'),
+        ),
+      ),
       itemBuilder: (context, row) => ConfigRow(
         title: row.name,
         active: row.active,
@@ -692,9 +758,6 @@ class _SubscriptionRow extends StatelessWidget {
 /// simple — a company has a manageable number of clients and the list is
 /// already sorted; anything larger belongs on the web.
 Future<Client?> _pickClient(BuildContext context, WidgetRef ref) {
-  // Nudges the list into loading if nothing has read it yet this session.
-  ref.read(clientsProvider.notifier);
-
   return showModalBottomSheet<Client>(
     context: context,
     isScrollControlled: true,
@@ -702,7 +765,10 @@ Future<Client?> _pickClient(BuildContext context, WidgetRef ref) {
       final bos = Theme.of(sheetContext).bos;
       return Consumer(
         builder: (context, ref, _) {
-          final clients = ref.watch(clientsProvider);
+          // The dedicated active-clients list rather than the paged one: a
+          // picker wants everybody still trading in one go, and offering a
+          // client who has been closed is a mistake waiting to be made.
+          final clients = ref.watch(activeClientsProvider);
           return SizedBox(
             height: MediaQuery.sizeOf(context).height * 0.6,
             child: Column(
@@ -731,10 +797,10 @@ Future<Client?> _pickClient(BuildContext context, WidgetRef ref) {
                       message: error is ApiException
                           ? error.message
                           : 'Could not load the clients.',
-                      onRetry: ref.read(clientsProvider.notifier).refresh,
+                      onRetry: () => ref.invalidate(activeClientsProvider),
                     ),
-                    data: (state) {
-                      if (state.items.isEmpty) {
+                    data: (items) {
+                      if (items.isEmpty) {
                         return const EmptyState(
                           icon: Icons.people_outline_rounded,
                           title: 'No clients yet',
@@ -745,9 +811,9 @@ Future<Client?> _pickClient(BuildContext context, WidgetRef ref) {
                       }
                       return ListView.builder(
                         padding: const EdgeInsets.only(bottom: 24),
-                        itemCount: state.items.length,
+                        itemCount: items.length,
                         itemBuilder: (context, index) {
-                          final client = state.items[index];
+                          final client = items[index];
                           return ListTile(
                             title: Text(
                               client.headline,
@@ -777,3 +843,29 @@ Future<Client?> _pickClient(BuildContext context, WidgetRef ref) {
     },
   );
 }
+
+/// Which category the templates tab is narrowed to. Null is all of them.
+class TemplateCategoryController extends Notifier<int?> {
+  @override
+  int? build() => null;
+
+  void set(int? categoryId) => state = categoryId;
+}
+
+final templateCategoryProvider =
+    NotifierProvider<TemplateCategoryController, int?>(
+  TemplateCategoryController.new,
+);
+
+/// Whether the packages tab is showing only what is on sale.
+class PackageScopeController extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool onSaleOnly) => state = onSaleOnly;
+}
+
+final packageScopeProvider =
+    NotifierProvider<PackageScopeController, bool>(
+  PackageScopeController.new,
+);

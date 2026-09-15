@@ -84,7 +84,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           SizedBox(
-            height: 36,
+            height: scaledStripHeight(context, 36),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: FinancialReport.values.length,

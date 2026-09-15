@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used to tag where you checked in or out, only at the moment you tap the button.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used to turn your speech into text when you tap the microphone in the AI assistant.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Used to turn your speech into text when you tap the microphone in the AI assistant.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

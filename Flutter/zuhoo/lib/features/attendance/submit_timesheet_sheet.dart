@@ -6,6 +6,7 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import 'attendance_controller.dart';
+import 'attendance_repository.dart';
 import 'attendance_models.dart';
 
 Future<void> showLogTimesheetSheet(BuildContext context) {
@@ -49,6 +50,8 @@ class _LogTimesheetSheetState extends ConsumerState<_LogTimesheetSheet> {
   late final TextEditingController _billable;
   late final TextEditingController _project;
   late final TextEditingController _description;
+
+  bool _tidying = false;
 
   late DateTime _date;
   bool _submitting = false;
@@ -154,6 +157,43 @@ class _LogTimesheetSheetState extends ConsumerState<_LogTimesheetSheet> {
     }
   }
 
+  /// Asks the assistant to turn the rough notes in the box into a proper
+  /// description, and puts the result back in the box.
+  ///
+  /// Nothing is logged by this — it drafts, and the person still decides
+  /// whether to keep it. If nothing comes back, the box is left as it was
+  /// rather than being emptied.
+  Future<void> _tidy() async {
+    final notes = _description.text.trim();
+    if (notes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Jot down what you did first, then tidy it up.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _tidying = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final tidied =
+          await ref.read(attendanceRepositoryProvider).composeTimesheetEntry(
+                projectName: _project.text,
+                roughNotes: notes,
+              );
+      if (tidied.trim().isNotEmpty) _description.text = tidied.trim();
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not tidy that up.')),
+      );
+    } finally {
+      if (mounted) setState(() => _tidying = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
@@ -244,9 +284,27 @@ class _LogTimesheetSheetState extends ConsumerState<_LogTimesheetSheet> {
                 textCapitalization: TextCapitalization.sentences,
                 minLines: 2,
                 maxLines: 4,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'What did you work on (optional)',
-                  prefixIcon: Icon(Icons.notes_rounded),
+                  prefixIcon: const Icon(Icons.notes_rounded),
+                  // Turns whatever is in the box into something a manager can
+                  // read. It replaces the text rather than appending, which
+                  // is why it is only offered once there is text to replace.
+                  suffixIcon: _tidying
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            height: 16,
+                            width: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : IconButton(
+                          tooltip: 'Tidy it up',
+                          icon: const Icon(Icons.auto_awesome_outlined,
+                              size: 18),
+                          onPressed: _tidy,
+                        ),
                 ),
               ),
               const SizedBox(height: 18),

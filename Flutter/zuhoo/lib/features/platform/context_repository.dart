@@ -65,6 +65,14 @@ class ContextSwitchRepository {
   }
 
   /// Everyone currently inside a company. Managers and above only.
+  /// One switch by its id. Super admins and support managers only — an agent
+  /// may see their own active switch but not look up an arbitrary one, so
+  /// this is reached from the platform view rather than from an agent's.
+  Future<SupportContextSwitch> byId(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_base/$id');
+    return SupportContextSwitch.fromJson(json);
+  }
+
   Future<List<SupportContextSwitch>> activeEverywhere() async {
     final list = await _api.get<List<dynamic>>('$_base/active');
     return list

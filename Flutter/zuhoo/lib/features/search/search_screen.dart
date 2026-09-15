@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +7,7 @@ import '../../app/router.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/search_field.dart';
 import '../crm/clients_tab.dart';
 import '../crm/lead_detail_screen.dart';
 import '../crm/opportunity_detail_screen.dart';
@@ -50,25 +50,6 @@ class SearchScreen extends ConsumerStatefulWidget {
 }
 
 class _SearchScreenState extends ConsumerState<SearchScreen> {
-  final _controller = TextEditingController();
-  Timer? _debounce;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  /// Debounced: this query fans out to seven repositories server-side, so
-  /// firing one per keystroke is expensive at the far end, not just here.
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
-      ref.read(searchQueryProvider.notifier).set(value);
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
@@ -82,34 +63,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: TextField(
-              controller: _controller,
+            child: AppSearchField(
               autofocus: true,
-              textInputAction: TextInputAction.search,
-              onChanged: _onChanged,
-              onSubmitted: (value) {
-                _debounce?.cancel();
-                ref.read(searchQueryProvider.notifier).set(value);
-              },
-              decoration: InputDecoration(
-                hintText: 'Leads, clients, tickets, invoices…',
-                prefixIcon:
-                    Icon(Icons.search_rounded, size: 20, color: bos.muted),
-                suffixIcon: _controller.text.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: Icon(Icons.close_rounded,
-                            size: 18, color: bos.muted),
-                        onPressed: () {
-                          _controller.clear();
-                          _debounce?.cancel();
-                          ref.read(searchQueryProvider.notifier).set('');
-                          setState(() {});
-                        },
-                        tooltip: 'Clear',
-                      ),
-                isDense: true,
-              ),
+              hint: 'Leads, clients, tickets, invoices…',
+              // Debounced: this query fans out to seven repositories
+              // server-side, so firing one per keystroke is expensive at the
+              // far end, not just here.
+              debounce: const Duration(milliseconds: 400),
+              onChanged: (value) =>
+                  ref.read(searchQueryProvider.notifier).set(value),
             ),
           ),
           Expanded(

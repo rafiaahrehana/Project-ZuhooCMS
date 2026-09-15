@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/permission_controller.dart';
+import '../../core/providers.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
+import '../../shared/util/attachment_launcher.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/attachment_picker.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
+import '../../shared/widgets/timeline.dart';
 import 'performance_models.dart';
 import 'performance_repository.dart';
 import 'review_form_sheet.dart';
@@ -18,7 +23,9 @@ class ReviewDetailScreen extends ConsumerStatefulWidget {
 
   static void open(BuildContext context, {required PerformanceReview review}) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => ReviewDetailScreen(review: review)),
+      MaterialPageRoute<void>(
+        builder: (_) => ReviewDetailScreen(review: review),
+      ),
     );
   }
 
@@ -173,12 +180,41 @@ class _ReviewDetailScreenState extends ConsumerState<ReviewDetailScreen> {
               ),
             ),
           ],
+          if (review.aiSummary?.trim().isNotEmpty != true && !review.finalised)
+            Padding(
+              padding: const EdgeInsets.only(top: 18),
+              child: AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'No summary yet. The assistant can draft one from the '
+                      'scores and the notes above.',
+                      style: TextStyle(
+                        color: bos.muted,
+                        fontSize: 13,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    LoadingButton(
+                      label: 'Draft a summary',
+                      icon: Icons.auto_awesome_outlined,
+                      loading: _busy,
+                      onPressed: () => _run(
+                        () => ref
+                            .read(performanceRepositoryProvider)
+                            .summarise(_review.id),
+                        'Summary drafted.',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           if (review.aiSummary?.trim().isNotEmpty == true) ...[
             const SizedBox(height: 18),
-            const SectionHeader(
-              'Summary',
-              icon: Icons.auto_awesome_outlined,
-            ),
+            const SectionHeader('Summary', icon: Icons.auto_awesome_outlined),
             AppCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -208,9 +244,322 @@ class _ReviewDetailScreenState extends ConsumerState<ReviewDetailScreen> {
             ),
           ],
           const SizedBox(height: 18),
+          _Kpis(review: review),
+          const SizedBox(height: 18),
+          _Attachments(review: review, editable: !review.finalised),
+          const SizedBox(height: 18),
           _Trail(review: review),
         ],
       ),
+    );
+  }
+}
+
+/// The objective figures for the period the review covers.
+///
+/// Recomputed on every read from attendance, leave, tasks and client ratings
+/// rather than stored on the review, so it agrees with those modules rather
+/// than with whatever was true when the review was written.
+class _Kpis extends ConsumerWidget {
+  const _Kpis({required this.review});
+
+  final PerformanceReview review;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final employeeId = review.employeeId;
+    final from = review.reviewPeriodStart;
+    final to = review.reviewPeriodEnd;
+
+    // All three are required by the endpoint, and a review without a period is
+    // not unusual - there is simply nothing to compute over.
+    if (employeeId == null || from == null || to == null) {
+      return const SizedBox.shrink();
+    }
+
+    final async = ref.watch(
+      reviewKpisProvider((employeeId: employeeId, from: from, to: to)),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader('The figures', icon: Icons.query_stats_rounded),
+        AppCard(
+          child: async.when(
+            loading: () => const Loader(padding: 16),
+            error: (error, _) => MessageBanner.error(
+              error is ApiException
+                  ? error.message
+                  : 'Could not work out the figures for this period.',
+            ),
+            data: (kpis) => !kpis.hasAnything
+                ? Text(
+                    'Nothing was recorded over this period, so there are no '
+                    'figures to show.',
+                    style: TextStyle(
+                      color: bos.muted,
+                      fontSize: 13,
+                      height: 1.5,
+                    ),
+                  )
+                : Column(
+                    children: [
+                      _Kpi(
+                        'Attendance',
+                        // A dash, not a zero: null means nothing was recorded,
+                        // which is not the same as never turning up.
+                        kpis.attendancePercent == null
+                            ? null
+                            : Fmt.percent(kpis.attendancePercent),
+                      ),
+                      _Kpi(
+                        'Days present',
+                        '${kpis.daysPresent} of ${kpis.workingDaysRecorded}',
+                      ),
+                      if (kpis.daysAbsent > 0)
+                        _Kpi('Days absent', '${kpis.daysAbsent}'),
+                      if (kpis.lateArrivals > 0)
+                        _Kpi('Late arrivals', '${kpis.lateArrivals}'),
+                      _Kpi('Leave taken', '${kpis.leaveDaysTaken} days'),
+                      _Kpi('Tasks completed', '${kpis.tasksCompleted}'),
+                      _Kpi('Projects completed', '${kpis.projectsCompleted}'),
+                      _Kpi(
+                        'Client rating',
+                        kpis.customerSatisfaction == null
+                            ? null
+                            : '${kpis.customerSatisfaction!.toStringAsFixed(1)} '
+                                  'out of 5',
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Kpi extends StatelessWidget {
+  const _Kpi(this.label, this.value);
+
+  final String label;
+
+  /// Null renders as a dash, and deliberately so - see [PerformanceKpis].
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(color: bos.muted, fontSize: 12.5),
+            ),
+          ),
+          Text(
+            value ?? Fmt.dash,
+            style: TextStyle(
+              color: value == null ? bos.muted : bos.text,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Files kept with the review.
+class _Attachments extends ConsumerStatefulWidget {
+  const _Attachments({required this.review, required this.editable});
+
+  final PerformanceReview review;
+  final bool editable;
+
+  @override
+  ConsumerState<_Attachments> createState() => _AttachmentsState();
+}
+
+class _AttachmentsState extends ConsumerState<_Attachments> {
+  bool _busy = false;
+
+  Future<void> _add() async {
+    final picked = await pickAttachment(context);
+    if (picked == null || !mounted) return;
+
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Two steps, as the backend intends: the file goes to the generic
+      // upload endpoint, and only the URL it answers with is recorded here.
+      final uploaded = await ref
+          .read(apiClientProvider)
+          .uploadDocument(picked.path, picked.name);
+
+      await ref
+          .read(performanceRepositoryProvider)
+          .addAttachment(
+            widget.review.id,
+            ReviewAttachmentRequest(
+              fileName: uploaded.fileName,
+              fileUrl: uploaded.fileUrl,
+            ),
+          );
+      ref.invalidate(reviewAttachmentsProvider(widget.review.id));
+      messenger.showSnackBar(const SnackBar(content: Text('Added.')));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not attach that file.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _remove(ReviewAttachment attachment) async {
+    final confirmed = await confirmAction(
+      context,
+      title: 'Remove ${attachment.fileName}?',
+      message: 'It stops being part of this review.',
+      action: 'Remove',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref
+          .read(performanceRepositoryProvider)
+          .deleteAttachment(widget.review.id, attachment.id);
+      ref.invalidate(reviewAttachmentsProvider(widget.review.id));
+      messenger.showSnackBar(const SnackBar(content: Text('Removed.')));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not remove that file.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+    final async = ref.watch(reviewAttachmentsProvider(widget.review.id));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          'Files',
+          icon: Icons.attach_file_rounded,
+          trailing: widget.editable && !_busy
+              ? TextButton.icon(
+                  onPressed: _add,
+                  icon: const Icon(Icons.add_rounded, size: 17),
+                  label: const Text('Attach'),
+                )
+              : null,
+        ),
+        AppCard(
+          child: _busy
+              ? const Loader(padding: 12)
+              : async.when(
+                  loading: () => const Loader(padding: 12),
+                  error: (error, _) => MessageBanner.error(
+                    error is ApiException
+                        ? error.message
+                        : 'Could not load the files.',
+                  ),
+                  data: (attachments) => attachments.isEmpty
+                      ? Text(
+                          'Nothing attached.',
+                          style: TextStyle(color: bos.muted, fontSize: 13),
+                        )
+                      : Column(
+                          children: [
+                            for (final attachment in attachments)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: () => openAttachmentUrl(
+                                    context,
+                                    attachment.fileUrl,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.insert_drive_file_outlined,
+                                        size: 16,
+                                        color: bos.muted,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              attachment.label ??
+                                                  attachment.fileName,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: bos.brandInk,
+                                                fontSize: 13,
+                                                decoration:
+                                                    TextDecoration.underline,
+                                              ),
+                                            ),
+                                            if (attachment.uploadedByName !=
+                                                null)
+                                              Text(
+                                                attachment.uploadedByName!,
+                                                style: TextStyle(
+                                                  color: bos.muted,
+                                                  fontSize: 11.5,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      if (widget.editable)
+                                        IconButton(
+                                          // Named, because a row of bare
+                                          // crosses tells a screen reader
+                                          // nothing about which one it is on.
+                                          tooltip:
+                                              'Remove '
+                                              '${attachment.label ?? attachment.fileName}',
+                                          onPressed: () => _remove(attachment),
+                                          icon: Icon(
+                                            Icons.close_rounded,
+                                            size: 17,
+                                            color: bos.muted,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+        ),
+      ],
     );
   }
 }
@@ -240,7 +589,7 @@ class _Header extends StatelessWidget {
                       review.period == null
                           ? 'Review'
                           : '${Fmt.date(review.reviewPeriodStart)} – '
-                              '${Fmt.date(review.reviewPeriodEnd)}',
+                                '${Fmt.date(review.reviewPeriodEnd)}',
                       style: TextStyle(
                         color: bos.text,
                         fontSize: 17,
@@ -425,8 +774,8 @@ class _Goals extends StatelessWidget {
               color: percent >= 80
                   ? bos.success
                   : percent >= 50
-                      ? bos.brandInk
-                      : bos.warning,
+                  ? bos.brandInk
+                  : bos.warning,
               fontSize: 15,
               fontWeight: FontWeight.w700,
             ),
@@ -437,8 +786,11 @@ class _Goals extends StatelessWidget {
   }
 }
 
-/// Who signed off which stage and when. The five timestamps in the payload are
-/// the audit trail of an appraisal, so they get shown rather than dropped.
+/// Who signed off which stage and when. `POST /{id}/advance` stamps a
+/// timestamp and an actor name for the stage it just moved past, so this
+/// renders every one the review has actually cleared plus when the review
+/// itself was opened — the full audit trail of an appraisal, not just its
+/// creation date.
 class _Trail extends StatelessWidget {
   const _Trail({required this.review});
 
@@ -455,19 +807,75 @@ class _Trail extends StatelessWidget {
       children: [
         const SectionHeader('History', icon: Icons.history_rounded),
         AppCard(
-          child: Row(
-            children: [
-              Icon(Icons.schedule_rounded, size: 14, color: bos.muted),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  'Started ${Fmt.dateTime(review.createdAt)}',
-                  style: TextStyle(color: bos.muted, fontSize: 12),
+          child: Timeline(
+            railColor: bos.border,
+            tiles: [
+              TimelineTile(
+                dotColor: bos.muted,
+                child: _TrailEntry(
+                  title: 'Review opened',
+                  at: review.createdAt,
                 ),
               ),
+              for (final stage in review.stageHistory)
+                TimelineTile(
+                  // Clearing final approval is what finalises the review, so
+                  // that one stage gets the "done" colour instead of the
+                  // plain in-progress one every other cleared stage gets.
+                  dotColor: stage.stage == PerformanceStage.finalApproval
+                      ? bos.success
+                      : bos.statusColors(stage.stage).fg,
+                  child: _TrailEntry(
+                    title: stage.stage == PerformanceStage.finalApproval
+                        ? 'Finalised'
+                        : PerformanceStage.labels[stage.stage] ?? stage.stage,
+                    at: stage.at,
+                    by: stage.by,
+                  ),
+                ),
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _TrailEntry extends StatelessWidget {
+  const _TrailEntry({required this.title, this.at, this.by});
+
+  final String title;
+  final String? at;
+  final String? by;
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  color: bos.text,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Text(
+              Fmt.relative(at),
+              style: TextStyle(color: bos.muted, fontSize: 11),
+            ),
+          ],
+        ),
+        if (by != null && by!.trim().isNotEmpty) ...[
+          const SizedBox(height: 2),
+          Text('by $by', style: TextStyle(color: bos.muted, fontSize: 11.5)),
+        ],
       ],
     );
   }

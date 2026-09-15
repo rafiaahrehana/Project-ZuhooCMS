@@ -31,6 +31,15 @@
 
   <title>zuhoo</title>
   <link rel="manifest" href="manifest.json">
+  <script>
+    // Pre-paint script to avoid white flash in dark mode (referenced in main.dart)
+    (function() {
+      var theme = localStorage.getItem('flutter.themeMode');
+      if (theme === 'ThemeMode.dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.body.style.backgroundColor = '#1C1B1F'; // Matches BosPalette.dark background
+      }
+    })();
+  </script>
 </head>
 <body>
   <!--

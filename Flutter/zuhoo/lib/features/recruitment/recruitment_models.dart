@@ -1,11 +1,20 @@
 /// Hiring permissions, taken from the services rather than the Angular routes.
 abstract final class RecruitmentPermissions {
+  /// Gates the KPI/reports screen on the backend
+  /// (`RecruitmentKpiServiceImpl`), even though the button that opens it
+  /// today does not check it locally — named here so the nav entry can.
+  static const reportView = 'RECRUITMENT_REPORT_VIEW';
+
   static const jobView = 'JOB_POSTING_VIEW';
 
   /// Publishing, closing and reassigning a posting are all one permission.
   static const jobUpdate = 'JOB_POSTING_UPDATE';
 
   static const applicationView = 'APPLICATION_VIEW';
+
+  /// Putting somebody into the pipeline — a referral, or a CV that arrived by
+  /// email. Separate from APPLICATION_UPDATE, which is about moving one along.
+  static const applicationCreate = 'APPLICATION_CREATE';
 
   /// Moving an application along, scoring it, and every interview and offer
   /// action share this one code.
@@ -370,6 +379,8 @@ abstract final class OfferStatus {
   static const accepted = 'ACCEPTED';
   static const declined = 'DECLINED';
   static const withdrawn = 'WITHDRAWN';
+
+  static const pipeline = [draft, sent, accepted, declined, withdrawn];
 }
 
 class JobOffer {
@@ -956,4 +967,65 @@ class KpiCount {
 
   final String label;
   final int count;
+}
+
+/// Putting somebody into the pipeline for a job.
+///
+/// The staff-side counterpart of the public careers form: a referral, or a CV
+/// that arrived by email. Only the name is genuinely required by the endpoint,
+/// but an application with no way to reach the person is not much use, so the
+/// sheet asks for a contact too.
+///
+/// `referredByEmployeeId` is set from the caller's own employee record
+/// server-side and cannot be pointed at somebody else — a referral is always
+/// attributed to whoever recorded it.
+class JobApplicationRequest {
+  const JobApplicationRequest({
+    required this.applicantName,
+    this.applicantEmail,
+    this.applicantPhone,
+    this.resumeUrl,
+    this.linkedInUrl,
+    this.portfolioUrl,
+    this.coverLetter,
+    this.source,
+    this.referredByEmployeeId,
+  });
+
+  final String applicantName;
+  final String? applicantEmail;
+  final String? applicantPhone;
+
+  /// A URL from `POST /upload`, not the CV itself.
+  final String? resumeUrl;
+
+  final String? linkedInUrl;
+  final String? portfolioUrl;
+  final String? coverLetter;
+
+  /// One of [applicationSources]. Absent means DIRECT.
+  final String? source;
+
+  /// Only meaningful alongside `EMPLOYEE_REFERRAL`.
+  final int? referredByEmployeeId;
+
+  Map<String, dynamic> toJson() {
+    String? clean(String? value) {
+      final trimmed = value?.trim();
+      return trimmed == null || trimmed.isEmpty ? null : trimmed;
+    }
+
+    return {
+      'applicantName': applicantName.trim(),
+      if (clean(applicantEmail) != null) 'applicantEmail': clean(applicantEmail),
+      if (clean(applicantPhone) != null) 'applicantPhone': clean(applicantPhone),
+      if (clean(resumeUrl) != null) 'resumeUrl': clean(resumeUrl),
+      if (clean(linkedInUrl) != null) 'linkedInUrl': clean(linkedInUrl),
+      if (clean(portfolioUrl) != null) 'portfolioUrl': clean(portfolioUrl),
+      if (clean(coverLetter) != null) 'coverLetter': clean(coverLetter),
+      if (source != null) 'source': source,
+      if (referredByEmployeeId != null)
+        'referredByEmployeeId': referredByEmployeeId,
+    };
+  }
 }

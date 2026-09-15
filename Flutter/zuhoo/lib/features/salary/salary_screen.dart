@@ -11,6 +11,8 @@ import '../../shared/widgets/prompts.dart';
 import 'salary_models.dart';
 import 'salary_repository.dart';
 import 'salary_sheets.dart';
+import 'structure_extras_screen.dart';
+import 'template_tab.dart';
 
 /// What people are paid, what they owe, and the pieces pay is built from.
 ///
@@ -18,7 +20,9 @@ import 'salary_sheets.dart';
 /// asked by the same person on the same day: who is on what, who owes what, and
 /// what the line items are called.
 class SalaryScreen extends ConsumerWidget {
-  const SalaryScreen({super.key});
+  const SalaryScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,10 +72,20 @@ class SalaryScreen extends ConsumerWidget {
         view: const _ComponentsTab(),
         create: canWrite ? () => showComponentSheet(context) : null,
       ),
+      (
+        label: 'Templates',
+        view: const TemplatesTab(),
+        create: canWrite ? () => showTemplateSheet(context) : null,
+      ),
     ];
+
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
 
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -84,6 +98,10 @@ class SalaryScreen extends ConsumerWidget {
                 appBar: AppBar(
                   title: const Text('Pay'),
                   bottom: TabBar(
+                    // Four labels do not fit across a phone: "Components"
+                    // loses its last letter to a fade. Every other screen
+                    // with more than three tabs already scrolls them.
+                    isScrollable: tabs.length > 3,
                     tabs: [for (final tab in tabs) Tab(text: tab.label)],
                   ),
                 ),
@@ -291,6 +309,20 @@ class _StructureCard extends StatelessWidget {
                 ),
                 if (structure.isCurrent)
                   const StatusChip('ACTIVE', label: 'In force', dense: true),
+                IconButton(
+                  tooltip: 'Extra components',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  icon: Icon(Icons.playlist_add_rounded, size: 18, color: bos.muted),
+                  onPressed: () => StructureExtrasScreen.open(
+                    context,
+                    structureId: structure.id,
+                    subtitle: structure.effectiveTo == null
+                        ? 'From ${Fmt.date(structure.effectiveFrom)}'
+                        : '${Fmt.date(structure.effectiveFrom)} — '
+                            '${Fmt.date(structure.effectiveTo)}',
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 10),

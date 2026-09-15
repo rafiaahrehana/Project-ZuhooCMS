@@ -18,7 +18,9 @@ import 'receivables_sheets.dart';
 /// money arriving, the refund that sends money back, and the credit note that
 /// reduces what is owed without any money moving at all.
 class ReceivablesScreen extends ConsumerWidget {
-  const ReceivablesScreen({super.key});
+  const ReceivablesScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -62,8 +64,13 @@ class ReceivablesScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -296,7 +303,14 @@ class _ReceiptCard extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         [
-                          receipt.receiptNumber,
+                          // The title above is the client, or the receipt
+                          // number when there is no client. Repeating the
+                          // number here in that second case spends the first
+                          // segment of a one-line subtitle saying what the row
+                          // already says, and pushes the payment method off
+                          // the end of it.
+                          if (receipt.clientName != null)
+                            receipt.receiptNumber,
                           if (receipt.invoiceNumber != null)
                             receipt.invoiceNumber!,
                           if (receipt.paymentMethod != null)
@@ -451,7 +465,6 @@ class _RefundsTabState extends ConsumerState<_RefundsTab> {
 
   @override
   Widget build(BuildContext context) {
-    final bos = Theme.of(context).bos;
     final filter = ref.watch(refundFilterProvider);
     final canDecide =
         ref.watch(permissionControllerProvider).has(ReceivablesPermissions.invoiceRefund);

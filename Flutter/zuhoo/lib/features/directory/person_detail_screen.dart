@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/contact_actions.dart';
 import '../../shared/widgets/primitives.dart';
 import 'directory_models.dart';
 import 'directory_repository.dart';
+import '../itam/itam_repository.dart';
+import '../itam/offboarding_detail_screen.dart';
+import 'education_section.dart';
 import 'employee_form_sheet.dart';
 
 /// One colleague.
@@ -72,6 +75,11 @@ class PersonDetailScreen extends ConsumerWidget {
           ],
           const SizedBox(height: 20),
           _Details(person: shown, loading: full.isLoading),
+          _Offboarding(employeeId: shown.id),
+          const SizedBox(height: 20),
+          _HeldAssets(employeeId: shown.id),
+          const SizedBox(height: 20),
+          EducationSection(employeeId: shown.id),
         ],
       ),
     );
@@ -138,83 +146,12 @@ class _ContactActions extends StatelessWidget {
 
   final Person person;
 
-  Future<void> _launch(BuildContext context, Uri uri, String failure) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final launched = await launchUrl(uri);
-      if (!launched) {
-        messenger.showSnackBar(SnackBar(content: Text(failure)));
-      }
-    } catch (_) {
-      // A device with no dialer or no mail account configured — an emulator,
-      // usually. Worth saying so rather than failing silently.
-      messenger.showSnackBar(SnackBar(content: Text(failure)));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final phone = person.bestPhone;
-    final email = person.bestEmail;
-
-    if (phone == null && email == null) {
-      return const AppCard(
-        child: MessageBanner.info(
-          'No contact details are recorded for this person.',
-        ),
-      );
-    }
-
-    return Row(
-      children: [
-        if (phone != null)
-          Expanded(
-            child: _ActionButton(
-              icon: Icons.call_rounded,
-              label: 'Call',
-              onTap: () => _launch(
-                context,
-                Uri(scheme: 'tel', path: phone),
-                'No app on this device can place a call.',
-              ),
-            ),
-          ),
-        if (phone != null && email != null) const SizedBox(width: 10),
-        if (email != null)
-          Expanded(
-            child: _ActionButton(
-              icon: Icons.mail_outline_rounded,
-              label: 'Email',
-              onTap: () => _launch(
-                context,
-                Uri(scheme: 'mailto', path: email),
-                'No mail app is set up on this device.',
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _ActionButton extends StatelessWidget {
-  const _ActionButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return FilledButton.icon(
-      onPressed: onTap,
-      icon: Icon(icon, size: 18),
-      label: Text(label),
-      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(46)),
+    return ContactActions(
+      phone: person.bestPhone,
+      email: person.bestEmail,
+      emptyMessage: 'No contact details are recorded for this person.',
     );
   }
 }
@@ -329,6 +266,129 @@ class _Details extends StatelessWidget {
           const SizedBox(height: 10),
           const Loader(padding: 4),
         ],
+      ],
+    );
+  }
+}
+
+/// A quiet note when somebody is on their way out.
+///
+/// The lookup 404s for everybody who is not leaving, which is nearly
+/// everybody — so a failure here shows nothing at all rather than an error.
+/// The absence of a checklist is the normal case, not a fault.
+class _Offboarding extends ConsumerWidget {
+  const _Offboarding({required this.employeeId});
+
+  final int employeeId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final checklist =
+        ref.watch(offboardingForEmployeeProvider(employeeId)).value;
+
+    if (checklist == null) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: AppCard(
+        onTap: () =>
+            OffboardingDetailScreen.open(context, checklist: checklist),
+        child: Row(
+          children: [
+            Icon(
+              Icons.logout_rounded,
+              size: 18,
+              color: checklist.completed ? bos.muted : bos.warning,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    checklist.completed
+                        ? 'Offboarding finished'
+                        : 'Offboarding in progress',
+                    style: TextStyle(
+                      color: bos.text,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    '${checklist.completionPercentage}% done',
+                    style: TextStyle(color: bos.muted, fontSize: 11.5),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 18, color: bos.muted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What this person is holding.
+///
+/// Only what is out on them now. Where a piece of kit has been over time is
+/// its own screen under IT assets — this answers the question somebody asks
+/// standing in front of the person, which is what needs handing back.
+class _HeldAssets extends ConsumerWidget {
+  const _HeldAssets({required this.employeeId});
+
+  final int employeeId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final assets = ref.watch(assetsForEmployeeProvider(employeeId));
+
+    // Reading the asset register needs its own permission, and most people
+    // looking at a colleague's profile do not have it. A refusal shows
+    // nothing rather than an error.
+    final held = assets.value;
+    if (held == null || held.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader('Holding', icon: Icons.devices_other_outlined),
+        AppCard(
+          child: Column(
+            children: [
+              for (final asset in held)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.laptop_mac_outlined,
+                        size: 15,
+                        color: bos.muted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          asset.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: bos.text, fontSize: 13),
+                        ),
+                      ),
+                      if (asset.assetTag != null)
+                        Text(
+                          asset.assetTag!,
+                          style: TextStyle(color: bos.muted, fontSize: 11.5),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }

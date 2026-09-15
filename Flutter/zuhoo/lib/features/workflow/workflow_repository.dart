@@ -18,6 +18,19 @@ class WorkflowRepository {
 
   static const _base = '/workflows';
 
+  /// The workflows in force.
+  ///
+  /// What a new service request can actually be put on: a switched-off
+  /// workflow still governs every request already walking through it, so this
+  /// is a narrower list than the full one and its own endpoint.
+  Future<List<WorkflowTemplate>> activeWorkflows() async {
+    final list = await _api.get<List<dynamic>>('/workflows/active');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(WorkflowTemplate.fromJson)
+        .toList(growable: false);
+  }
+
   Future<PagedResponse<WorkflowTemplate>> templates({
     int page = 0,
     int size = 30,
@@ -155,3 +168,10 @@ final workflowDetailProvider =
     FutureProvider.autoDispose.family<WorkflowTemplate, int>(
   (ref, id) => ref.read(workflowRepositoryProvider).template(id),
 );
+
+
+/// The workflows a new request can be put on.
+final activeWorkflowsProvider =
+    FutureProvider.autoDispose<List<WorkflowTemplate>>((ref) {
+  return ref.read(workflowRepositoryProvider).activeWorkflows();
+});

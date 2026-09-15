@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,15 +7,18 @@ import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/config_list.dart' show RowAction;
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/employee_picker.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/search_field.dart';
 import 'application_detail_screen.dart';
 import 'candidate_detail_screen.dart';
 import 'candidate_form_sheet.dart';
 import 'interview_feedback_sheet.dart';
 import 'job_posting_form_sheet.dart';
 import 'recruitment_kpi_screen.dart';
+import 'career_page_screen.dart';
 import 'recruitment_models.dart';
 import 'recruitment_repository.dart';
 
@@ -26,7 +28,9 @@ import 'recruitment_repository.dart';
 /// job adverts without reviewing candidates, or the reverse — so each tab is
 /// gated on its own and disappears rather than erroring.
 class RecruitmentScreen extends ConsumerWidget {
-  const RecruitmentScreen({super.key});
+  const RecruitmentScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -57,6 +61,7 @@ class RecruitmentScreen extends ConsumerWidget {
         // actually role-only server-side, so gating it here too is only ever
         // more conservative than the backend, never less.
         (label: 'Interviews', view: const _InterviewsTab()),
+        (label: 'Offers', view: const _OffersTab()),
         (label: 'Candidates', view: const _CandidatesTab()),
         (label: 'Talent pool', view: const _TalentPoolTab()),
       ],
@@ -94,8 +99,13 @@ class RecruitmentScreen extends ConsumerWidget {
         ),
     };
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -108,6 +118,11 @@ class RecruitmentScreen extends ConsumerWidget {
                 appBar: AppBar(
                   title: const Text('Hiring'),
                   actions: [
+                    IconButton(
+                      onPressed: () => CareerPageScreen.open(context),
+                      tooltip: 'Careers page',
+                      icon: const Icon(Icons.public_outlined),
+                    ),
                     IconButton(
                       onPressed: () => RecruitmentKpiScreen.open(context),
                       tooltip: 'How hiring is going',
@@ -259,6 +274,23 @@ class _JobCardState extends ConsumerState<_JobCard> {
         .watch(permissionControllerProvider)
         .has(RecruitmentPermissions.jobUpdate);
 
+    final actions = <RowAction>[
+      // Editing stays available at every stage — the wording of a live
+      // posting is the thing most often wrong.
+      RowAction(
+        label: 'Edit',
+        onSelected: () => showNewJobPostingSheet(context, existing: job),
+      ),
+      RowAction(
+        label: job.assignedRecruiterName == null
+            ? 'Assign a recruiter'
+            : 'Change recruiter',
+        onSelected: _assignRecruiter,
+      ),
+      if (job.canClose)
+        RowAction(label: 'Close', destructive: true, onSelected: _close),
+    ];
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
@@ -295,6 +327,28 @@ class _JobCardState extends ConsumerState<_JobCard> {
                 ),
                 const SizedBox(width: 8),
                 StatusChip(job.status, dense: true),
+                // Same move as the invoice list: the everyday actions go
+                // behind one control so more than two postings fit on a
+                // screen. Publish stays out below, because for a draft it is
+                // the whole point of the card rather than one option among
+                // several.
+                if (canUpdate && !_busy && actions.isNotEmpty)
+                  PopupMenuButton<int>(
+                    tooltip: 'Actions for ${job.title}',
+                    onSelected: (index) => actions[index].onSelected(),
+                    itemBuilder: (context) => [
+                      for (var i = 0; i < actions.length; i++)
+                        PopupMenuItem(
+                          value: i,
+                          child: Text(
+                            actions[i].label,
+                            style: actions[i].destructive
+                                ? TextStyle(color: bos.danger)
+                                : null,
+                          ),
+                        ),
+                    ],
+                  ),
               ],
             ),
             const SizedBox(height: 9),
@@ -324,67 +378,24 @@ class _JobCardState extends ConsumerState<_JobCard> {
                 'posting is still open.',
               ),
             ],
-            if (canUpdate) ...[
+            if (canUpdate && _busy) ...[
               const SizedBox(height: 12),
-              if (_busy)
-                const Loader(padding: 6)
-              else
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    // Editing stays open at every stage — the wording of a
-                    // live posting is the thing most often wrong.
-                    OutlinedButton.icon(
-                      onPressed: () =>
-                          showNewJobPostingSheet(context, existing: job),
-                      icon: const Icon(Icons.edit_outlined, size: 16),
-                      label: const Text('Edit'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(0, 36),
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _assignRecruiter,
-                      icon: const Icon(Icons.person_add_alt_rounded, size: 16),
-                      label: Text(
-                        job.assignedRecruiterName == null
-                            ? 'Assign a recruiter'
-                            : 'Change recruiter',
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(0, 36),
-                      ),
-                    ),
-                    if (job.canPublish)
-                      FilledButton.icon(
-                        onPressed: () => _run(
-                          () => ref
-                              .read(recruitmentRepositoryProvider)
-                              .publishJob(job.id),
-                          '${job.title} is live.',
-                        ),
-                        icon: const Icon(Icons.publish_rounded, size: 16),
-                        label: Text(job.isDraft ? 'Publish' : 'Reopen'),
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(0, 36),
-                        ),
-                      ),
-                    if (job.canClose)
-                      OutlinedButton.icon(
-                        onPressed: _close,
-                        icon: const Icon(Icons.block_rounded, size: 16),
-                        label: const Text('Close'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: bos.danger,
-                          side: BorderSide(
-                            color: bos.danger.withValues(alpha: 0.4),
-                          ),
-                          minimumSize: const Size(0, 36),
-                        ),
-                      ),
-                  ],
+              const Loader(padding: 6),
+            ] else if (canUpdate && job.canPublish) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _run(
+                  () => ref
+                      .read(recruitmentRepositoryProvider)
+                      .publishJob(job.id),
+                  '${job.title} is live.',
                 ),
+                icon: const Icon(Icons.publish_rounded, size: 16),
+                label: Text(job.isDraft ? 'Publish' : 'Reopen'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(38),
+                ),
+              ),
             ],
           ],
         ),
@@ -429,7 +440,7 @@ class _ApplicationsTab extends ConsumerWidget {
             async: ref.watch(applicationsProvider),
             onRefresh: () => ref.read(applicationsProvider.notifier).refresh(),
             onLoadMore: () => ref.read(applicationsProvider.notifier).loadMore(),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             emptyTitle: 'No applicants',
             emptyMessage: 'Nobody has applied at this stage yet.',
             emptyIcon: Icons.person_search_outlined,
@@ -614,6 +625,153 @@ class _InterviewsTab extends ConsumerWidget {
   }
 }
 
+// ── Offers ────────────────────────────────────────────────────
+
+/// Every offer across every application, in one place — otherwise an offer
+/// only exists per-candidate, on that application's own detail screen, with
+/// no way to see "what's outstanding" across the whole pipeline at once.
+class _OffersTab extends ConsumerWidget {
+  const _OffersTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      children: [
+        const _OfferFilter(),
+        Expanded(
+          child: PagedListView<JobOffer>(
+            async: ref.watch(offersProvider),
+            onRefresh: () => ref.read(offersProvider.notifier).refresh(),
+            onLoadMore: () => ref.read(offersProvider.notifier).loadMore(),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+            emptyTitle: 'No offers',
+            emptyMessage: 'Offers made to candidates appear here.',
+            emptyIcon: Icons.mail_outline_rounded,
+            errorMessage: 'Could not load offers.',
+            itemBuilder: (context, offer) => _OfferRow(offer: offer),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _OfferFilter extends ConsumerWidget {
+  const _OfferFilter();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selected = ref.watch(offerFilterProvider);
+    const statuses = OfferStatus.pipeline;
+
+    return SizedBox(
+      height: scaledStripHeight(context, 44),
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        itemCount: statuses.length + 1,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final status = i == 0 ? null : statuses[i - 1];
+          return _FilterChip(
+            label: status == null ? 'All' : Fmt.label(status),
+            active: selected == status,
+            onTap: () => ref
+                .read(offerFilterProvider.notifier)
+                .set(selected == status ? null : status),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _OfferRow extends StatelessWidget {
+  const _OfferRow({required this.offer});
+
+  final JobOffer offer;
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () =>
+            ApplicationDetailScreen.open(context, id: offer.jobApplicationId),
+        child: AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          offer.applicantName ?? 'Candidate',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: bos.text,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (offer.offeredJobTitle != null)
+                          Text(
+                            offer.offeredJobTitle!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: bos.textSecondary,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Expired is derived, same as an overdue invoice — a sent
+                  // offer past its own expiry date should read that way
+                  // immediately, not just once something reloads it.
+                  StatusChip(
+                    offer.expired ? 'EXPIRED' : offer.status,
+                    dense: true,
+                  ),
+                ],
+              ),
+              if (offer.grossSalary != null || offer.expiryDate != null) ...[
+                const SizedBox(height: 9),
+                Row(
+                  children: [
+                    if (offer.grossSalary != null)
+                      _Meta(
+                        icon: Icons.payments_outlined,
+                        text: Fmt.money(offer.grossSalary),
+                      ),
+                    if (offer.grossSalary != null && offer.expiryDate != null)
+                      const SizedBox(width: 12),
+                    if (offer.expiryDate != null)
+                      _Meta(
+                        icon: Icons.event_outlined,
+                        text: 'Expires ${Fmt.dateShort(offer.expiryDate)}',
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ── Candidates ────────────────────────────────────────────────
 
 class _CandidatesTab extends ConsumerWidget {
@@ -632,7 +790,7 @@ class _CandidatesTab extends ConsumerWidget {
             async: ref.watch(candidatesProvider),
             onRefresh: () => ref.read(candidatesProvider.notifier).refresh(),
             onLoadMore: () => ref.read(candidatesProvider.notifier).loadMore(),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             emptyTitle: 'No candidates',
             emptyMessage: 'Everyone who has ever applied appears here.',
             emptyIcon: Icons.people_outline_rounded,
@@ -712,7 +870,7 @@ class _TalentPoolTab extends ConsumerWidget {
             async: ref.watch(talentPoolProvider),
             onRefresh: () => ref.read(talentPoolProvider.notifier).refresh(),
             onLoadMore: () => ref.read(talentPoolProvider.notifier).loadMore(),
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             emptyTitle: 'Nobody pooled yet',
             emptyMessage:
                 'A rejected or withdrawn applicant worth keeping warm for '
@@ -933,59 +1091,15 @@ class _PoolCardState extends ConsumerState<_PoolCard> {
   }
 }
 
-class _SearchField extends StatefulWidget {
+class _SearchField extends StatelessWidget {
   const _SearchField({required this.hint, required this.onChanged});
 
   final String hint;
   final ValueChanged<String> onChanged;
 
   @override
-  State<_SearchField> createState() => _SearchFieldState();
-}
-
-class _SearchFieldState extends State<_SearchField> {
-  final _controller = TextEditingController();
-  Timer? _debounce;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    _debounce =
-        Timer(const Duration(milliseconds: 400), () => widget.onChanged(value));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: TextField(
-        controller: _controller,
-        onChanged: _onChanged,
-        textInputAction: TextInputAction.search,
-        decoration: InputDecoration(
-          hintText: widget.hint,
-          isDense: true,
-          prefixIcon: const Icon(Icons.search_rounded),
-          suffixIcon: _controller.text.isEmpty
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  tooltip: 'Clear',
-                  onPressed: () {
-                    _controller.clear();
-                    _debounce?.cancel();
-                    widget.onChanged('');
-                    setState(() {});
-                  },
-                ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+        child: AppSearchField(hint: hint, onChanged: onChanged),
+      );
 }

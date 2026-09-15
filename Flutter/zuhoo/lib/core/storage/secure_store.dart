@@ -17,6 +17,12 @@ class SecureStore {
   static const _permissions = 'permissions';
   static const _permissionCatalog = 'permission_catalog';
 
+  /// Marks the session as the public read-only demo rather than a real
+  /// sign-in. Angular keeps the same flag under `bos-demo`; both exist so the
+  /// banner can say so, since nothing in the token itself distinguishes a
+  /// demo session from an ordinary one.
+  static const _demo = 'demo_session';
+
   // ── Tokens ──────────────────────────────────────────────────
   Future<String?> readAccessToken() => _storage.read(key: _accessToken);
   Future<String?> readRefreshToken() => _storage.read(key: _refreshToken);
@@ -29,6 +35,12 @@ class SecureStore {
       await _storage.write(key: _refreshToken, value: refreshToken);
     }
   }
+
+  // ── Demo ────────────────────────────────────────────────────
+  Future<bool> readIsDemo() async =>
+      await _storage.read(key: _demo) == '1';
+
+  Future<void> writeIsDemo() => _storage.write(key: _demo, value: '1');
 
   // ── User ────────────────────────────────────────────────────
   Future<Map<String, dynamic>?> readUser() => _readJson(_user);
@@ -172,6 +184,7 @@ class SecureStore {
       _storage.delete(key: _adminPermissions),
       _storage.delete(key: _adminPermissionCatalog),
       _storage.delete(key: _impersonation),
+      _storage.delete(key: _demo),
     ]);
   }
 

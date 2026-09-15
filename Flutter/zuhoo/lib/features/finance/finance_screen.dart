@@ -7,6 +7,7 @@ import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/config_list.dart' show RowAction;
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
@@ -18,9 +19,11 @@ import 'expenses_tab.dart';
 import 'finance_models.dart';
 import 'finance_overview_tab.dart';
 import 'finance_repository.dart';
+import 'invoice_extras.dart';
 import 'invoice_form_sheet.dart';
 import 'record_payment_sheet.dart';
 import 'submit_expense_sheet.dart';
+import 'wallet_topup_sheet.dart';
 
 /// Finance, cut down to what a phone can actually do.
 ///
@@ -36,7 +39,9 @@ import 'submit_expense_sheet.dart';
 /// numbers, claim an expense, approve someone else's, chase an invoice, and
 /// look at the wallet.
 class FinanceScreen extends ConsumerWidget {
-  const FinanceScreen({super.key});
+  const FinanceScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -66,8 +71,13 @@ class FinanceScreen extends ConsumerWidget {
 
     final canRaiseInvoice = permissions.has(FinancePermissions.invoiceCreate);
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -139,7 +149,7 @@ class _InvoicesTab extends ConsumerWidget {
             emptyTitle: 'No invoices here',
             emptyMessage: 'Invoices you raise appear here with what is owed.',
             errorMessage: 'Could not load your invoices.',
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
             itemBuilder: (context, invoice) => _InvoiceCard(invoice: invoice),
           ),
         ),
@@ -316,6 +326,70 @@ class _InvoiceCardState extends ConsumerState<_InvoiceCard> {
     final canSend = permissions.has(ReceivablesPermissions.invoiceSend);
     final canCancel = permissions.has(ReceivablesPermissions.invoiceCancel);
 
+    // Ordered by how often each is wanted: read it, take money against it,
+    // then the rarer paperwork, then the destructive one last.
+    final actions = <RowAction>[
+      RowAction(label: 'Open PDF', onSelected: _open),
+      if (canRecordPayment && invoice.balanceAmount > 0)
+        RowAction(
+          label: 'Record payment',
+          onSelected: () => showRecordPaymentSheet(context, against: invoice),
+        ),
+      // Sending is draft-only in practice: an issued invoice has already gone.
+      if (canSend && invoice.isDraft)
+        RowAction(
+          label: 'Send to client',
+          onSelected: () => _act(
+            (repo) => repo.sendInvoice(invoice.id),
+            'Sent to the client.',
+            'Could not send that invoice.',
+          ),
+        ),
+      RowAction(
+        label: 'Summarise',
+        onSelected: () => showInvoiceSummarySheet(context, invoice: invoice),
+      ),
+      if (canRecordPayment && invoice.balanceAmount > 0)
+        RowAction(
+          label: 'Adjust paid',
+          onSelected: () => showAdjustPaidSheet(context, invoice: invoice),
+        ),
+      // Editing and deleting are draft-only: the backend refuses both for
+      // anything that has been issued.
+      if (canEdit && invoice.isDraft)
+        RowAction(
+          label: 'Edit',
+          onSelected: () => showEditInvoiceSheet(context, invoice),
+        ),
+      if (canDelete && invoice.isDraft)
+        RowAction(
+          label: 'Delete',
+          destructive: true,
+          onSelected: () => _delete(invoice),
+        ),
+      // Cancelling stays open while anything is still owed.
+      if (canCancel && !invoice.isDraft && invoice.balanceAmount > 0)
+        RowAction(
+          label: 'Cancel invoice',
+          destructive: true,
+          onSelected: () async {
+            final confirmed = await confirmAction(
+              context,
+              title: 'Cancel ${invoice.invoiceNumber}?',
+              message: 'It stops counting towards what is owed. Payments '
+                  'already recorded against it stay where they are.',
+              action: 'Cancel it',
+            );
+            if (!confirmed || !mounted) return;
+            await _act(
+              (repo) => repo.cancelInvoice(invoice.id),
+              'Cancelled.',
+              'Could not cancel that invoice.',
+            );
+          },
+        ),
+    ];
+
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -339,6 +413,37 @@ class _InvoiceCardState extends ConsumerState<_InvoiceCard> {
                 invoice.isOverdue ? InvoiceStatus.overdue : invoice.status,
                 dense: true,
               ),
+              // Everything an invoice can do lives behind this, the way a
+              // receipt's actions already did. Six full-width buttons stacked
+              // under each card meant barely two invoices fitted on a phone,
+              // and the list is for scanning what is owed, not for acting on
+              // every row in turn.
+              if (_downloading || _busy)
+                const Padding(
+                  padding: EdgeInsets.only(left: 4),
+                  child: SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else if (actions.isNotEmpty)
+                PopupMenuButton<int>(
+                  tooltip: 'Actions for ${invoice.invoiceNumber}',
+                  onSelected: (index) => actions[index].onSelected(),
+                  itemBuilder: (context) => [
+                    for (var i = 0; i < actions.length; i++)
+                      PopupMenuItem(
+                        value: i,
+                        child: Text(
+                          actions[i].label,
+                          style: actions[i].destructive
+                              ? TextStyle(color: bos.danger)
+                              : null,
+                        ),
+                      ),
+                  ],
+                ),
             ],
           ),
           if (invoice.description != null &&
@@ -399,113 +504,6 @@ class _InvoiceCardState extends ConsumerState<_InvoiceCard> {
                 ),
             ],
           ),
-          const SizedBox(height: 12),
-          if (_downloading || _busy)
-            const Loader(padding: 6)
-          else ...[
-            OutlinedButton.icon(
-              onPressed: _open,
-              icon: const Icon(Icons.picture_as_pdf_outlined, size: 17),
-              label: const Text('Open PDF'),
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size.fromHeight(40),
-              ),
-            ),
-            if (canRecordPayment && invoice.balanceAmount > 0) ...[
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () =>
-                    showRecordPaymentSheet(context, against: invoice),
-                icon: const Icon(Icons.payments_outlined, size: 17),
-                label: const Text('Record payment'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(40),
-                ),
-              ),
-            ],
-            // Sending is draft-only in practice: an issued invoice has already
-            // gone. Cancelling stays open while anything is still owed.
-            if (canSend && invoice.isDraft) ...[
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () => _act(
-                  (repo) => repo.sendInvoice(invoice.id),
-                  'Sent to the client.',
-                  'Could not send that invoice.',
-                ),
-                icon: const Icon(Icons.send_rounded, size: 17),
-                label: const Text('Send to client'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(40),
-                ),
-              ),
-            ],
-            if (canCancel && !invoice.isDraft && invoice.balanceAmount > 0) ...[
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final confirmed = await confirmAction(
-                    context,
-                    title: 'Cancel ${invoice.invoiceNumber}?',
-                    message:
-                        'It stops counting towards what is owed. Payments '
-                        'already recorded against it stay where they are.',
-                    action: 'Cancel it',
-                  );
-                  if (!confirmed || !mounted) return;
-                  await _act(
-                    (repo) => repo.cancelInvoice(invoice.id),
-                    'Cancelled.',
-                    'Could not cancel that invoice.',
-                  );
-                },
-                icon: Icon(Icons.block_rounded, size: 17, color: bos.danger),
-                label: Text('Cancel', style: TextStyle(color: bos.danger)),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(40),
-                ),
-              ),
-            ],
-            // Editing and deleting are draft-only: the backend refuses both
-            // for anything that has been issued.
-            if (invoice.isDraft && (canEdit || canDelete)) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  if (canEdit)
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => showEditInvoiceSheet(context, invoice),
-                        icon: const Icon(Icons.edit_outlined, size: 16),
-                        label: const Text('Edit'),
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size(0, 38),
-                        ),
-                      ),
-                    ),
-                  if (canEdit && canDelete) const SizedBox(width: 8),
-                  if (canDelete)
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => _delete(invoice),
-                        icon: Icon(Icons.delete_outline_rounded,
-                            size: 16, color: bos.danger),
-                        label: Text(
-                          'Delete',
-                          style: TextStyle(color: bos.danger),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(
-                            color: bos.danger.withValues(alpha: 0.4),
-                          ),
-                          minimumSize: const Size(0, 38),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ],
         ],
       ),
     );
@@ -568,6 +566,15 @@ class _WalletTab extends ConsumerWidget {
                       ],
                     ),
                   ],
+                  const SizedBox(height: 14),
+                  OutlinedButton.icon(
+                    onPressed: () => showWalletTopUpSheet(context),
+                    icon: const Icon(Icons.add_card_outlined, size: 17),
+                    label: const Text('Top up'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(40),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -585,7 +592,7 @@ class _WalletTab extends ConsumerWidget {
             emptyTitle: 'No transactions',
             emptyMessage: 'Top-ups and charges appear here.',
             errorMessage: 'Could not load your transactions.',
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             itemBuilder: (context, tx) => _TransactionRow(transaction: tx),
           ),
         ),

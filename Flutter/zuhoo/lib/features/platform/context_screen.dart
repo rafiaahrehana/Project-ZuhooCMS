@@ -8,6 +8,7 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
 import 'context_models.dart';
+import 'context_switch_detail.dart';
 import 'context_repository.dart';
 import 'platform_models.dart';
 import 'platform_repository.dart';
@@ -648,6 +649,9 @@ class _HistoryRow extends StatelessWidget {
     final bos = Theme.of(context).bos;
 
     return AppCard(
+      // The row summarises; the record itself carries where the access came
+      // from, which is what an audit actually turns on.
+      onTap: () => ContextSwitchDetailScreen.open(context, id: entry.id),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

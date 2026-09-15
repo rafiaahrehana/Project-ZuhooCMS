@@ -5,6 +5,13 @@
          `FirebaseMessaging.requestPermission()` triggers can show anything —
          without it, push notifications silently never appear. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Foreground-only, for GPS-tagged attendance check-in/out. No background
+         variant — the app never asks where anyone is except at the moment they
+         tap the button themselves. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- For voice input in the AI assistant. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
     <application
         android:label="Zuhoo"

@@ -11,9 +11,12 @@ import 'grant_leave_balance_sheet.dart';
 import 'leave_approvals_tab.dart';
 import 'leave_models.dart';
 import 'leave_repository.dart';
+import '../../app/shell.dart';
 
 class LeaveScreen extends ConsumerWidget {
-  const LeaveScreen({super.key});
+  const LeaveScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -45,8 +48,13 @@ class LeaveScreen extends ConsumerWidget {
     final canApply = async.value?.hasEmployeeRecord ?? false;
     final canGrant = permissions.has(LeavePermissions.balanceCreate);
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -61,6 +69,7 @@ class LeaveScreen extends ConsumerWidget {
               return Scaffold(
                 backgroundColor: bos.bgPage,
                 appBar: AppBar(
+                  leading: const AppDrawerButton(),
                   title: const Text('Leave'),
                   bottom: TabBar(
                     tabs: [for (final tab in tabs) Tab(text: tab.label)],

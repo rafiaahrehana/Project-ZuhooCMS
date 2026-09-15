@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'auth/auth_controller.dart';
 import 'auth/auth_repository.dart';
+import 'chat/chat_socket_service.dart';
 import 'network/api_client.dart';
 import 'storage/secure_store.dart';
 
@@ -46,4 +47,10 @@ final authRepositoryProvider = Provider<AuthRepository>(
     ref.watch(apiClientProvider),
     ref.watch(secureStoreProvider),
   ),
+);
+
+/// One socket for the whole app session — every chat surface subscribes to
+/// its own destination on this same connection rather than opening one each.
+final chatSocketServiceProvider = Provider<ChatSocketService>(
+  (ref) => ChatSocketService(ref.watch(secureStoreProvider)),
 );

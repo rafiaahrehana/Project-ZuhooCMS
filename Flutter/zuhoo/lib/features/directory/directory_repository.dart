@@ -49,6 +49,24 @@ class DirectoryRepository {
         },
       );
 
+  /// The people list as a PDF, narrowed the same way the screen is.
+  ///
+  /// The same filters as [people], including `excludeOwner` — otherwise the
+  /// printed list and the one on screen would not match, which is exactly the
+  /// sort of discrepancy that gets noticed at the wrong moment.
+  Future<List<int>> peoplePdf({
+    String? search,
+    int? departmentId,
+  }) =>
+      _api.getBytes(
+        '/employees/pdf',
+        query: {
+          'search': search,
+          'departmentId': departmentId,
+          'excludeOwner': true,
+        },
+      );
+
   Future<Person> person(int id) async {
     final json = await _api.get<Map<String, dynamic>>('/employees/$id');
     return Person.fromJson(json);

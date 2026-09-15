@@ -35,17 +35,39 @@ final myTicketsProvider =
 );
 
 /// The staff inbox of this company's own clients' tickets.
+/// Which status the client-chat inbox is narrowed to. Null is all of them.
+class ClientTicketStatusController extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String? status) {
+    if (state == status) return;
+    state = status;
+  }
+}
+
+final clientTicketStatusProvider =
+    NotifierProvider<ClientTicketStatusController, String?>(
+  ClientTicketStatusController.new,
+);
+
 class ClientTicketsController extends AsyncNotifier<PagedState<SupportTicket>>
     with PagedLoader<SupportTicket> {
   @override
   Future<PagedState<SupportTicket>> build() {
     ref.watch(currentUserProvider);
+    // Watched, not read: choosing a status is what reloads the inbox. The
+    // backend splits it by path rather than by query parameter.
+    ref.watch(clientTicketStatusProvider);
     return loadFirstPage();
   }
 
   @override
   Future<PagedResponse<SupportTicket>> fetchPage(int page) =>
-      ref.read(supportRepositoryProvider).clientTickets(page: page);
+      ref.read(supportRepositoryProvider).clientTickets(
+            status: ref.read(clientTicketStatusProvider),
+            page: page,
+          );
 }
 
 final clientTicketsProvider =
@@ -55,9 +77,18 @@ final clientTicketsProvider =
 
 /// One ticket. Auto-disposed: status, assignee and SLA state all move while
 /// you are not looking at it, so re-reading on open is the right default.
+///
+/// Two endpoints for the one record, chosen by who is asking.
+/// `GET /tickets/{id}` is gated on the staff roles and excludes CLIENT
+/// outright, so a portal client opening their own ticket has to go through
+/// `/tickets/client/{id}`, which is scoped to their own account.
 final ticketDetailProvider =
     FutureProvider.autoDispose.family<SupportTicket, int>(
-  (ref, id) => ref.watch(supportRepositoryProvider).byId(id),
+  (ref, id) {
+    final repo = ref.watch(supportRepositoryProvider);
+    final isClient = ref.watch(currentUserProvider)?.isClient ?? false;
+    return isClient ? repo.myClientTicket(id) : repo.byId(id);
+  },
 );
 
 /// Which side of a conversation this thread is.

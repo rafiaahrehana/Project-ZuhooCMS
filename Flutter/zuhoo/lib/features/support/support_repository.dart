@@ -62,15 +62,28 @@ class SupportRepository {
   /// `ticketType`, so asking the wrong one returns the wrong conversation
   /// entirely rather than an empty list.
   Future<PagedResponse<SupportTicket>> clientTickets({
+    String? status,
     int page = 0,
     int size = 20,
   }) =>
       _api.getPaged(
-        '$_tickets/company/client-tickets',
+        status == null
+            ? '$_tickets/company/client-tickets'
+            : '$_tickets/company/client-tickets/status/$status',
         SupportTicket.fromJson,
         page: page,
         size: size,
       );
+
+  /// One of the signed-in client's own tickets.
+  ///
+  /// `hasRole('CLIENT')` — a staff member reads the same ticket through
+  /// [ticket] instead. Two endpoints for one record because the scoping
+  /// differs: this one is keyed to the caller's own client account.
+  Future<SupportTicket> myClientTicket(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_tickets/client/$id');
+    return SupportTicket.fromJson(json);
+  }
 
   // ── Messages ────────────────────────────────────────────────
 

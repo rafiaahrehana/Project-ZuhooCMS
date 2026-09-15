@@ -35,11 +35,6 @@ class ItamRepository {
   Future<PagedResponse<Asset>> assets({int page = 0, int size = 20}) =>
       _api.getPaged(_assets, Asset.fromJson, page: page, size: size);
 
-  Future<Asset> asset(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_assets/$id');
-    return Asset.fromJson(json);
-  }
-
   Future<Asset> createAsset(AssetRequest request) async {
     final json =
         await _api.post<Map<String, dynamic>>(_assets, request.toJson());
@@ -74,6 +69,34 @@ class ItamRepository {
     return Asset.fromJson(json);
   }
 
+  /// Everything one person is holding. A page on the wire; one generous page
+  /// here, since nobody is issued fifty laptops.
+  Future<List<Asset>> assetsForEmployee(int employeeId) async {
+    final page = await _api.getPaged(
+      '$_assets/employee/$employeeId',
+      Asset.fromJson,
+      page: 0,
+      size: 50,
+    );
+    return page.content;
+  }
+
+  /// Writes a piece of kit off for good.
+  ///
+  /// Not the same as deleting it: the asset stays on the books as disposed,
+  /// which is what an audit needs. The reason is an optional query parameter,
+  /// and it is the only record of why — so the sheet asks for it even though
+  /// the backend does not insist.
+  Future<Asset> disposeAsset(int id, {String? reason}) async {
+    final trimmed = reason?.trim();
+    final query = (trimmed == null || trimmed.isEmpty)
+        ? ''
+        : '?reason=${Uri.encodeQueryComponent(trimmed)}';
+    final json =
+        await _api.patch<Map<String, dynamic>>('$_assets/$id/dispose$query');
+    return Asset.fromJson(json);
+  }
+
   Future<Asset> unassignAsset(int id) async {
     final json = await _api.patch<Map<String, dynamic>>('$_assets/$id/unassign');
     return Asset.fromJson(json);
@@ -90,12 +113,18 @@ class ItamRepository {
 
   // ── Software ────────────────────────────────────────────────
 
+  /// The licence register, optionally narrowed to one state.
+  ///
+  /// The plain list takes no status parameter — there is a separate path per
+  /// status instead — so filtering changes the URL rather than adding a query
+  /// string.
   Future<PagedResponse<SoftwareLicense>> licenses({
+    String? status,
     int page = 0,
     int size = 20,
   }) =>
       _api.getPaged(
-        _software,
+        status == null ? _software : '$_software/status/$status',
         SoftwareLicense.fromJson,
         page: page,
         size: size,
@@ -144,6 +173,35 @@ class ItamRepository {
     return OffboardingChecklist.fromJson(json);
   }
 
+  /// One leaver's checklist. There is at most one per employee.
+  Future<OffboardingChecklist> checklistForEmployee(int employeeId) async {
+    final json = await _api.get<Map<String, dynamic>>(
+      '$_offboarding/employee/$employeeId',
+    );
+    return OffboardingChecklist.fromJson(json);
+  }
+
+  Future<OffboardingChecklist> checklist(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_offboarding/$id');
+    return OffboardingChecklist.fromJson(json);
+  }
+
+  /// The ones still open. A bare list rather than a page, unlike [checklists].
+  Future<List<OffboardingChecklist>> pendingChecklists() async {
+    final list = await _api.get<List<dynamic>>('$_offboarding/pending');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(OffboardingChecklist.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Removes a checklist. Unusually for a delete, this one answers with the
+  /// record it removed.
+  Future<OffboardingChecklist> deleteChecklist(int id) async {
+    final json = await _api.delete<Map<String, dynamic>>('$_offboarding/$id');
+    return OffboardingChecklist.fromJson(json);
+  }
+
   /// Ticks one step off.
   ///
   /// Every step has its own endpoint and they all take the same body, so the
@@ -152,17 +210,57 @@ class ItamRepository {
   ///
   /// There is no un-tick: the backend exposes no endpoint to clear a step, so
   /// the UI must not offer a toggle that can only travel one way.
+  ///
+  /// The five step endpoints answer `ResponseEntity<Void>` — an empty body,
+  /// not the updated checklist — so this re-reads it rather than parsing the
+  /// response. Parsing it threw a TypeError, which is not a DioException and
+  /// so surfaced as the generic "Something went wrong".
   Future<OffboardingChecklist> completeStep(
     int checklistId,
     String stepPath, {
     String? notes,
   }) async {
     final trimmed = notes?.trim();
-    final json = await _api.patch<Map<String, dynamic>>(
+    await _api.patch<dynamic>(
       '$_offboarding/$checklistId/$stepPath',
       {if (trimmed != null && trimmed.isNotEmpty) 'notes': trimmed},
     );
-    return OffboardingChecklist.fromJson(json);
+    return checklist(checklistId);
+  }
+
+  /// Who has had what. Every hand-over and return across the company, newest
+  /// first. A `Page`, so one generous page rather than paging a log nobody
+  /// scrolls to the bottom of.
+  Future<List<AssetHistoryEntry>> assetHistory({
+    int? assetId,
+    int? employeeId,
+  }) async {
+    final path = assetId != null
+        ? '/hr/asset-history/asset/$assetId'
+        : employeeId != null
+            ? '/hr/asset-history/employee/$employeeId'
+            : '/hr/asset-history';
+    final page = await _api.getPaged(
+      path,
+      AssetHistoryEntry.fromJson,
+      page: 0,
+      size: 50,
+    );
+    return page.content;
+  }
+
+  /// Brings assets in from a CSV. What it could not use comes back row by row
+  /// with a reason.
+  Future<AssetImportResult> importAssets(
+    String filePath,
+    String fileName,
+  ) async {
+    final json = await _api.postFile<Map<String, dynamic>>(
+      '/itam/asset-import',
+      filePath,
+      fileName,
+    );
+    return AssetImportResult.fromJson(json);
   }
 }
 
@@ -219,12 +317,17 @@ class LicensesController extends AsyncNotifier<PagedState<SoftwareLicense>>
   @override
   Future<PagedState<SoftwareLicense>> build() {
     ref.watch(currentUserProvider);
+    // Watched, not read: choosing a status is what reloads the register.
+    ref.watch(licenceStatusFilterProvider);
     return loadFirstPage();
   }
 
   @override
   Future<PagedResponse<SoftwareLicense>> fetchPage(int page) =>
-      ref.read(itamRepositoryProvider).licenses(page: page);
+      ref.read(itamRepositoryProvider).licenses(
+            status: ref.read(licenceStatusFilterProvider),
+            page: page,
+          );
 
   Future<SoftwareLicense> create(SoftwareLicenseRequest request) async {
     final created =
@@ -232,7 +335,28 @@ class LicensesController extends AsyncNotifier<PagedState<SoftwareLicense>>
     await refresh();
     return created;
   }
+
+  /// Swaps the row rather than reloading — an edit does not move a licence in
+  /// the list.
+  void apply(SoftwareLicense updated) =>
+      replaceItem((licence) => licence.id == updated.id, updated);
 }
+
+/// Which state of licence the register is showing. Null is all of them.
+class LicenceStatusFilterController extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String? status) {
+    if (state == status) return;
+    state = status;
+  }
+}
+
+final licenceStatusFilterProvider =
+    NotifierProvider<LicenceStatusFilterController, String?>(
+  LicenceStatusFilterController.new,
+);
 
 final licensesProvider =
     AsyncNotifierProvider<LicensesController, PagedState<SoftwareLicense>>(
@@ -275,4 +399,32 @@ class OffboardingController extends AsyncNotifier<List<OffboardingChecklist>> {
 final offboardingProvider =
     AsyncNotifierProvider<OffboardingController, List<OffboardingChecklist>>(
   OffboardingController.new,
+);
+
+
+/// Checklists that are still open — the ones somebody has to work through.
+final pendingOffboardingProvider =
+    FutureProvider.autoDispose<List<OffboardingChecklist>>((ref) {
+  return ref.read(itamRepositoryProvider).pendingChecklists();
+});
+
+/// One leaver's checklist, looked up by the person rather than by the record.
+final offboardingForEmployeeProvider =
+    FutureProvider.autoDispose.family<OffboardingChecklist, int>(
+  (ref, employeeId) =>
+      ref.read(itamRepositoryProvider).checklistForEmployee(employeeId),
+);
+
+/// Where the company's kit has been.
+final assetHistoryProvider =
+    FutureProvider.autoDispose<List<AssetHistoryEntry>>((ref) {
+  return ref.read(itamRepositoryProvider).assetHistory();
+});
+
+
+/// What one person is holding right now.
+final assetsForEmployeeProvider =
+    FutureProvider.autoDispose.family<List<Asset>, int>(
+  (ref, employeeId) =>
+      ref.read(itamRepositoryProvider).assetsForEmployee(employeeId),
 );

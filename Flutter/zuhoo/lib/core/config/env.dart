@@ -50,8 +50,13 @@ class Env {
   /// `resolveImageUrl()` strips `/api` off `apiUrl` for exactly this.
   static String get imgUrl => host;
 
-  static const Duration connectTimeout = Duration(seconds: 20);
-  static const Duration receiveTimeout = Duration(seconds: 30);
+  /// Base for the live-chat WebSocket. Mirrors Angular's `ChatSocketService`,
+  /// which derives this the same way from `environment.apiUrl` rather than
+  /// carrying a separate config value.
+  static String get wsUrl => host.replaceFirst('http', 'ws');
+
+  static const Duration connectTimeout = Duration(seconds: 60);
+  static const Duration receiveTimeout = Duration(seconds: 90);
 
   /// Resolves a possibly-relative image path returned by the backend into
   /// something [Image.network] can load. Port of `AuthService.resolveImageUrl`.

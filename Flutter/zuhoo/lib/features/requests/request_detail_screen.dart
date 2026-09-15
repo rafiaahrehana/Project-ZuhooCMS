@@ -1,27 +1,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/permission_controller.dart';
+import '../../core/chat/live_message_buffer.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/theme/bos_tokens.dart';
+import '../../shared/util/attachment_launcher.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/attachment_picker.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/timeline.dart';
 import 'edit_request_sheet.dart';
 import 'rate_request_sheet.dart';
 import 'request_controllers.dart';
+import 'proposal_section.dart';
 import 'request_models.dart';
 import 'request_repository.dart';
+import 'request_workflow_screen.dart';
 
 /// Opens one request. Pushed rather than routed by path so the list it came
 /// from stays exactly where it was, scroll position included.
 void openRequestDetail(BuildContext context, int id) {
-  Navigator.of(context).push(
-    MaterialPageRoute<void>(builder: (_) => RequestDetailScreen(id: id)),
-  );
+  Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => RequestDetailScreen(id: id)));
 }
 
 class RequestDetailScreen extends ConsumerWidget {
@@ -33,15 +37,20 @@ class RequestDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final bos = Theme.of(context).bos;
     final async = ref.watch(requestDetailProvider(id));
-    final loaded = async.valueOrNull;
+    final loaded = async.value;
 
     // Any one of assign / approve / close will do — that is what the service
     // checks. A closed request is refused outright, so the action goes away.
-    final canRate = loaded != null &&
+    final canRate =
+        loaded != null &&
         loaded.status == RequestStatus.completed &&
         (ref.watch(currentUserProvider)?.isClient ?? false);
 
-    final canEdit = loaded != null &&
+    final isStaff =
+        loaded != null && !(ref.watch(currentUserProvider)?.isClient ?? false);
+
+    final canEdit =
+        loaded != null &&
         loaded.isOpen &&
         ref
             .watch(permissionControllerProvider)
@@ -52,6 +61,15 @@ class RequestDetailScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Request'),
         actions: [
+          // Staff only. The workflow endpoints behind it are all
+          // hasAnyRole('COMPANY_OWNER', 'EMPLOYEE'), so a client who reached
+          // this screen would only find a wall of refusals.
+          if (isStaff)
+            IconButton(
+              tooltip: 'Working on it',
+              icon: const Icon(Icons.build_outlined),
+              onPressed: () => RequestWorkflowScreen.open(context, id: id),
+            ),
           // A client rating their own finished request. Staff never see it:
           // the endpoint is hasRole('CLIENT'), and rating on somebody's behalf
           // is not a thing.
@@ -116,6 +134,11 @@ class RequestDetailScreen extends ConsumerWidget {
                   ),
                 ),
               ],
+              // Ahead of the quotation, because that is the order the two
+              // happen in: staff propose an approach, the client accepts it,
+              // and only then does a binding quotation follow.
+              const SizedBox(height: 20),
+              ProposalSection(id: id, isStaff: isStaff),
               if (request.hasQuotation) ...[
                 const SizedBox(height: 20),
                 _Quotation(request: request),
@@ -267,33 +290,39 @@ class _Facts extends StatelessWidget {
       (label: 'Raised', value: Fmt.date(request.createdAt)),
       (
         label: 'SLA deadline',
-        value: request.slaDeadline == null ? null : Fmt.date(request.slaDeadline)
+        value: request.slaDeadline == null
+            ? null
+            : Fmt.date(request.slaDeadline),
       ),
       (label: 'Assigned to', value: request.assignedEmployeeName),
       (
         label: 'Assigned',
-        value: request.assignedAt == null ? null : Fmt.date(request.assignedAt)
+        value: request.assignedAt == null ? null : Fmt.date(request.assignedAt),
       ),
       (label: 'Client', value: request.clientName),
       (label: 'Package', value: request.packageName),
       (
         label: 'Agreed price',
-        value: request.agreedPrice == null ? null : Fmt.money(request.agreedPrice)
+        value: request.agreedPrice == null
+            ? null
+            : Fmt.money(request.agreedPrice),
       ),
       (
         label: 'Filing reference',
         value: request.govRefNumber == null
             ? null
             : '${request.govRefNumber}'
-                '${request.govRefType != null ? ' (${Fmt.label(request.govRefType)})' : ''}'
+                  '${request.govRefType != null ? ' (${Fmt.label(request.govRefType)})' : ''}',
       ),
       (
         label: 'Completed',
-        value: request.completedAt == null ? null : Fmt.date(request.completedAt)
+        value: request.completedAt == null
+            ? null
+            : Fmt.date(request.completedAt),
       ),
       (
         label: 'Resubmitted',
-        value: request.resubmitCount > 0 ? '${request.resubmitCount}×' : null
+        value: request.resubmitCount > 0 ? '${request.resubmitCount}×' : null,
       ),
     ].where((row) => row.value != null && row.value!.isNotEmpty).toList();
 
@@ -430,9 +459,12 @@ class _DocumentsState extends ConsumerState<_Documents> {
     setState(() => _uploading = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final uploaded =
-          await ref.read(apiClientProvider).uploadDocument(picked.path, picked.name);
-      await ref.read(requestRepositoryProvider).addDocument(
+      final uploaded = await ref
+          .read(apiClientProvider)
+          .uploadDocument(picked.path, picked.name);
+      await ref
+          .read(requestRepositoryProvider)
+          .addDocument(
             widget.id,
             fileName: uploaded.fileName,
             fileUrl: uploaded.fileUrl,
@@ -446,21 +478,6 @@ class _DocumentsState extends ConsumerState<_Documents> {
       );
     } finally {
       if (mounted) setState(() => _uploading = false);
-    }
-  }
-
-  Future<void> _open(String url) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      if (!await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication)) {
-        messenger.showSnackBar(
-          const SnackBar(content: Text('Could not open that document.')),
-        );
-      }
-    } catch (_) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Could not open that document.')),
-      );
     }
   }
 
@@ -501,8 +518,10 @@ class _DocumentsState extends ConsumerState<_Documents> {
                   for (var i = 0; i < documents.length; i++) ...[
                     if (i > 0) Divider(height: 1, color: bos.borderLight),
                     ListTile(
-                      leading:
-                          Icon(Icons.description_outlined, color: bos.textSecondary),
+                      leading: Icon(
+                        Icons.description_outlined,
+                        color: bos.textSecondary,
+                      ),
                       title: Text(
                         documents[i].fileName,
                         maxLines: 1,
@@ -513,9 +532,13 @@ class _DocumentsState extends ConsumerState<_Documents> {
                           ? null
                           : Text(
                               'by ${documents[i].uploadedByName}',
-                              style: TextStyle(color: bos.muted, fontSize: 11.5),
+                              style: TextStyle(
+                                color: bos.muted,
+                                fontSize: 11.5,
+                              ),
                             ),
-                      onTap: () => _open(documents[i].fileUrl),
+                      onTap: () =>
+                          openAttachmentUrl(context, documents[i].fileUrl),
                     ),
                   ],
                 ],
@@ -541,8 +564,31 @@ class _CommentsState extends ConsumerState<_Comments> {
   final _controller = TextEditingController();
   bool _sending = false;
 
+  final _live = LiveMessageBuffer<RequestComment>(
+    idOf: (c) => c.id,
+    createdAtOf: (c) => c.createdAt,
+  );
+  void Function()? _unsubscribeChat;
+
+  @override
+  void initState() {
+    super.initState();
+    // Mirrors Angular's request-detail.ts connectLive(). The backend only
+    // pushes a CLIENT-visibility comment to the other side of the
+    // conversation (ServiceRequestServiceImpl) — an internal-only comment
+    // never arrives here, same split as the ticket screens.
+    _unsubscribeChat = connectLiveMessages<RequestComment>(
+      socket: ref.read(chatSocketServiceProvider),
+      destination: '/user/queue/service-requests/${widget.id}/messages',
+      fromJson: RequestComment.fromJson,
+      buffer: _live,
+      onMessage: () => setState(() {}),
+    );
+  }
+
   @override
   void dispose() {
+    _unsubscribeChat?.call();
     _controller.dispose();
     super.dispose();
   }
@@ -587,7 +633,8 @@ class _CommentsState extends ConsumerState<_Comments> {
                   'Could not load the conversation.',
                   style: TextStyle(color: bos.muted, fontSize: 13),
                 ),
-                data: (comments) {
+                data: (fetched) {
+                  final comments = _live.merge(fetched);
                   if (comments.isEmpty) {
                     return Text(
                       'No comments yet.',
@@ -636,8 +683,11 @@ class _CommentsState extends ConsumerState<_Comments> {
                               color: Colors.white,
                             ),
                           )
-                        : const Icon(Icons.send_rounded,
-                            size: 18, color: Colors.white),
+                        : const Icon(
+                            Icons.send_rounded,
+                            size: 18,
+                            color: Colors.white,
+                          ),
                   ),
                 ],
               ),
@@ -661,10 +711,7 @@ class _Comment extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Avatar(
-          initials: _initials(comment.authorName),
-          size: 30,
-        ),
+        Avatar(initials: _initials(comment.authorName), size: 30),
         const SizedBox(width: 10),
         Expanded(
           child: Column(
@@ -693,7 +740,11 @@ class _Comment extends StatelessWidget {
                   // someone reading it aloud to a client on a call.
                   if (comment.isInternal) ...[
                     const SizedBox(width: 8),
-                    const StatusChip('INTERNAL', label: 'Internal', dense: true),
+                    const StatusChip(
+                      'INTERNAL',
+                      label: 'Internal',
+                      dense: true,
+                    ),
                   ],
                 ],
               ),
@@ -714,8 +765,11 @@ class _Comment extends StatelessWidget {
   }
 
   static String _initials(String? name) {
-    final parts =
-        (name ?? '').trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    final parts = (name ?? '')
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((p) => p.isNotEmpty)
+        .toList();
     if (parts.isEmpty) return '?';
     if (parts.length == 1) return parts.first[0].toUpperCase();
     return (parts.first[0] + parts.last[0]).toUpperCase();
@@ -742,14 +796,13 @@ class _Timeline extends ConsumerWidget {
       children: [
         const SectionHeader('History', icon: Icons.history_rounded),
         AppCard(
-          child: Column(
-            children: [
-              for (var i = 0; i < history.length; i++)
-                _TimelineRow(
-                  change: history[i],
-                  isFirst: i == 0,
-                  isLast: i == history.length - 1,
-                  railColor: bos.border,
+          child: Timeline(
+            railColor: bos.border,
+            tiles: [
+              for (final change in history)
+                TimelineTile(
+                  dotColor: bos.statusColors(change.newStatus).fg,
+                  child: _StatusChangeContent(change: change),
                 ),
             ],
           ),
@@ -759,107 +812,56 @@ class _Timeline extends ConsumerWidget {
   }
 }
 
-class _TimelineRow extends StatelessWidget {
-  const _TimelineRow({
-    required this.change,
-    required this.isFirst,
-    required this.isLast,
-    required this.railColor,
-  });
+class _StatusChangeContent extends StatelessWidget {
+  const _StatusChangeContent({required this.change});
 
   final RequestStatusChange change;
-  final bool isFirst;
-  final bool isLast;
-  final Color railColor;
 
   @override
   Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
-    final colors = bos.statusColors(change.newStatus);
-
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // A rail rather than a plain list: the order of status changes is the
-          // information here, and a column of rows does not convey sequence.
-          SizedBox(
-            width: 22,
-            child: Column(
-              children: [
-                Container(
-                  width: 2,
-                  height: 6,
-                  color: isFirst ? Colors.transparent : railColor,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                change.oldStatus == null
+                    ? Fmt.label(change.newStatus)
+                    : '${Fmt.label(change.oldStatus)} → ${Fmt.label(change.newStatus)}',
+                style: TextStyle(
+                  color: bos.text,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
                 ),
-                Container(
-                  height: 10,
-                  width: 10,
-                  decoration: BoxDecoration(
-                    color: colors.fg,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                Expanded(
-                  child: Container(
-                    width: 2,
-                    color: isLast ? Colors.transparent : railColor,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          change.oldStatus == null
-                              ? Fmt.label(change.newStatus)
-                              : '${Fmt.label(change.oldStatus)} → ${Fmt.label(change.newStatus)}',
-                          style: TextStyle(
-                            color: bos.text,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        Fmt.relative(change.changedAt),
-                        style: TextStyle(color: bos.muted, fontSize: 11),
-                      ),
-                    ],
-                  ),
-                  if (change.changedByName != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      'by ${change.changedByName}',
-                      style: TextStyle(color: bos.muted, fontSize: 11.5),
-                    ),
-                  ],
-                  if (change.reason != null && change.reason!.trim().isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      change.reason!,
-                      style: TextStyle(
-                        color: bos.textSecondary,
-                        fontSize: 12.5,
-                        height: 1.35,
-                      ),
-                    ),
-                  ],
-                ],
               ),
+            ),
+            Text(
+              Fmt.relative(change.changedAt),
+              style: TextStyle(color: bos.muted, fontSize: 11),
+            ),
+          ],
+        ),
+        if (change.changedByName != null) ...[
+          const SizedBox(height: 2),
+          Text(
+            'by ${change.changedByName}',
+            style: TextStyle(color: bos.muted, fontSize: 11.5),
+          ),
+        ],
+        if (change.reason != null && change.reason!.trim().isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            change.reason!,
+            style: TextStyle(
+              color: bos.textSecondary,
+              fontSize: 12.5,
+              height: 1.35,
             ),
           ),
         ],
-      ),
+      ],
     );
   }
 }

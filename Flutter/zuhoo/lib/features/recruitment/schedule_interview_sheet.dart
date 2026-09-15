@@ -11,12 +11,11 @@ import '../directory/directory_models.dart';
 import 'recruitment_models.dart';
 import 'recruitment_repository.dart';
 
-/// Books an interview against an application.
+/// Books an interview against an application, or moves an existing one.
 ///
 /// Returns true when one was scheduled, so the caller can refresh both the
 /// interview list and the application itself — the first round scheduled moves
 /// the application to INTERVIEW_SCHEDULED, which the screen behind is showing.
-/// Schedules an interview, or moves one.
 ///
 /// Rescheduling takes the same shape as scheduling — `PUT` against the same
 /// DTO — so it is the same form with the existing time filled in, rather than

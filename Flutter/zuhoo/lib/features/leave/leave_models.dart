@@ -43,6 +43,13 @@ abstract final class LeavePermissions {
   /// Configuring somebody's entitlement. A separate code from everything
   /// above — deciding leave and granting the days are different jobs.
   static const balanceCreate = 'LEAVE_BALANCE_CREATE';
+
+  /// Reading, changing and removing an entitlement each have their own code.
+  /// Granting days and correcting a figure are not the same job — the second
+  /// changes what somebody already believed they had.
+  static const balanceView = 'LEAVE_BALANCE_VIEW';
+  static const balanceUpdate = 'LEAVE_BALANCE_UPDATE';
+  static const balanceDelete = 'LEAVE_BALANCE_DELETE';
 }
 
 /// PATCH /hr/leaves/{id}/review
@@ -152,6 +159,8 @@ class LeaveBalance {
     required this.usedDays,
     required this.pendingDays,
     required this.remainingDays,
+    this.employeeId,
+    this.employeeName,
   });
 
   final int id;
@@ -165,6 +174,12 @@ class LeaveBalance {
   /// given rather than recomputed here, so the two cannot drift apart and show
   /// an employee a different number of days than HR sees.
   final double remainingDays;
+
+  /// Whose it is. Absent from the "my balances" lists, where it would only
+  /// ever say the reader's own name, and present on the company-wide one.
+  final int? employeeId;
+
+  final String? employeeName;
 
   /// Used plus pending as a share of the entitlement, for the progress bar.
   double get consumedFraction {
@@ -181,6 +196,8 @@ class LeaveBalance {
         usedDays: (json['usedDays'] as num?)?.toDouble() ?? 0,
         pendingDays: (json['pendingDays'] as num?)?.toDouble() ?? 0,
         remainingDays: (json['remainingDays'] as num?)?.toDouble() ?? 0,
+        employeeId: (json['employeeId'] as num?)?.toInt(),
+        employeeName: json['employeeName'] as String?,
       );
 }
 

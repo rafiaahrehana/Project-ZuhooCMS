@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/permission_controller.dart';
 import '../../core/theme/bos_tokens.dart';
+import '../../shared/util/formatters.dart';
+import '../../shared/widgets/config_list.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
 import 'new_ticket_sheet.dart';
@@ -12,7 +14,9 @@ import 'ticket_card.dart';
 import 'ticket_detail_screen.dart';
 
 class SupportScreen extends ConsumerWidget {
-  const SupportScreen({super.key});
+  const SupportScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -40,8 +44,13 @@ class SupportScreen extends ConsumerWidget {
         (label: 'Client chat', view: const _ClientChatTab()),
     ];
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Scaffold(
         backgroundColor: bos.bgPage,
         appBar: AppBar(
@@ -96,21 +105,43 @@ class _ClientChatTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.read(clientTicketsProvider.notifier);
+    final status = ref.watch(clientTicketStatusProvider);
 
-    return PagedListView<SupportTicket>(
-      async: ref.watch(clientTicketsProvider),
-      onRefresh: controller.refresh,
-      onLoadMore: () => guardListAction(context, controller.loadMore),
-      emptyIcon: Icons.chat_bubble_outline_rounded,
-      emptyTitle: 'No client conversations',
-      emptyMessage:
-          'Tickets your own clients raise through their portal land here.',
-      errorMessage: 'Could not load your client conversations.',
-      itemBuilder: (context, ticket) => TicketCard(
-        ticket: ticket,
-        showRaisedBy: true,
-        onTap: () => openTicket(context, ticket.id, ThreadKind.clientChat),
-      ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 90),
+          child: FilterBar(
+            selected: status,
+            onSelected: ref.read(clientTicketStatusProvider.notifier).set,
+            options: [
+              (value: null, label: 'All'),
+              for (final value in TicketStatus.all)
+                (value: value, label: Fmt.label(value)),
+            ],
+          ),
+        ),
+        Expanded(
+          child: PagedListView<SupportTicket>(
+            async: ref.watch(clientTicketsProvider),
+            onRefresh: controller.refresh,
+            onLoadMore: () => guardListAction(context, controller.loadMore),
+            emptyIcon: Icons.chat_bubble_outline_rounded,
+            emptyTitle: 'No client conversations',
+            emptyMessage: status == null
+                ? 'Tickets your own clients raise through their portal land '
+                    'here.'
+                : 'Nothing in that state.',
+            errorMessage: 'Could not load your client conversations.',
+            itemBuilder: (context, ticket) => TicketCard(
+              ticket: ticket,
+              showRaisedBy: true,
+              onTap: () =>
+                  openTicket(context, ticket.id, ThreadKind.clientChat),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

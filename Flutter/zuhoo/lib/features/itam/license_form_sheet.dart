@@ -8,22 +8,29 @@ import '../../shared/widgets/date_field.dart';
 import '../../shared/widgets/primitives.dart';
 import 'itam_models.dart';
 import 'itam_repository.dart';
+import 'software_detail_screen.dart';
 
-/// Registers a software licence.
+/// Registers a software licence, or edits one.
 ///
-/// Create only. Editing one is `PUT /v1/itam/software/{id}`, which the app
-/// does not offer yet — what it does offer is handing seats out, which is the
-/// part that happens away from a desk.
-Future<void> showNewLicenseSheet(BuildContext context) {
+/// The DTO also carries a `passwordHash` for the vendor account. It is
+/// deliberately neither collected nor sent: the response never returns it, so
+/// an edit has nothing to seed it from, and a shared vendor password typed
+/// into a phone is not something this app should ask for.
+Future<void> showNewLicenseSheet(
+  BuildContext context, {
+  SoftwareLicense? existing,
+}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    builder: (_) => const _LicenseFormSheet(),
+    builder: (_) => _LicenseFormSheet(existing: existing),
   );
 }
 
 class _LicenseFormSheet extends ConsumerStatefulWidget {
-  const _LicenseFormSheet();
+  const _LicenseFormSheet({this.existing});
+
+  final SoftwareLicense? existing;
 
   @override
   ConsumerState<_LicenseFormSheet> createState() => _LicenseFormSheetState();
@@ -31,16 +38,28 @@ class _LicenseFormSheet extends ConsumerStatefulWidget {
 
 class _LicenseFormSheetState extends ConsumerState<_LicenseFormSheet> {
   final _formKey = GlobalKey<FormState>();
-  final _softwareName = TextEditingController();
-  final _publisher = TextEditingController();
+  late final _softwareName =
+      TextEditingController(text: widget.existing?.softwareName ?? '');
+  late final _publisher =
+      TextEditingController(text: widget.existing?.publisher ?? '');
+  // The licence key is not on the response, so an edit starts it empty and
+  // the backend keeps what it has unless something is typed.
   final _licenseKey = TextEditingController();
-  final _version = TextEditingController();
-  final _seats = TextEditingController(text: '1');
+  late final _version =
+      TextEditingController(text: widget.existing?.version ?? '');
+  late final _seats = TextEditingController(
+    text: '${widget.existing?.totalSeatsLicensed ?? 1}',
+  );
   final _cost = TextEditingController();
   final _renewalCost = TextEditingController();
 
-  String _licenseType = licenseTypes.first.value;
+  late String _licenseType =
+      licenseTypes.any((t) => t.value == widget.existing?.licenseType)
+          ? widget.existing!.licenseType!
+          : licenseTypes.first.value;
   String _renewalType = licenseRenewalTypes.first.value;
+
+  bool get _isEdit => widget.existing != null;
   late DateTime _purchaseDate = DateTime.now();
   late DateTime _expiryDate = DateTime(
     DateTime.now().year + 1,
@@ -81,28 +100,40 @@ class _LicenseFormSheetState extends ConsumerState<_LicenseFormSheet> {
 
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await ref.read(licensesProvider.notifier).create(
-            SoftwareLicenseRequest(
-              licenseKey: _licenseKey.text,
-              softwareName: _softwareName.text,
-              publisher: _publisher.text,
-              licenseType: _licenseType,
-              totalSeatsLicensed: int.parse(_seats.text.trim()),
-              licensePurchaseDate: Fmt.isoDate(_purchaseDate),
-              licenseExpiryDate: Fmt.isoDate(_expiryDate),
-              licenseCost: double.parse(_cost.text.trim()),
-              renewalType: _renewalType,
-              version: _version.text,
-              nextRenewalDate:
-                  _nextRenewal == null ? null : Fmt.isoDate(_nextRenewal!),
-              renewalCost: double.tryParse(_renewalCost.text.trim()),
-            ),
-          );
+      final request = SoftwareLicenseRequest(
+        licenseKey: _licenseKey.text,
+        softwareName: _softwareName.text,
+        publisher: _publisher.text,
+        licenseType: _licenseType,
+        totalSeatsLicensed: int.parse(_seats.text.trim()),
+        licensePurchaseDate: Fmt.isoDate(_purchaseDate),
+        licenseExpiryDate: Fmt.isoDate(_expiryDate),
+        licenseCost: double.parse(_cost.text.trim()),
+        renewalType: _renewalType,
+        version: _version.text,
+        nextRenewalDate:
+            _nextRenewal == null ? null : Fmt.isoDate(_nextRenewal!),
+        renewalCost: double.tryParse(_renewalCost.text.trim()),
+      );
+
+      if (_isEdit) {
+        final updated = await ref
+            .read(softwareRepositoryProvider)
+            .update(widget.existing!.id, request);
+        ref.read(licensesProvider.notifier).apply(updated);
+        ref.invalidate(licenceProvider(widget.existing!.id));
+      } else {
+        await ref.read(licensesProvider.notifier).create(request);
+      }
       if (!mounted) return;
       Navigator.pop(context);
       messenger.showSnackBar(
         SnackBar(
-          content: Text('${_softwareName.text.trim()} licence registered.'),
+          content: Text(
+            _isEdit
+                ? '${_softwareName.text.trim()} updated.'
+                : '${_softwareName.text.trim()} licence registered.',
+          ),
         ),
       );
     } on ApiException catch (e) {
@@ -130,7 +161,7 @@ class _LicenseFormSheetState extends ConsumerState<_LicenseFormSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'New licence',
+                _isEdit ? 'Edit licence' : 'New licence',
                 style: TextStyle(
                   color: bos.text,
                   fontSize: 18,

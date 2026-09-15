@@ -5,6 +5,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../paged_controller.dart';
 import 'primitives.dart';
+import 'skeleton.dart';
 
 /// Renders a [PagedState] as a pull-to-refresh list with a "load older" footer.
 ///
@@ -43,7 +44,15 @@ class PagedListView<T> extends StatelessWidget {
     final bos = Theme.of(context).bos;
 
     return async.when(
-      loading: () => const Loader(),
+      // Skeleton rather than a spinner because the shape is known: this is
+      // always a list of cards, so the placeholder can occupy roughly the
+      // space the rows will, and the screen does not jump when they land.
+      // One change here covers every list in the app.
+      loading: () => ListView(
+        padding: padding,
+        physics: const NeverScrollableScrollPhysics(),
+        children: const [SkeletonList()],
+      ),
       error: (error, _) => ErrorState(
         message: error is ApiException ? error.message : errorMessage,
         onRetry: onRefresh,

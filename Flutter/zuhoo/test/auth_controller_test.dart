@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zuhoo/core/auth/auth_controller.dart';
 import 'package:zuhoo/core/auth/auth_models.dart';
 import 'package:zuhoo/core/auth/auth_repository.dart';
@@ -20,12 +21,15 @@ import 'package:zuhoo/core/storage/secure_store.dart';
 void main() {
   late _MemStore store;
 
-  ProviderContainer containerWith(AuthRepository repo) {
+  Future<ProviderContainer> containerWith(AuthRepository repo) async {
     store = _MemStore();
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
     final container = ProviderContainer(
       overrides: [
         secureStoreProvider.overrideWithValue(store),
         authRepositoryProvider.overrideWithValue(repo),
+        sharedPreferencesProvider.overrideWithValue(prefs),
       ],
     );
     addTearDown(container.dispose);
@@ -34,7 +38,7 @@ void main() {
 
   group('AuthController', () {
     test('resolves to signed-out when there is no stored session', () async {
-      final container = containerWith(_FakeRepo());
+      final container = await containerWith(_FakeRepo());
 
       expect(container.read(authControllerProvider).isLoading, isTrue,
           reason: 'restoring the session is the one legitimate loading state');
@@ -45,7 +49,7 @@ void main() {
     });
 
     test('a failed sign-in never re-enters the loading state', () async {
-      final container = containerWith(
+      final container = await containerWith(
         _FakeRepo(onLogin: () => throw const ApiException(
               'Invalid email or password.',
               statusCode: 401,
@@ -72,7 +76,7 @@ void main() {
     });
 
     test('a failed sign-in leaves nothing behind in storage', () async {
-      final container = containerWith(
+      final container = await containerWith(
         _FakeRepo(onLogin: () => throw const ApiException('nope')),
       );
       await container.read(authControllerProvider.future);
@@ -91,7 +95,7 @@ void main() {
 
     test('a successful sign-in lands with permissions already cached',
         () async {
-      final container = containerWith(_FakeRepo());
+      final container = await containerWith(_FakeRepo());
       await container.read(authControllerProvider.future);
 
       final user = await container
@@ -106,7 +110,7 @@ void main() {
     });
 
     test('signing out clears the session', () async {
-      final container = containerWith(_FakeRepo());
+      final container = await containerWith(_FakeRepo());
       await container.read(authControllerProvider.future);
       await container
           .read(authControllerProvider.notifier)

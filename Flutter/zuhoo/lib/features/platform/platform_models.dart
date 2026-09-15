@@ -349,25 +349,49 @@ class SubscriptionPlanOption {
   const SubscriptionPlanOption({
     required this.key,
     required this.name,
+    this.id,
+    this.description,
+    this.active = true,
     this.price,
     this.billingCycle,
   });
 
+  /// The stable code a company's `subscriptionPlan` stores. Immutable once
+  /// created — the backend refuses to change it, because past subscription
+  /// history references it by this string rather than by a row id.
   final String key;
+
   final String name;
+
+  /// The row's own id. Needed to edit or switch a plan off, and deliberately
+  /// not the same thing as [key].
+  final int? id;
+
+  final String? description;
+
+  /// A switched-off plan stays on every company already on it. It simply
+  /// stops being offered to anybody else.
+  final bool active;
+
   final double? price;
   final String? billingCycle;
 
   factory SubscriptionPlanOption.fromJson(Map<String, dynamic> json) {
-    // The definition endpoint has used a couple of spellings for the key;
-    // accept either rather than silently offering a blank plan.
-    final key = json['planKey'] as String? ??
+    // The stable identifier a company's `subscriptionPlan` stores. The
+    // definition endpoint calls it `code`; older shapes used `planKey` or
+    // `key`. Falling through to `name` is the last resort and wrong — it is
+    // the display name — but a blank plan would be worse.
+    final key = json['code'] as String? ??
+        json['planKey'] as String? ??
         json['key'] as String? ??
         json['name'] as String? ??
         '';
     return SubscriptionPlanOption(
       key: key,
       name: json['name'] as String? ?? key,
+      id: (json['id'] as num?)?.toInt(),
+      description: json['description'] as String?,
+      active: json['active'] as bool? ?? true,
       price: (json['price'] as num?)?.toDouble(),
       billingCycle: json['billingCycle'] as String?,
     );

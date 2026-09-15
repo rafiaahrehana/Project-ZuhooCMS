@@ -10,6 +10,7 @@ import '../../shared/widgets/config_list.dart';
 import '../../shared/widgets/primitives.dart';
 import '../directory/directory_models.dart' show Department;
 import 'admin_form_sheets.dart';
+import 'accounts_screen.dart';
 import 'admin_models.dart';
 import 'admin_repository.dart';
 import 'role_permissions_screen.dart';
@@ -20,7 +21,11 @@ import 'role_permissions_screen.dart';
 /// administrator sees only what they could actually load — and the screen
 /// disappears entirely for somebody with none of them.
 class AdminScreen extends ConsumerWidget {
-  const AdminScreen({super.key});
+  const AdminScreen({super.key, this.initialTabLabel});
+
+  /// Lands on the tab with this label instead of the first one — e.g. a nav
+  /// row for "Announcements" opens straight to the Notices tab.
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -93,8 +98,13 @@ class AdminScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -106,6 +116,14 @@ class AdminScreen extends ConsumerWidget {
                 backgroundColor: bos.bgPage,
                 appBar: AppBar(
                   title: const Text('Setup'),
+                  actions: [
+                    if (permissions.has(AdminPermissions.userView))
+                      IconButton(
+                        tooltip: 'Who can sign in',
+                        icon: const Icon(Icons.manage_accounts_outlined),
+                        onPressed: () => AccountsScreen.open(context),
+                      ),
+                  ],
                   bottom: TabBar(
                     isScrollable: tabs.length > 3,
                     tabAlignment:
@@ -195,6 +213,19 @@ class _DesignationsTab extends ConsumerStatefulWidget {
   ConsumerState<_DesignationsTab> createState() => _DesignationsTabState();
 }
 
+/// Whether the grades list is showing only the ones still in use.
+class DesignationScopeController extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool inUseOnly) => state = inUseOnly;
+}
+
+final designationScopeProvider =
+    NotifierProvider<DesignationScopeController, bool>(
+  DesignationScopeController.new,
+);
+
 class _DesignationsTabState extends ConsumerState<_DesignationsTab> {
   int? _busyId;
 
@@ -222,12 +253,35 @@ class _DesignationsTabState extends ConsumerState<_DesignationsTab> {
         .watch(permissionControllerProvider)
         .has(AdminPermissions.designationUpdate);
 
+    // "In use" is its own endpoint rather than a filter over the list — a
+    // retired grade still exists on the people who carry it, so what may be
+    // assigned now is a different question from what has ever been created.
+    final inUseOnly = ref.watch(designationScopeProvider);
+
     return ConfigList<Designation>(
-      async: ref.watch(designationsAdminProvider),
-      onRefresh: () => ref.read(designationsAdminProvider.notifier).refresh(),
-      emptyTitle: 'No grades yet',
+      async: inUseOnly
+          ? ref.watch(activeDesignationsProvider)
+          : ref.watch(designationsAdminProvider),
+      onRefresh: () async {
+        ref.invalidate(activeDesignationsProvider);
+        await ref.read(designationsAdminProvider.notifier).refresh();
+      },
+      emptyTitle: inUseOnly ? 'None in use' : 'No grades yet',
       emptyMessage: 'Grades give job titles a structure to sort by.',
       errorMessage: 'Could not load your grades.',
+      header: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: FilterBar(
+          selected: inUseOnly ? 'in-use' : null,
+          options: const [
+            (value: null, label: 'All grades'),
+            (value: 'in-use', label: 'In use'),
+          ],
+          onSelected: (value) => ref
+              .read(designationScopeProvider.notifier)
+              .set(value == 'in-use'),
+        ),
+      ),
       itemBuilder: (context, row) => ConfigRow(
         title: row.name,
         active: row.active,

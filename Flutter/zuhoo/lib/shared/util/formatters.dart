@@ -91,6 +91,11 @@ class Fmt {
   static String money(num? value) => value == null ? dash : _money.format(value);
 
   /// "12%" or "12.5%" — a discount or a share, without trailing zeros.
+  /// A bare number for a text field — no grouping, no currency, and no
+  /// trailing ".0" on a whole number. What [money] shows is for reading;
+  /// this is what goes back into a form somebody will edit.
+  static String plain(num value) => _trim(value);
+
   static String percent(num? value) =>
       value == null ? dash : '${_trim(value)}%';
 

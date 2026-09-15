@@ -3,8 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_controller.dart';
+import '../core/auth/permission_controller.dart';
 import '../features/alerts/alerts_screen.dart';
+import '../features/approvals/approvals_screen.dart';
 import '../features/attendance/attendance_screen.dart';
+import '../features/attendance/shift_roster_screen.dart';
 import '../features/ai/ai_screen.dart';
 import '../features/alerts/notification_preferences_screen.dart';
 import '../features/attendance/team_attendance_screen.dart';
@@ -18,17 +21,32 @@ import '../features/leave/leave_screen.dart';
 import '../features/payslips/payslips_screen.dart';
 import '../features/requests/requests_screen.dart';
 import '../features/crm/contacts_screen.dart';
+import '../features/support/support_queue_screen.dart';
+import '../features/kb/kb_authoring_screen.dart';
+import '../features/requests/reviews_screen.dart';
+import '../features/ai/ai_drafts_screen.dart';
+import '../features/ai/ai_settings_screen.dart';
+import '../features/dashboard/dashboard_screen.dart';
+import '../features/dashboard/platform_dashboard_screen.dart';
+import '../features/crm/crm_reports_screen.dart';
 import '../features/crm/crm_screen.dart';
 import '../features/directory/directory_screen.dart';
 import '../features/finance/finance_screen.dart';
 import '../features/itam/itam_screen.dart';
 import '../features/accounting/accounting_screen.dart';
+import '../features/accounting/reconciliation_screen.dart';
+import '../features/company/company_screen.dart';
+import '../features/company/subscription_plan_screen.dart';
+import '../features/leave/entitlements_screen.dart';
+import '../features/admin/accounts_screen.dart';
 import '../features/admin/admin_screen.dart';
 import '../features/assets_periods/assets_periods_screen.dart';
 import '../features/biometric/biometric_screen.dart';
+import '../features/budgets/budget_screen.dart';
 import '../features/catalogue/catalogue_screen.dart';
 import '../features/payables/payables_screen.dart';
 import '../features/payroll/payroll_screen.dart';
+import '../features/payroll/salary_sheet_screen.dart';
 import '../features/receivables/receivables_screen.dart';
 import '../features/reports/report_screen.dart';
 import '../features/salary/salary_screen.dart';
@@ -37,10 +55,15 @@ import '../features/workflow/workflow_screen.dart';
 import '../features/kb/kb_screen.dart';
 import '../features/performance/performance_screen.dart';
 import '../features/search/search_screen.dart';
+import '../features/recruitment/career_page_screen.dart';
+import '../features/recruitment/recruitment_kpi_screen.dart';
 import '../features/recruitment/recruitment_screen.dart';
+import '../features/platform/locations_screen.dart';
 import '../features/platform/platform_screen.dart';
+import '../features/platform/plans_screen.dart';
 import '../features/support/support_screen.dart';
 import '../features/profile/appearance_screen.dart';
+import '../features/profile/change_email_screen.dart';
 import '../features/profile/change_password_screen.dart';
 import '../features/profile/edit_profile_screen.dart';
 import '../features/profile/profile_screen.dart';
@@ -49,6 +72,8 @@ import '../features/portal/portal_home_screen.dart';
 import '../features/portal/portal_profile_screen.dart';
 import '../features/portal/portal_requests_screen.dart';
 import '../features/portal/portal_tickets_screen.dart';
+import 'nav_registry.dart';
+import 'not_authorized_screen.dart';
 import 'portal_shell.dart';
 import 'shell.dart';
 import 'splash_screen.dart';
@@ -81,6 +106,9 @@ abstract final class Routes {
   static const ai = '/ai';
   static const kb = '/kb';
   static const admin = '/setup';
+  static const users = '/users';
+  static const careerPage = '/hiring/career-page';
+  static const recruitmentReports = '/hiring/reports';
   static const catalogue = '/catalogue';
   static const supportAdmin = '/support-desk';
   static const workflows = '/workflows';
@@ -88,17 +116,37 @@ abstract final class Routes {
   static const payroll = '/payroll';
   static const salary = '/pay';
   static const accounting = '/books';
+  static const reconciliation = '/against-the-bank';
+  static const entitlements = '/entitlements';
+  static const company = '/your-company';
   static const reports = '/reports';
   static const payables = '/payables';
   static const receivables = '/receipts';
   static const closing = '/month-end';
+  static const budgets = '/finance/budgets';
+  static const platformLocations = '/platform/locations';
+  static const crmReports = '/crm/reports';
+  static const shiftRoster = '/attendance/shift-assignments';
+  static const salarySheet = '/hrm/salary-sheet';
+  static const subscriptionPlan = '/subscription-plan';
+  static const plans = '/platform/plans';
   static const hrPolicy = '/hr-rules';
   static const contacts = '/contacts';
   static const teamAttendance = '/who-is-in';
+  static const supportQueue = '/queue';
+  static const kbAuthoring = '/articles';
+  static const reviews = '/reviews';
+  static const aiDrafts = '/drafting';
+  static const aiSettings = '/assistant-settings';
+  static const dashboard = '/how-things-stand';
+  static const platformDashboard = '/the-platform';
   static const appearance = '/me/appearance';
   static const editProfile = '/me/edit';
   static const changePassword = '/me/password';
+  static const changeEmail = '/me/email';
   static const notificationPreferences = '/me/notifications';
+  static const notAuthorized = '/not-authorized';
+  static const approvals = '/approvals';
 }
 
 /// The client portal's own routes.
@@ -167,12 +215,28 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
       if (wantsPortal && !inPortal) return PortalRoutes.home;
       if (!wantsPortal && inPortal) return Routes.home;
+
+      // Route-level RBAC: nav-hiding alone only stops someone from tapping
+      // into a screen they can't use — it does nothing for a deep link, a
+      // restored back-stack entry, or a typed URL. Mirrors Angular's
+      // `RoleGuard`, which blocks direct navigation the same way rather than
+      // only hiding the sidebar link.
+      if (!wantsPortal && location != Routes.notAuthorized) {
+        final perms = ref.read(permissionControllerProvider);
+        if (!isRouteAllowed(location, user, perms)) {
+          return Routes.notAuthorized;
+        }
+      }
       return null;
     },
     routes: [
       GoRoute(
         path: Routes.splash,
         builder: (_, _) => const SplashScreen(),
+      ),
+      GoRoute(
+        path: Routes.notAuthorized,
+        builder: (_, _) => const NotAuthorizedScreen(),
       ),
       GoRoute(
         path: Routes.login,
@@ -200,19 +264,31 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: Routes.requests,
-        builder: (_, _) => const RequestsScreen(),
+        builder: (_, state) =>
+            RequestsScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.approvals,
+        builder: (_, _) => const ApprovalsScreen(),
       ),
       GoRoute(
         path: Routes.support,
-        builder: (_, _) => const SupportScreen(),
+        builder: (_, state) =>
+            SupportScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.crm,
-        builder: (_, _) => const CrmScreen(),
+        builder: (_, state) =>
+            CrmScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.crmReports,
+        builder: (_, _) => const CrmReportsScreen(),
       ),
       GoRoute(
         path: Routes.finance,
-        builder: (_, _) => const FinanceScreen(),
+        builder: (_, state) =>
+            FinanceScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.search,
@@ -228,15 +304,22 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: Routes.admin,
-        builder: (_, _) => const AdminScreen(),
+        builder: (_, state) =>
+            AdminScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.users,
+        builder: (_, _) => const AccountsScreen(),
       ),
       GoRoute(
         path: Routes.catalogue,
-        builder: (_, _) => const CatalogueScreen(),
+        builder: (_, state) =>
+            CatalogueScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.supportAdmin,
-        builder: (_, _) => const SupportAdminScreen(),
+        builder: (_, state) =>
+            SupportAdminScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.workflows,
@@ -251,12 +334,34 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, _) => const PayrollScreen(),
       ),
       GoRoute(
+        path: Routes.salarySheet,
+        builder: (_, _) => const SalarySheetScreen(),
+      ),
+      GoRoute(
         path: Routes.salary,
-        builder: (_, _) => const SalaryScreen(),
+        builder: (_, state) =>
+            SalaryScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.company,
+        builder: (_, _) => const CompanyScreen(),
+      ),
+      GoRoute(
+        path: Routes.subscriptionPlan,
+        builder: (_, _) => const SubscriptionPlanScreen(),
+      ),
+      GoRoute(
+        path: Routes.entitlements,
+        builder: (_, _) => const EntitlementsScreen(),
+      ),
+      GoRoute(
+        path: Routes.reconciliation,
+        builder: (_, _) => const ReconciliationScreen(),
       ),
       GoRoute(
         path: Routes.accounting,
-        builder: (_, _) => const AccountingScreen(),
+        builder: (_, state) =>
+            AccountingScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.reports,
@@ -264,19 +369,31 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: Routes.payables,
-        builder: (_, _) => const PayablesScreen(),
+        builder: (_, state) =>
+            PayablesScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.receivables,
-        builder: (_, _) => const ReceivablesScreen(),
+        builder: (_, state) =>
+            ReceivablesScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.closing,
-        builder: (_, _) => const ClosingScreen(),
+        builder: (_, state) =>
+            ClosingScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.budgets,
+        builder: (_, _) => const BudgetScreen(),
+      ),
+      GoRoute(
+        path: Routes.platformLocations,
+        builder: (_, _) => const LocationsScreen(),
       ),
       GoRoute(
         path: Routes.hrPolicy,
-        builder: (_, _) => const HrPolicyScreen(),
+        builder: (_, state) =>
+            HrPolicyScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.contacts,
@@ -287,16 +404,58 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, _) => const TeamAttendanceScreen(),
       ),
       GoRoute(
+        path: Routes.shiftRoster,
+        builder: (_, _) => const ShiftRosterScreen(),
+      ),
+      GoRoute(
+        path: Routes.supportQueue,
+        builder: (_, _) => const SupportQueueScreen(),
+      ),
+      GoRoute(
+        path: Routes.kbAuthoring,
+        builder: (_, _) => const KbAuthoringScreen(),
+      ),
+      GoRoute(
+        path: Routes.reviews,
+        builder: (_, _) => const ReviewsScreen(),
+      ),
+      GoRoute(
+        path: Routes.aiDrafts,
+        builder: (_, _) => const AiDraftsScreen(),
+      ),
+      GoRoute(
+        path: Routes.aiSettings,
+        builder: (_, _) => const AiSettingsScreen(),
+      ),
+      GoRoute(
+        path: Routes.dashboard,
+        builder: (_, _) => const DashboardScreen(),
+      ),
+      GoRoute(
+        path: Routes.platformDashboard,
+        builder: (_, _) => const PlatformDashboardScreen(),
+      ),
+      GoRoute(
         path: Routes.performance,
         builder: (_, _) => const PerformanceScreen(),
       ),
       GoRoute(
         path: Routes.recruitment,
-        builder: (_, _) => const RecruitmentScreen(),
+        builder: (_, state) =>
+            RecruitmentScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.careerPage,
+        builder: (_, _) => const CareerPageScreen(),
+      ),
+      GoRoute(
+        path: Routes.recruitmentReports,
+        builder: (_, _) => const RecruitmentKpiScreen(),
       ),
       GoRoute(
         path: Routes.itam,
-        builder: (_, _) => const ItamScreen(),
+        builder: (_, state) =>
+            ItamScreen(initialTabLabel: state.extra as String?),
       ),
       GoRoute(
         path: Routes.directory,
@@ -304,7 +463,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: Routes.platform,
-        builder: (_, _) => const PlatformScreen(),
+        builder: (_, state) =>
+            PlatformScreen(initialTabLabel: state.extra as String?),
+      ),
+      GoRoute(
+        path: Routes.plans,
+        builder: (_, _) => const PlansScreen(),
       ),
       GoRoute(
         path: Routes.appearance,
@@ -317,6 +481,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: Routes.changePassword,
         builder: (_, _) => const ChangePasswordScreen(),
+      ),
+      GoRoute(
+        path: Routes.changeEmail,
+        builder: (_, _) => const ChangeEmailScreen(),
       ),
       GoRoute(
         path: Routes.notificationPreferences,
@@ -336,7 +504,8 @@ final routerProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: Routes.attendance,
-                builder: (_, _) => const AttendanceScreen(),
+                builder: (_, state) =>
+                    AttendanceScreen(initialTabLabel: state.extra as String?),
               ),
             ],
           ),
@@ -344,7 +513,8 @@ final routerProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: Routes.leave,
-                builder: (_, _) => const LeaveScreen(),
+                builder: (_, state) =>
+                    LeaveScreen(initialTabLabel: state.extra as String?),
               ),
             ],
           ),

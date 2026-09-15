@@ -39,6 +39,37 @@ class RecruitmentRepository {
   Future<PagedResponse<JobPosting>> jobs({int page = 0, int size = 20}) =>
       _api.getPaged(_jobs, JobPosting.fromJson, page: page, size: size);
 
+  /// The jobs actually being advertised.
+  ///
+  /// Its own endpoint rather than a filter over the list. What counts as open
+  /// — published, not closed, not past its closing date — is the backend's
+  /// judgement, and duplicating the rule here would let the two disagree
+  /// about what a candidate can see.
+  Future<List<JobPosting>> openJobs() async {
+    final list = await _api.get<List<dynamic>>('$_jobs/open');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(JobPosting.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Records an application against a job.
+  ///
+  /// Staff-side, not the public form: this is how a referral or a CV that
+  /// arrived by email gets into the pipeline. The referring employee is only
+  /// ever the caller's own id server-side — a referral cannot be attributed
+  /// to somebody else.
+  Future<JobApplication> apply(
+    int jobPostingId,
+    JobApplicationRequest request,
+  ) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_jobs/$jobPostingId/apply',
+      request.toJson(),
+    );
+    return JobApplication.fromJson(json);
+  }
+
   /// Opens a posting. It lands as a DRAFT — publishing it is [publishJob],
   /// deliberately a second step, so a half-written advert is not live the
   /// moment it is saved.
@@ -86,8 +117,8 @@ class RecruitmentRepository {
     final json = await _api.get<Map<String, dynamic>>(
       '$_base/kpis',
       query: {
-        if (from != null) 'from': from,
-        if (to != null) 'to': to,
+        'from': ?from,
+        'to': ?to,
       },
     );
     return RecruitmentKpis.fromJson(json);
@@ -234,6 +265,21 @@ class RecruitmentRepository {
   }
 
   // ── Offers ──────────────────────────────────────────────────
+
+  /// Every offer across every application, company-wide — as opposed to
+  /// [offersForApplication], which is scoped to one candidate's pipeline.
+  Future<PagedResponse<JobOffer>> offers({
+    String? status,
+    int page = 0,
+    int size = 20,
+  }) =>
+      _api.getPaged(
+        _offers,
+        JobOffer.fromJson,
+        query: {'status': ?status},
+        page: page,
+        size: size,
+      );
 
   Future<List<JobOffer>> offersForApplication(int applicationId) async {
     final list = await _api.get<List<dynamic>>(
@@ -402,7 +448,7 @@ class JobsController extends AsyncNotifier<PagedState<JobPosting>>
   }
 
   /// An edit does not move the posting, so the row is swapped in place.
-  Future<JobPosting> update(int id, JobPostingRequest request) async {
+  Future<JobPosting> updateItem(int id, JobPostingRequest request) async {
     final updated =
         await ref.read(recruitmentRepositoryProvider).updateJob(id, request);
     apply(updated);
@@ -515,6 +561,54 @@ final applicationOffersProvider =
     FutureProvider.autoDispose.family<List<JobOffer>, int>(
   (ref, applicationId) =>
       ref.read(recruitmentRepositoryProvider).offersForApplication(applicationId),
+);
+
+/// Which offer status the company-wide offers list is narrowed to. Null is
+/// all.
+class OfferFilterController extends Notifier<String?> {
+  @override
+  String? build() => null;
+
+  void set(String? status) {
+    if (state == status) return;
+    state = status;
+  }
+}
+
+final offerFilterProvider = NotifierProvider<OfferFilterController, String?>(
+  OfferFilterController.new,
+);
+
+class OffersController extends AsyncNotifier<PagedState<JobOffer>>
+    with PagedLoader<JobOffer> {
+  @override
+  Future<PagedState<JobOffer>> build() {
+    ref.watch(currentUserProvider);
+    ref.watch(offerFilterProvider);
+    return loadFirstPage();
+  }
+
+  @override
+  Future<PagedResponse<JobOffer>> fetchPage(int page) =>
+      ref.read(recruitmentRepositoryProvider).offers(
+            status: ref.read(offerFilterProvider),
+            page: page,
+          );
+
+  void apply(JobOffer updated) {
+    final filter = ref.read(offerFilterProvider);
+    // A status change can move the row out of the stage being viewed.
+    if (filter != null && updated.status != filter) {
+      removeItem((offer) => offer.id == updated.id);
+    } else {
+      replaceItem((offer) => offer.id == updated.id, updated);
+    }
+  }
+}
+
+final offersProvider =
+    AsyncNotifierProvider<OffersController, PagedState<JobOffer>>(
+  OffersController.new,
 );
 
 // ── Candidates ────────────────────────────────────────────────
@@ -639,3 +733,8 @@ final talentPoolProvider = AsyncNotifierProvider<TalentPoolListController,
     PagedState<TalentPoolCandidate>>(
   TalentPoolListController.new,
 );
+
+/// The jobs being advertised right now.
+final openJobsProvider = FutureProvider.autoDispose<List<JobPosting>>((ref) {
+  return ref.read(recruitmentRepositoryProvider).openJobs();
+});

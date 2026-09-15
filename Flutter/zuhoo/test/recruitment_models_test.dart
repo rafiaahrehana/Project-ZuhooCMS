@@ -180,7 +180,13 @@ void main() {
     });
 
     test('recognises today regardless of the hour', () {
-      expect(at(iso(const Duration(hours: 3))).isToday, isTrue);
+      // Pinned to midday today rather than an offset from now. `now + 3 hours`
+      // lands on tomorrow whenever the suite runs after nine in the evening,
+      // which made this pass or fail by the clock.
+      final now = DateTime.now();
+      final middayToday = DateTime(now.year, now.month, now.day, 12);
+
+      expect(at(middayToday.toIso8601String()).isToday, isTrue);
       expect(at(iso(const Duration(days: 3))).isToday, isFalse);
     });
 

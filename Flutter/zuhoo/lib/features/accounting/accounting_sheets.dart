@@ -610,8 +610,11 @@ class _LineEditorState extends State<_LineEditor> {
                   IconButton(
                     onPressed: widget.onRemove,
                     icon: const Icon(Icons.close_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
                     tooltip: 'Remove this line',
+                    // 44, not the 40 `visualDensity: compact` gives — see
+                    // MessageBanner's dismiss. The row stays tight because
+                    // the glyph is still 18; only the tap box grows.
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                   ),
               ],
             ),

@@ -5,12 +5,15 @@ import 'package:go_router/go_router.dart';
 import '../../app/router.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/providers.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../core/theme/theme_controller.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/attachment_picker.dart';
 import '../../shared/widgets/primitives.dart';
 import 'employee_models.dart';
 import 'employee_repository.dart';
+import '../../app/shell.dart';
 
 class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
@@ -23,7 +26,10 @@ class ProfileScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: bos.bgPage,
-      appBar: AppBar(title: const Text('Me')),
+      appBar: AppBar(
+        leading: const AppDrawerButton(),
+        title: const Text('Me'),
+      ),
       body: RefreshIndicator(
         color: bos.brand,
         backgroundColor: bos.bgCard,
@@ -38,13 +44,16 @@ class ProfileScreen extends ConsumerWidget {
               padding: const EdgeInsets.all(18),
               child: Row(
                 children: [
-                  Avatar(
+                  _ChangeablePhoto(
                     initials: employee.value?.initials ??
                         user?.initials ??
                         '?',
                     imageUrl: employee.value?.imageUrl ??
                         user?.profileImageUrl,
-                    size: 58,
+                    // Setting a photo saves it onto the employee record, so
+                    // somebody who has none — a company owner, typically —
+                    // has nothing to save it to.
+                    canChange: employee.value != null,
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -278,7 +287,7 @@ class _SettingsList extends ConsumerWidget {
         path: Routes.itam
       ),
       (
-        label: 'People',
+        label: 'Employees',
         trailing: null,
         icon: Icons.groups_2_outlined,
         path: Routes.directory
@@ -415,6 +424,119 @@ class _SignOutButton extends ConsumerWidget {
       style: OutlinedButton.styleFrom(
         foregroundColor: bos.danger,
         side: BorderSide(color: bos.danger.withValues(alpha: 0.4)),
+      ),
+    );
+  }
+}
+
+/// The profile photo, with a tap to change it.
+///
+/// Two steps behind one press: the file goes to `/upload/avatar`, which stores
+/// it and answers with a URL, and that URL is then saved onto the employee
+/// record. Uploading alone changes nothing, so a failure at the second step
+/// leaves an orphaned file rather than a half-changed profile.
+class _ChangeablePhoto extends ConsumerStatefulWidget {
+  const _ChangeablePhoto({
+    required this.initials,
+    required this.canChange,
+    this.imageUrl,
+  });
+
+  final String initials;
+  final String? imageUrl;
+  final bool canChange;
+
+  @override
+  ConsumerState<_ChangeablePhoto> createState() => _ChangeablePhotoState();
+}
+
+class _ChangeablePhotoState extends ConsumerState<_ChangeablePhoto> {
+  bool _busy = false;
+
+  Future<void> _change() async {
+    final picked = await pickAttachment(context);
+    if (picked == null || !mounted) return;
+
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final uploaded = await ref
+          .read(apiClientProvider)
+          .uploadAvatar(picked.path, picked.name);
+
+      await ref.read(employeeRepositoryProvider).updateMe(
+            SelfUpdateEmployeeRequest(profileImageUrl: uploaded.fileUrl),
+          );
+
+      ref.invalidate(myEmployeeProvider);
+      // The photo is written onto the User account as well, so the session's
+      // copy of it is now stale.
+      await ref.read(authControllerProvider.notifier).refreshProfile();
+      messenger.showSnackBar(const SnackBar(content: Text('Photo changed.')));
+    } on ApiException catch (e) {
+      // The upload rejects anything that is not really an image, and anything
+      // over 5MB, with a message worth passing on as it came.
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not change your photo.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+
+    final avatar = Avatar(
+      initials: widget.initials,
+      imageUrl: widget.imageUrl,
+      size: 58,
+    );
+
+    if (!widget.canChange) return avatar;
+
+    // The camera badge says "tappable" to anyone who can see it; this is the
+    // same sentence for anyone who cannot.
+    return Semantics(
+      button: true,
+      label: 'Change your profile photo',
+      child: GestureDetector(
+        onTap: _busy ? null : _change,
+        child: Stack(
+          alignment: Alignment.bottomRight,
+          children: [
+            avatar,
+            if (_busy)
+              const SizedBox(
+                height: 58,
+                width: 58,
+                child: Center(
+                  child: SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: bos.bgCard,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: bos.border),
+                ),
+                child: Icon(
+                  Icons.photo_camera_outlined,
+                  size: 13,
+                  color: bos.muted,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

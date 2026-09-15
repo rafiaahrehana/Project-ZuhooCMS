@@ -15,7 +15,9 @@ import 'request_detail_screen.dart';
 import 'request_models.dart';
 
 class RequestsScreen extends ConsumerWidget {
-  const RequestsScreen({super.key});
+  const RequestsScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -67,8 +69,13 @@ class RequestsScreen extends ConsumerWidget {
       if (canApprove) (label: 'Approvals', view: const ApprovalsTab()),
     ];
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Scaffold(
         backgroundColor: bos.bgPage,
         appBar: AppBar(

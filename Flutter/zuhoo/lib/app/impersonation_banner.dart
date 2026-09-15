@@ -95,19 +95,28 @@ class _BannerState extends ConsumerState<_Banner> {
     final bos = Theme.of(context).bos;
     final session = widget.session;
 
-    // The amber is near-black in light mode and near-yellow in dark, so the
-    // text colour is derived rather than picked — one of them would be
-    // unreadable against a fixed choice.
-    final background = bos.warning;
-    final foreground = background.computeLuminance() > 0.5
-        ? Colors.black.withValues(alpha: 0.87)
-        : Colors.white;
+    // The soft token fills and the solid one draws on it, which is how the
+    // palette says the pair goes and how MessageBanner and the demo strip
+    // both use it. Filling with solid `warning` read well in light mode and
+    // turned the top of a dark screen into a band of near-yellow, which is
+    // the brightest thing the app can produce.
+    //
+    // It stays the loudest strip in the app regardless — warning rather than
+    // info, and the countdown below goes to full opacity and bold in its last
+    // two minutes. Being legible is not the same as being quiet.
+    final background = bos.warningSoft;
+    final foreground = bos.warning;
 
     final expiringSoon = session.remaining.inMinutes < 2;
 
     return Container(
       width: double.infinity,
-      color: background,
+      decoration: BoxDecoration(
+        color: background,
+        border: Border(
+          bottom: BorderSide(color: foreground.withValues(alpha: 0.4)),
+        ),
+      ),
       child: SafeArea(
         bottom: false,
         child: Padding(

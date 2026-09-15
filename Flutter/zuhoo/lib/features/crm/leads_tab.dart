@@ -9,25 +9,38 @@ import 'crm_controllers.dart';
 import 'crm_models.dart';
 import 'crm_repository.dart';
 import 'lead_detail_screen.dart';
+import 'lead_filter_sheet.dart';
 
 class LeadsTab extends ConsumerWidget {
   const LeadsTab({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ref.read(leadsProvider.notifier);
+    // A filter that narrows nothing is no filter: the tab falls back to its
+    // own views, which are cheaper and already what people reach for.
+    final filter = ref.watch(leadFilterProvider);
+    final filtering = !filter.isEmpty;
+
+    final controller = filtering
+        ? ref.read(filteredLeadsProvider.notifier)
+        : ref.read(leadsProvider.notifier);
 
     return Column(
       children: [
-        const _ViewFilter(),
+        const _Counts(),
+        if (filtering) const _FilterBanner() else const _ViewFilter(),
         Expanded(
           child: PagedListView<Lead>(
-            async: ref.watch(leadsProvider),
+            async: filtering
+                ? ref.watch(filteredLeadsProvider)
+                : ref.watch(leadsProvider),
             onRefresh: controller.refresh,
             onLoadMore: () => guardListAction(context, controller.loadMore),
             emptyIcon: Icons.person_search_rounded,
             emptyTitle: 'No leads here',
-            emptyMessage: _emptyMessageFor(ref.watch(leadViewProvider)),
+            emptyMessage: filtering
+                ? 'Nothing matches what you asked for.'
+                : _emptyMessageFor(ref.watch(leadViewProvider)),
             errorMessage: 'Could not load your leads.',
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
             itemBuilder: (context, lead) => _LeadCard(
@@ -296,6 +309,87 @@ class _PriorityDot extends StatelessWidget {
       height: 8,
       width: 8,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+/// How many leads are live, with the way into the filter, the import and the
+/// export sitting beside them.
+class _Counts extends ConsumerWidget {
+  const _Counts();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final counts = ref.watch(leadCountsProvider).value;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              counts == null
+                  ? 'Leads'
+                  : '${counts.active} live, ${counts.mine} yours',
+              style: TextStyle(
+                color: bos.text,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Narrow the list',
+            icon: const Icon(Icons.filter_list_rounded, size: 20),
+            onPressed: () => showLeadFilterSheet(context),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (value) => value == 'import'
+                ? showLeadImportSheet(context)
+                : exportLeadsPdf(context, ref),
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'import', child: Text('Import a CSV')),
+              PopupMenuItem(value: 'export', child: Text('Export a PDF')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown in place of the view chips while a filter is on, so it is obvious
+/// why the list is not what the chips would have given.
+class _FilterBanner extends ConsumerWidget {
+  const _FilterBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Row(
+        children: [
+          Icon(Icons.filter_list_rounded, size: 15, color: bos.brand),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Filtered',
+              style: TextStyle(
+                color: bos.brand,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: ref.read(leadFilterProvider.notifier).clear,
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
     );
   }
 }

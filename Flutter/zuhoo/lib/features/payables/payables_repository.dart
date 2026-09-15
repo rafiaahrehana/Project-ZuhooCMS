@@ -78,8 +78,8 @@ class PayablesRepository {
         page: page,
         size: size,
         query: {
-          if (status != null) 'status': status,
-          if (vendorId != null) 'vendorId': vendorId,
+          'status': ?status,
+          'vendorId': ?vendorId,
         },
       );
 
@@ -120,7 +120,7 @@ class PayablesRepository {
   Future<Ageing> apAgeing({String? asOfDate}) async {
     final json = await _api.get<Map<String, dynamic>>(
       '$_bills/ap-ageing',
-      query: {if (asOfDate != null) 'asOfDate': asOfDate},
+      query: {'asOfDate': ?asOfDate},
     );
     return Ageing.fromJson(json);
   }
@@ -130,15 +130,38 @@ final payablesRepositoryProvider = Provider<PayablesRepository>(
   (ref) => PayablesRepository(ref.watch(apiClientProvider)),
 );
 
+/// The typed vendor search term. Held separately so the list controller can
+/// rebuild on it without the text field owning the request — same shape as the
+/// directory's, and as the bill status filter directly below.
+class VendorSearchController extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void set(String value) {
+    final trimmed = value.trim();
+    if (state == trimmed) return;
+    state = trimmed;
+  }
+}
+
+final vendorSearchProvider =
+    NotifierProvider<VendorSearchController, String>(
+  VendorSearchController.new,
+);
+
 class VendorsController extends AsyncNotifier<List<Vendor>> {
   @override
   Future<List<Vendor>> build() {
     ref.watch(currentUserProvider);
+    ref.watch(vendorSearchProvider);
     return _load();
   }
 
   Future<List<Vendor>> _load() async {
-    final page = await ref.read(payablesRepositoryProvider).vendors();
+    final search = ref.read(vendorSearchProvider);
+    final page = await ref
+        .read(payablesRepositoryProvider)
+        .vendors(search: search.isEmpty ? null : search);
     return page.content;
   }
 

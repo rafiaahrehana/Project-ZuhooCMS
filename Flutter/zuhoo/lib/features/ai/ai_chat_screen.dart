@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/voice_input_button.dart';
 import 'ai_models.dart';
 import 'ai_repository.dart';
 
@@ -69,15 +70,19 @@ class _AiChatScreenState extends ConsumerState<AiChatScreen> {
       });
       _scrollToEnd();
     } on ApiException catch (e) {
-      if (mounted) setState(() {
-        _error = e.message;
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _loading = false;
+        });
+      }
     } catch (_) {
-      if (mounted) setState(() {
-        _error = 'Could not load this conversation.';
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = 'Could not load this conversation.';
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -315,6 +320,7 @@ class _Composer extends StatelessWidget {
                 ),
               ),
             ),
+            if (enabled) VoiceInputButton(controller: controller, color: bos.muted),
             IconButton(
               icon: const Icon(Icons.send_rounded),
               color: bos.brand,

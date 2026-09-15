@@ -21,8 +21,19 @@ import 'platform_models.dart';
 /// the restore path wrong would either strand an admin in someone else's
 /// account or leave a live cross-tenant token in storage. That is not something
 /// to ship untested, and it is a support tool that belongs on a desk anyway.
-/// Also absent: custom roles (a hundred-checkbox permission matrix), locations,
-/// and plan definitions — all configuration work that a phone cannot lay out.
+///
+/// Also absent: **custom roles**. Angular's platform-admin "Custom Roles" page
+/// and the tenant "Roles & Permissions" one both hit the same `/custom-roles`
+/// endpoint (it reads/writes whatever company is in the caller's own session)
+/// — `AdminScreen`'s Roles tab already covers it in full, permission matrix
+/// included, once an admin is impersonating the company in question. A second,
+/// thinner copy of the same screen here would only be able to do less of what
+/// that one already does.
+///
+/// **Locations** (the global country/division/district reference data used by
+/// every address field in the app) lives in its own [LocationRepository] —
+/// it is public data, not scoped to a company, so it never belonged with the
+/// rest of this cross-tenant console.
 class PlatformRepository {
   PlatformRepository(this._api);
 
@@ -46,11 +57,6 @@ class PlatformRepository {
         size: size,
         query: {'status': status, 'plan': plan, 'keyword': keyword},
       );
-
-  Future<Company> company(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_companies/$id');
-    return Company.fromJson(json);
-  }
 
   /// Suspends, reactivates, or otherwise moves a tenant.
   ///
@@ -89,9 +95,15 @@ class PlatformRepository {
 
   /// The plans a company can be moved onto. Optional: without them the plan
   /// action simply is not offered, which beats offering a blank picker.
-  Future<List<SubscriptionPlanOption>> plans() async {
+  Future<List<SubscriptionPlanOption>> plans({bool activeOnly = true}) async {
     try {
-      final list = await _api.get<List<dynamic>>('/subscription-plans');
+      final list = await _api.get<List<dynamic>>(
+        '/subscription-plans',
+        // Moving a company onto a plan wants only the ones on offer; the
+        // catalogue screen wants the switched-off ones too, so it can turn
+        // one back on.
+        query: {'activeOnly': activeOnly},
+      );
       return list
           .whereType<Map<String, dynamic>>()
           .map(SubscriptionPlanOption.fromJson)
@@ -134,6 +146,30 @@ class PlatformRepository {
     final json = await _api.patch<Map<String, dynamic>>('$_flags/$key/toggle');
     return FeatureFlag.fromJson(json);
   }
+
+  /// Changes a plan. The code cannot be changed and is not sent: companies
+  /// and subscription history both reference a plan by that string, so
+  /// editing it would orphan them.
+  Future<SubscriptionPlanOption> updatePlan(
+    int id,
+    CreateSubscriptionPlanRequest request,
+  ) async {
+    final json = await _api.patch<Map<String, dynamic>>(
+      '/subscription-plans/$id',
+      request.toJson()..remove('code'),
+    );
+    return SubscriptionPlanOption.fromJson(json);
+  }
+
+  /// Takes a plan off the menu, or puts it back. Companies already on it stay
+  /// on it either way.
+  Future<SubscriptionPlanOption> togglePlan(int id) async {
+    final json = await _api.patch<Map<String, dynamic>>(
+      '/subscription-plans/$id/toggle-active',
+    );
+    return SubscriptionPlanOption.fromJson(json);
+  }
+
 
   /// Adds a member of platform staff, and their login.
   ///
@@ -416,7 +452,7 @@ class PlatformUsersController extends AsyncNotifier<PagedState<PlatformUser>>
     return created;
   }
 
-  Future<void> update(int id, UpdatePlatformUserRequest request) async {
+  Future<void> updateItem(int id, UpdatePlatformUserRequest request) async {
     final updated =
         await ref.read(platformRepositoryProvider).updateUser(id, request);
     replaceItem((user) => user.id == id, updated);

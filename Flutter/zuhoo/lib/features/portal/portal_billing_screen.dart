@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
@@ -65,6 +66,45 @@ class _InvoiceCard extends ConsumerStatefulWidget {
 
 class _InvoiceCardState extends ConsumerState<_InvoiceCard> {
   bool _downloading = false;
+  bool _paying = false;
+
+  Future<void> _pay() async {
+    setState(() => _paying = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final url =
+          await ref.read(portalRepositoryProvider).initiatePayment(widget.invoice);
+      final uri = Uri.tryParse(url);
+      final launched = uri == null
+          ? false
+          : await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Could not open the payment page.')),
+        );
+        return;
+      }
+      if (mounted) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Finish paying in the browser, then come back and pull to '
+              'refresh.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      }
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not start the payment.')),
+      );
+    } finally {
+      if (mounted) setState(() => _paying = false);
+    }
+  }
 
   Future<void> _open() async {
     setState(() => _downloading = true);
@@ -196,6 +236,15 @@ class _InvoiceCardState extends ConsumerState<_InvoiceCard> {
             ),
           ],
           const SizedBox(height: 12),
+          if (invoice.balanceAmount > 0) ...[
+            LoadingButton(
+              label: 'Pay now',
+              loading: _paying,
+              icon: Icons.credit_card_outlined,
+              onPressed: _pay,
+            ),
+            const SizedBox(height: 8),
+          ],
           if (_downloading)
             const Loader(padding: 6)
           else

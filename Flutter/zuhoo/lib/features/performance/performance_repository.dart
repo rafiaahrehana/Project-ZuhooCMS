@@ -94,6 +94,52 @@ class PerformanceRepository {
   }
 
   /// Signs the review off. Irreversible.
+
+  /// The objective figures for a period. Both dates are required query
+  /// parameters — there is no default window.
+  Future<PerformanceKpis> kpis(
+    int employeeId,
+    String from,
+    String to,
+  ) async {
+    final json = await _api.get<Map<String, dynamic>>(
+      '$_base/employee/$employeeId/kpis',
+      query: {'from': from, 'to': to},
+    );
+    return PerformanceKpis.fromJson(json);
+  }
+
+  /// The same review, with whatever the backend can derive filled in. Reading
+  /// it is what produces the drafted summary.
+  Future<PerformanceReview> summarise(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_base/$id/summary');
+    return PerformanceReview.fromJson(json);
+  }
+
+  Future<List<ReviewAttachment>> attachments(int id) async {
+    final list = await _api.get<List<dynamic>>('$_base/$id/attachments');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(ReviewAttachment.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Records an already-uploaded file against the review.
+  Future<ReviewAttachment> addAttachment(
+    int id,
+    ReviewAttachmentRequest request,
+  ) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_base/$id/attachments',
+      request.toJson(),
+    );
+    return ReviewAttachment.fromJson(json);
+  }
+
+  /// Answers plain text.
+  Future<void> deleteAttachment(int id, int attachmentId) =>
+      _api.deleteText('$_base/$id/attachments/$attachmentId');
+
   Future<PerformanceReview> finalise(int id) async {
     final json = await _api.patch<Map<String, dynamic>>('$_base/$id/finalise');
     return PerformanceReview.fromJson(json);
@@ -158,3 +204,20 @@ final myReviewsProvider = FutureProvider<List<PerformanceReview>>((ref) async {
   if (employee == null) return const [];
   return ref.read(performanceRepositoryProvider).forEmployee(employee.id);
 });
+
+/// The objective figures for one employee over one period.
+///
+/// Keyed on all three, because the endpoint requires all three and the same
+/// employee over a different window is a different answer.
+final reviewKpisProvider = FutureProvider.autoDispose
+    .family<PerformanceKpis, ({int employeeId, String from, String to})>(
+  (ref, key) => ref
+      .read(performanceRepositoryProvider)
+      .kpis(key.employeeId, key.from, key.to),
+);
+
+/// The files kept with one review.
+final reviewAttachmentsProvider =
+    FutureProvider.autoDispose.family<List<ReviewAttachment>, int>(
+  (ref, id) => ref.read(performanceRepositoryProvider).attachments(id),
+);

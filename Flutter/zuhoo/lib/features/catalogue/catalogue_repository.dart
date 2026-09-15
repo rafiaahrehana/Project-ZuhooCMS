@@ -33,7 +33,7 @@ class CatalogueRepository {
         ServiceListing.fromJson,
         page: page,
         size: size,
-        query: {if (categoryId != null) 'categoryId': categoryId},
+        query: {'categoryId': ?categoryId},
       );
 
   Future<ServiceListing> createService(ServiceListingRequest request) async {
@@ -109,6 +109,31 @@ class CatalogueRepository {
 
   // ── Packages ────────────────────────────────────────────────
 
+  /// The packages actually on sale.
+  ///
+  /// Its own endpoint rather than a filter over the list. A package that has
+  /// been switched off keeps every subscription already on it — it simply
+  /// stops being offered — so "what can be sold now" and "what exists" are
+  /// genuinely different questions.
+  Future<List<ServicePackage>> activePackages() async {
+    final list = await _api.get<List<dynamic>>('/packages/active');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(ServicePackage.fromJson)
+        .toList(growable: false);
+  }
+
+  /// The templates under one category.
+  Future<List<ServiceTemplate>> templatesInCategory(int categoryId) async {
+    final page = await _api.getPaged(
+      '/v1/service-templates/category/$categoryId',
+      ServiceTemplate.fromJson,
+      page: 0,
+      size: 50,
+    );
+    return page.content;
+  }
+
   Future<PagedResponse<ServicePackage>> packages({
     int page = 0,
     int size = 30,
@@ -150,7 +175,7 @@ class CatalogueRepository {
         PackageSubscription.fromJson,
         page: page,
         size: size,
-        query: {if (status != null) 'status': status},
+        query: {'status': ?status},
       );
 
   /// Puts a client on a package. Staff pass [clientId]; a client subscribing
@@ -162,8 +187,8 @@ class CatalogueRepository {
   }) async {
     final json = await _api.post<Map<String, dynamic>>('/packages/subscribe', {
       'packageId': packageId,
-      if (clientId != null) 'clientId': clientId,
-      if (autoRenew != null) 'autoRenew': autoRenew,
+      'clientId': ?clientId,
+      'autoRenew': ?autoRenew,
     });
     return PackageSubscription.fromJson(json);
   }
@@ -359,4 +384,18 @@ class SubscriptionsController extends AsyncNotifier<List<PackageSubscription>> {
 final subscriptionsProvider =
     AsyncNotifierProvider<SubscriptionsController, List<PackageSubscription>>(
   SubscriptionsController.new,
+);
+
+
+/// The packages a client can actually be signed up to.
+final activePackagesProvider =
+    FutureProvider.autoDispose<List<ServicePackage>>((ref) {
+  return ref.read(catalogueRepositoryProvider).activePackages();
+});
+
+/// The templates under one category.
+final templatesInCategoryProvider =
+    FutureProvider.autoDispose.family<List<ServiceTemplate>, int>(
+  (ref, categoryId) =>
+      ref.read(catalogueRepositoryProvider).templatesInCategory(categoryId),
 );

@@ -9,9 +9,11 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
 import '../../shared/widgets/stat_card.dart';
+import '../finance/finance_models.dart' show payrollPaymentMethods, paymentMethodLabel;
 import '../payslips/payslip_models.dart' show PayrollPermissions, Payslip;
 import 'payroll_models.dart';
 import 'payroll_repository.dart';
+import 'salary_sheet_screen.dart';
 import 'payroll_sheets.dart';
 
 /// Running payroll for a month.
@@ -62,6 +64,11 @@ class PayrollScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Payroll'),
         actions: [
+          IconButton(
+            onPressed: () => SalarySheetScreen.open(context),
+            tooltip: 'Salary sheet',
+            icon: const Icon(Icons.list_alt_rounded),
+          ),
           const _ExportMenu(),
           if (permissions.has(PayrollPermissions.process))
             IconButton(
@@ -394,7 +401,12 @@ class _Trend extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           SizedBox(
-            height: 84,
+            // 64 for the tallest bar, 6 for the gap, and the rest for the
+            // month label — which was budgeted at 14 and renders at 15, so
+            // this strip overflowed by exactly one pixel on every payroll
+            // screen. Scaled, because the label grows with the reader's text
+            // size and a fixed strip clips it outright.
+            height: scaledStripHeight(context, 88),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -780,7 +792,6 @@ class _LinesSectionState extends ConsumerState<_LinesSection> {
 
   @override
   Widget build(BuildContext context) {
-    final bos = Theme.of(context).bos;
     final lines = ref.watch(payrollLinesProvider);
     final permissions = ref.watch(permissionControllerProvider);
     final canProcess = permissions.has(PayrollPermissions.process);
@@ -840,14 +851,124 @@ class _LinesSectionState extends ConsumerState<_LinesSection> {
   }
 }
 
-class _LineRow extends StatelessWidget {
+/// The states a payroll line moves through, and what may be done in each.
+///
+/// Straight from the backend's `PayrollStatus`. A line is approved before it
+/// is paid, and once paid nothing further happens to it — which is why the
+/// row offers different actions at each point rather than all of them always.
+abstract final class PayrollLineStatus {
+  static const draft = 'DRAFT';
+  static const approved = 'APPROVED';
+  static const paid = 'PAID';
+  static const cancelled = 'CANCELLED';
+}
+
+class _LineRow extends ConsumerStatefulWidget {
   const _LineRow({required this.line});
 
   final Payslip line;
 
   @override
+  ConsumerState<_LineRow> createState() => _LineRowState();
+}
+
+class _LineRowState extends ConsumerState<_LineRow> {
+  bool _busy = false;
+
+  Future<void> _run(
+    Future<void> Function(PayrollRepository) action,
+    String done,
+  ) async {
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action(ref.read(payrollRepositoryProvider));
+      ref.invalidate(payrollLinesProvider);
+      ref.invalidate(payrollDashboardProvider);
+      messenger.showSnackBar(SnackBar(content: Text(done)));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('That did not go through.')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Records that one person's pay has actually gone out.
+  ///
+  /// Both details are optional query parameters. Neither can be corrected
+  /// afterwards — there is no endpoint to unpay a line — so the sheet says so
+  /// before it sends.
+  Future<void> _pay() async {
+    final method = await pickOne(
+      context,
+      // The same six the run-level sheet offers and the backend accepts —
+      // hardcoding three here quietly hid bKash, Nagad and Rocket.
+      options: [
+        for (final method in payrollPaymentMethods)
+          (value: method, label: paymentMethodLabel(method)),
+      ],
+    );
+    if (method == null || !mounted) return;
+
+    final reference = await askForText(
+      context,
+      title: 'Reference',
+      message: 'A transfer or cheque number, if there is one. This cannot be '
+          'changed afterwards.',
+      label: 'Reference',
+      action: 'Record it',
+    );
+    if (!mounted) return;
+
+    await _run(
+      (repo) => repo.payLine(
+        widget.line.id,
+        paymentMethod: method,
+        paymentReference: reference,
+      ),
+      'Recorded as paid.',
+    );
+  }
+
+  Future<void> _delete() async {
+    final confirmed = await confirmAction(
+      context,
+      title: 'Remove ${widget.line.employeeName} from this run?',
+      message: 'Their line goes. Generating again would put it back, using '
+          'whatever their structure and attendance say then.',
+      action: 'Remove',
+    );
+    if (!confirmed || !mounted) return;
+    await _run((repo) => repo.deleteLine(widget.line.id), 'Removed.');
+  }
+
+  @override
   Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
+    final line = widget.line;
+    final permissions = ref.watch(permissionControllerProvider);
+    final canApprove = permissions.has(PayrollPermissions.approve);
+    final canProcess = permissions.has(PayrollPermissions.process);
+
+    final actions = <PopupMenuEntry<String>>[
+      if (canApprove && line.status == PayrollLineStatus.draft)
+        const PopupMenuItem(value: 'approve', child: Text('Approve')),
+      // Paying is only meaningful once it has been approved.
+      if (canProcess && line.status == PayrollLineStatus.approved)
+        const PopupMenuItem(value: 'pay', child: Text('Record as paid')),
+      if (canProcess && line.status != PayrollLineStatus.paid)
+        PopupMenuItem(
+          value: 'delete',
+          child: Text(
+            'Remove from the run',
+            style: TextStyle(color: bos.danger),
+          ),
+        ),
+    ];
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -896,6 +1017,27 @@ class _LineRow extends StatelessWidget {
                 StatusChip(line.status, dense: true),
               ],
             ),
+            if (_busy)
+              const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: SizedBox(
+                  height: 16,
+                  width: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else if (actions.isNotEmpty)
+              PopupMenuButton<String>(
+                onSelected: (value) => switch (value) {
+                  'approve' => _run(
+                      (repo) => repo.approveLine(line.id),
+                      'Approved.',
+                    ),
+                  'pay' => _pay(),
+                  _ => _delete(),
+                },
+                itemBuilder: (context) => actions,
+              ),
           ],
         ),
       ),

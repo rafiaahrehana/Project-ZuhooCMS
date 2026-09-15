@@ -8,6 +8,9 @@ import 'package:zuhoo/features/portal/portal_models.dart'
 /// what a figure *means* — a change that reads as growth, a charge that reads
 /// as a top-up, a percentage that claims something is known when it is not.
 void main() {
+  _paymentMethodSets();
+  _walletDirection();
+
   FinanceOverview overview({
     double revenue = 0,
     double expenses = 0,
@@ -189,18 +192,24 @@ void main() {
     test('direction comes from the type, not the sign of the amount', () {
       // The backend stores positive magnitudes on both sides. Reading the sign
       // would paint every charge as a top-up — money appearing out of nowhere.
-      expect(tx('TOP_UP').isCredit, isTrue);
-      expect(tx('REFUND').isCredit, isTrue);
+      //
+      // These are WalletTransactionType, checked against the enum rather than
+      // guessed: the previous version of this test asserted TOP_UP, PAYMENT,
+      // CHARGE and WITHDRAWAL, none of which the backend has ever sent, and
+      // so agreed with the code while both were describing a wallet nobody
+      // was talking to.
       expect(tx('CREDIT').isCredit, isTrue);
+      expect(tx('CREDIT_APPLIED').isCredit, isTrue);
+      expect(tx('REFUND_CREDIT').isCredit, isTrue);
+      expect(tx('REFERRAL_REWARD').isCredit, isTrue);
 
-      expect(tx('PAYMENT').isCredit, isFalse);
-      expect(tx('CHARGE').isCredit, isFalse);
-      expect(tx('WITHDRAWAL').isCredit, isFalse);
+      expect(tx('DEBIT').isCredit, isFalse);
     });
 
     test('an unrecognised type is treated as a debit', () {
-      // The safe direction: showing an unknown movement as money out is a
-      // smaller error than showing it as money in.
+      // The safe direction, and the reason `isCredit` lists the credits
+      // rather than testing for "not DEBIT": showing an unknown movement as
+      // money out is a smaller error than showing it as money in.
       expect(tx('SOME_NEW_TYPE').isCredit, isFalse);
     });
   });
@@ -353,6 +362,96 @@ void main() {
       // A string, not a number: it is prompt context, not a figure.
       expect(json['amount'], '1200');
       expect(json['category'], 'Travel');
+    });
+  });
+}
+
+/// Which way the wallet arrow points.
+///
+/// The backend stores every amount as a positive magnitude, so the sign of
+/// `amount` says nothing about direction — the type is the only signal, and
+/// getting it wrong draws a red outgoing arrow on money that came in.
+void _walletDirection() {
+  group('WalletTransaction.isCredit', () {
+    WalletTransaction of(String type) =>
+        WalletTransaction.fromJson({'id': 1, 'type': type, 'amount': 500});
+
+    test('every type the backend credits reads as money in', () {
+      // WalletServiceImpl.credit() records exactly these four.
+      for (final type in walletCreditTypes) {
+        expect(of(type).isCredit, isTrue, reason: '$type is a credit');
+      }
+    });
+
+    test('the three that used to read as debits', () {
+      // The old hand-written list had only CREDIT of the four, so these drew
+      // a red arrow pointing out of the wallet.
+      expect(of('CREDIT_APPLIED').isCredit, isTrue);
+      expect(of('REFUND_CREDIT').isCredit, isTrue);
+      expect(of('REFERRAL_REWARD').isCredit, isTrue);
+    });
+
+    test('DEBIT is money out', () {
+      expect(of(walletDebitType).isCredit, isFalse);
+    });
+
+    test('the backend still has exactly one outgoing type', () {
+      // Pins WalletTransactionType. If a second debit type is ever added,
+      // this fails and `isCredit` has to be reconsidered rather than quietly
+      // reading the new type as money coming in.
+      expect(
+        {walletDebitType, ...walletCreditTypes},
+        {'DEBIT', 'CREDIT', 'CREDIT_APPLIED', 'REFUND_CREDIT', 'REFERRAL_REWARD'},
+        reason: 'mirrors com.zuhoocms.enums.WalletTransactionType',
+      );
+    });
+  });
+}
+
+/// Which payment rails each side of the money offers.
+void _paymentMethodSets() {
+  group('payment methods', () {
+    test('collections offer every rail the backend has', () {
+      // Money coming in: the full PaymentMethod enum.
+      expect(paymentMethods.toSet(), {
+        'BKASH', 'NAGAD', 'ROCKET', 'SSLCOMMERZ',
+        'BANK_TRANSFER', 'CASH', 'WALLET', 'CHEQUE',
+      });
+    });
+
+    test('payroll drops the two the backend refuses', () {
+      // guardPayoutMethod throws a 400 for both: SSLCommerz has no payout
+      // API and WALLET has no per-employee counterparty.
+      expect(payrollPaymentMethods, isNot(contains('SSLCOMMERZ')));
+      expect(payrollPaymentMethods, isNot(contains('WALLET')));
+    });
+
+    test('payroll keeps the mobile-money rails', () {
+      // The regression this pins: one payroll sheet hardcoded bank/cash/
+      // cheque, so bKash, Nagad and Rocket could not be recorded at all.
+      expect(payrollPaymentMethods, containsAll(['BKASH', 'NAGAD', 'ROCKET']));
+    });
+
+    test('the brands keep their own capitalisation', () {
+      // Fmt.label would render these "Bkash" and "Sslcommerz"; they are
+      // proper nouns, and three of them are the rails most of this app's
+      // payments actually run on.
+      expect(paymentMethodLabel('BKASH'), 'bKash');
+      expect(paymentMethodLabel('SSLCOMMERZ'), 'SSLCommerz');
+      expect(paymentMethodLabel('NAGAD'), 'Nagad');
+      expect(paymentMethodLabel('ROCKET'), 'Rocket');
+
+      // Everything else still goes through the ordinary formatter.
+      expect(paymentMethodLabel('BANK_TRANSFER'), 'Bank Transfer');
+      expect(paymentMethodLabel('CASH'), 'Cash');
+    });
+
+    test('payroll is exactly the set the backend names in its own error', () {
+      expect(payrollPaymentMethods.toSet(), {
+        'BANK_TRANSFER', 'BKASH', 'NAGAD', 'ROCKET', 'CHEQUE', 'CASH',
+      });
+      // ...and nothing outside the shared enum.
+      expect(paymentMethods.toSet().containsAll(payrollPaymentMethods), isTrue);
     });
   });
 }

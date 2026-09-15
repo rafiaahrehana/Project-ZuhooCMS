@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/theme/bos_tokens.dart';
+import '../shared/widgets/brand_mark.dart';
 
 /// Shown only while the stored session is being read back.
 ///
@@ -19,16 +20,7 @@ class SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              height: 66,
-              width: 66,
-              decoration: BoxDecoration(
-                color: bos.brand,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: const Icon(Icons.grid_view_rounded,
-                  color: Colors.white, size: 32),
-            ),
+            const BrandMark(size: 66),
             const SizedBox(height: 18),
             Text(
               'Zuhoo',

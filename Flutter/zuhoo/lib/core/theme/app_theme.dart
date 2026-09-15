@@ -163,6 +163,25 @@ class AppTheme {
           fontSize: 12.5,
           fontWeight: FontWeight.w600,
         ),
+        // The selected state was never given a colour, so it fell through to
+        // Material's default of secondaryContainer — derived from
+        // `secondary`, which is the info blue. Every FilterBar in the app
+        // therefore marked its selection in a colour the app uses for
+        // something else, under a label still painted for the unselected
+        // background. The hand-built chip strips (CRM's stages, the
+        // department filter) had always used the brand for this; these now
+        // match them.
+        //
+        // ChoiceChip reads the *secondary* pair when it is selected, so both
+        // have to be set — `selectedColor` alone leaves the label dark.
+        selectedColor: bos.brand,
+        secondarySelectedColor: bos.brand,
+        checkmarkColor: Colors.white,
+        secondaryLabelStyle: const TextStyle(
+          color: Colors.white,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+        ),
         shape: const StadiumBorder(),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       ),

@@ -6,6 +6,7 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/date_field.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/step_indicator.dart';
 import '../crm/crm_controllers.dart';
 import '../portal/portal_models.dart' show Invoice, InvoiceItem;
 import 'finance_models.dart';
@@ -32,10 +33,13 @@ Future<Invoice?> showEditInvoiceSheet(BuildContext context, Invoice invoice) {
 /// One editable line. Held as controllers rather than values so the fields keep
 /// their cursor position while the total above them recomputes on every keystroke.
 class _LineControllers {
-  _LineControllers({String description = '', String quantity = '1', String unitPrice = ''})
-      : description = TextEditingController(text: description),
-        quantity = TextEditingController(text: quantity),
-        unitPrice = TextEditingController(text: unitPrice);
+  _LineControllers({
+    String description = '',
+    String quantity = '1',
+    String unitPrice = '',
+  }) : description = TextEditingController(text: description),
+       quantity = TextEditingController(text: quantity),
+       unitPrice = TextEditingController(text: unitPrice);
 
   final TextEditingController description;
   final TextEditingController quantity;
@@ -46,14 +50,13 @@ class _LineControllers {
       (double.tryParse(unitPrice.text.trim()) ?? 0);
 
   bool get isBlank =>
-      description.text.trim().isEmpty &&
-      unitPrice.text.trim().isEmpty;
+      description.text.trim().isEmpty && unitPrice.text.trim().isEmpty;
 
   InvoiceItem toItem() => InvoiceItem(
-        description: description.text,
-        quantity: double.tryParse(quantity.text.trim()) ?? 0,
-        unitPrice: double.tryParse(unitPrice.text.trim()) ?? 0,
-      );
+    description: description.text,
+    quantity: double.tryParse(quantity.text.trim()) ?? 0,
+    unitPrice: double.tryParse(unitPrice.text.trim()) ?? 0,
+  );
 
   void dispose() {
     description.dispose();
@@ -88,6 +91,16 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
   bool _submitting = false;
   String? _error;
 
+  static const _stepLabels = ['Details', 'Line items'];
+
+  /// Only meaningful when creating: step 0 is who the invoice is for, when
+  /// and on what terms; step 1 is what it is actually charging for. An edit
+  /// shows both at once, same as before this existed — the client can't
+  /// change once an invoice exists (see the read-only field below), so
+  /// there is less reason to split an edit into screens the way a from-
+  /// scratch invoice benefits from.
+  int _step = 0;
+
   bool get _isEdit => widget.existing != null;
 
   @override
@@ -96,23 +109,28 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
     final existing = widget.existing;
     _clientId = existing?.clientId;
     _invoiceDate = Fmt.parse(existing?.invoiceDate) ?? DateTime.now();
-    _dueDate = Fmt.parse(existing?.dueDate) ??
+    _dueDate =
+        Fmt.parse(existing?.dueDate) ??
         DateTime.now().add(const Duration(days: 30));
     _paymentTerms = existing?.paymentTerms;
     _description.text = existing?.description ?? '';
     _notes.text = existing?.notes ?? '';
-    _taxRate.text =
-        existing?.taxRatePercent == null ? '' : '${existing!.taxRatePercent}';
-    _discount.text =
-        existing?.discountAmount == null ? '' : '${existing!.discountAmount}';
+    _taxRate.text = existing?.taxRatePercent == null
+        ? ''
+        : '${existing!.taxRatePercent}';
+    _discount.text = existing?.discountAmount == null
+        ? ''
+        : '${existing!.discountAmount}';
 
     if (existing != null && existing.items.isNotEmpty) {
       for (final item in existing.items) {
-        _lines.add(_LineControllers(
-          description: item.description,
-          quantity: '${item.quantity}',
-          unitPrice: '${item.unitPrice}',
-        ));
+        _lines.add(
+          _LineControllers(
+            description: item.description,
+            quantity: '${item.quantity}',
+            unitPrice: '${item.unitPrice}',
+          ),
+        );
       }
     } else {
       _lines.add(_LineControllers());
@@ -131,13 +149,35 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
     super.dispose();
   }
 
-  double get _subtotal =>
-      _lines.fold(0, (total, line) => total + line.amount);
+  double get _subtotal => _lines.fold(0, (total, line) => total + line.amount);
 
   double get _total {
     final rate = double.tryParse(_taxRate.text.trim()) ?? 0;
     final discount = double.tryParse(_discount.text.trim()) ?? 0;
     return _subtotal + (_subtotal * rate / 100) - discount;
+  }
+
+  /// Catches the two things step 1 cannot fix on its own — no client chosen,
+  /// or a due date that has already passed the invoice date — before
+  /// showing the line items, rather than letting somebody fill in a full
+  /// set of lines and only then discover the invoice can't be raised.
+  /// [_submit] repeats both checks regardless, since an edit skips this
+  /// gate entirely and reaches them straight from the single-screen form.
+  void _goToStep1() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_clientId == null) {
+      setState(() => _error = 'Choose who the invoice is for.');
+      return;
+    }
+    if (_dueDate.isBefore(_invoiceDate)) {
+      setState(() => _error = 'The invoice falls due before it is raised.');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _error = null;
+      _step = 1;
+    });
   }
 
   Future<void> _submit() async {
@@ -185,7 +225,10 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
     final controller = ref.read(invoicesProvider.notifier);
     try {
       if (_isEdit) {
-        final updated = await controller.update(widget.existing!.id, request);
+        final updated = await controller.updateItem(
+          widget.existing!.id,
+          request,
+        );
         if (!mounted) return;
         navigator.pop(updated);
         messenger.showSnackBar(
@@ -203,9 +246,11 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
       if (mounted) setState(() => _error = e.message);
     } catch (_) {
       if (mounted) {
-        setState(() => _error = _isEdit
-            ? 'Could not update that invoice.'
-            : 'Could not raise that invoice.');
+        setState(
+          () => _error = _isEdit
+              ? 'Could not update that invoice.'
+              : 'Could not raise that invoice.',
+        );
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -243,6 +288,10 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
                   style: TextStyle(color: bos.muted, fontSize: 13),
                 ),
               ],
+              if (!_isEdit) ...[
+                const SizedBox(height: 14),
+                FormStepIndicator(labels: _stepLabels, step: _step),
+              ],
               const SizedBox(height: 18),
               if (_error != null) ...[
                 MessageBanner.error(
@@ -252,205 +301,240 @@ class _InvoiceFormSheetState extends ConsumerState<_InvoiceFormSheet> {
                 const SizedBox(height: 14),
               ],
 
-              // The client cannot move once the invoice exists: the endpoint
-              // takes a clientId but reassigning a raised invoice is not a
-              // thing this form should quietly allow.
-              if (_isEdit)
-                InputDecorator(
-                  decoration: const InputDecoration(
-                    labelText: 'Client',
-                    prefixIcon: Icon(Icons.business_outlined),
-                  ),
-                  child: Text(
-                    widget.existing!.clientName ?? 'Unchanged',
-                    style: TextStyle(color: bos.text, fontSize: 15),
-                  ),
-                )
-              else
-                clients.when(
-                  loading: () => const Loader(padding: 12),
-                  error: (_, _) => const MessageBanner.error(
-                    'Could not load your clients.',
-                  ),
-                  data: (state) {
-                    if (state.items.isEmpty) {
-                      return const MessageBanner.info(
-                        'No clients yet. An invoice needs one.',
-                      );
-                    }
-                    return DropdownButtonFormField<int>(
-                      initialValue: _clientId,
-                      decoration: const InputDecoration(
-                        labelText: 'Client',
-                        prefixIcon: Icon(Icons.business_outlined),
-                      ),
-                      items: [
-                        for (final client in state.items)
-                          DropdownMenuItem(
-                            value: client.id,
-                            child: Text(
-                              client.headline,
-                              overflow: TextOverflow.ellipsis,
+              if (_isEdit || _step == 0) ...[
+                // The client cannot move once the invoice exists: the endpoint
+                // takes a clientId but reassigning a raised invoice is not a
+                // thing this form should quietly allow.
+                if (_isEdit)
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Client',
+                      prefixIcon: Icon(Icons.business_outlined),
+                    ),
+                    child: Text(
+                      widget.existing!.clientName ?? 'Unchanged',
+                      style: TextStyle(color: bos.text, fontSize: 15),
+                    ),
+                  )
+                else
+                  clients.when(
+                    loading: () => const Loader(padding: 12),
+                    error: (_, _) => const MessageBanner.error(
+                      'Could not load your clients.',
+                    ),
+                    data: (state) {
+                      if (state.items.isEmpty) {
+                        return const MessageBanner.info(
+                          'No clients yet. An invoice needs one.',
+                        );
+                      }
+                      return DropdownButtonFormField<int>(
+                        initialValue: _clientId,
+                        decoration: const InputDecoration(
+                          labelText: 'Client',
+                          prefixIcon: Icon(Icons.business_outlined),
+                        ),
+                        items: [
+                          for (final client in state.items)
+                            DropdownMenuItem(
+                              value: client.id,
+                              child: Text(
+                                client.headline,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                          ),
-                      ],
-                      onChanged: _submitting
-                          ? null
-                          : (value) => setState(() => _clientId = value),
-                    );
+                        ],
+                        onChanged: _submitting
+                            ? null
+                            : (value) => setState(() => _clientId = value),
+                      );
+                    },
+                  ),
+                const SizedBox(height: 16),
+                DateField(
+                  label: 'Invoice date',
+                  value: _invoiceDate,
+                  enabled: !_submitting,
+                  clearable: false,
+                  firstDate: DateTime(now.year - 2),
+                  lastDate: DateTime(now.year + 1),
+                  onChanged: (date) {
+                    if (date != null) setState(() => _invoiceDate = date);
                   },
                 ),
-              const SizedBox(height: 16),
-              DateField(
-                label: 'Invoice date',
-                value: _invoiceDate,
-                enabled: !_submitting,
-                clearable: false,
-                firstDate: DateTime(now.year - 2),
-                lastDate: DateTime(now.year + 1),
-                onChanged: (date) {
-                  if (date != null) setState(() => _invoiceDate = date);
-                },
-              ),
-              const SizedBox(height: 16),
-              DateField(
-                label: 'Due',
-                icon: Icons.hourglass_bottom_rounded,
-                value: _dueDate,
-                enabled: !_submitting,
-                clearable: false,
-                firstDate: DateTime(now.year - 2),
-                lastDate: DateTime(now.year + 3),
-                onChanged: (date) {
-                  if (date != null) setState(() => _dueDate = date);
-                },
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: paymentTermsOptions.contains(_paymentTerms)
-                    ? _paymentTerms
-                    : null,
-                decoration: const InputDecoration(
-                  labelText: 'Payment terms (optional)',
-                  prefixIcon: Icon(Icons.schedule_rounded),
-                ),
-                items: [
-                  const DropdownMenuItem(value: null, child: Text('Not set')),
-                  for (final terms in paymentTermsOptions)
-                    DropdownMenuItem(
-                      value: terms,
-                      child: Text(Fmt.label(terms)),
-                    ),
-                ],
-                onChanged: _submitting
-                    ? null
-                    : (value) => setState(() => _paymentTerms = value),
-              ),
-              const SizedBox(height: 22),
-              SectionHeader(
-                'Lines',
-                icon: Icons.list_alt_rounded,
-                trailing: TextButton.icon(
-                  onPressed: _submitting
-                      ? null
-                      : () => setState(() => _lines.add(_LineControllers())),
-                  icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text('Add'),
-                ),
-              ),
-              const SizedBox(height: 8),
-              for (var i = 0; i < _lines.length; i++)
-                _LineRow(
-                  key: ObjectKey(_lines[i]),
-                  line: _lines[i],
+                const SizedBox(height: 16),
+                DateField(
+                  label: 'Due',
+                  icon: Icons.hourglass_bottom_rounded,
+                  value: _dueDate,
                   enabled: !_submitting,
-                  onChanged: () => setState(() {}),
-                  onRemove: _lines.length == 1
-                      ? null
-                      : () => setState(() => _lines.removeAt(i).dispose()),
+                  clearable: false,
+                  firstDate: DateTime(now.year - 2),
+                  lastDate: DateTime(now.year + 3),
+                  onChanged: (date) {
+                    if (date != null) setState(() => _dueDate = date);
+                  },
                 ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _taxRate,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Tax %'),
-                      onChanged: (_) => setState(() {}),
-                      validator: (value) {
-                        final trimmed = value?.trim() ?? '';
-                        if (trimmed.isEmpty) return null;
-                        final parsed = double.tryParse(trimmed);
-                        if (parsed == null) return 'Enter a number.';
-                        return parsed < 0 || parsed > 100
-                            ? 'Between 0 and 100.'
-                            : null;
-                      },
-                    ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: paymentTermsOptions.contains(_paymentTerms)
+                      ? _paymentTerms
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Payment terms (optional)',
+                    prefixIcon: Icon(Icons.schedule_rounded),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _discount,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Discount'),
-                      onChanged: (_) => setState(() {}),
-                      validator: (value) {
-                        final trimmed = value?.trim() ?? '';
-                        if (trimmed.isEmpty) return null;
-                        final parsed = double.tryParse(trimmed);
-                        if (parsed == null) return 'Enter a number.';
-                        return parsed < 0 ? 'Cannot be negative.' : null;
-                      },
-                    ),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Not set')),
+                    for (final terms in paymentTermsOptions)
+                      DropdownMenuItem(
+                        value: terms,
+                        child: Text(Fmt.label(terms)),
+                      ),
+                  ],
+                  onChanged: _submitting
+                      ? null
+                      : (value) => setState(() => _paymentTerms = value),
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _description,
+                  textCapitalization: TextCapitalization.sentences,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Description (optional)',
+                    alignLabelWithHint: true,
                   ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              AppCard(
-                child: Column(
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _notes,
+                  textCapitalization: TextCapitalization.sentences,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Notes (optional)',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ], // end of the "Details" (step 0) block
+              const SizedBox(height: 22),
+              if (_isEdit || _step == 1) ...[
+                SectionHeader(
+                  'Lines',
+                  icon: Icons.list_alt_rounded,
+                  trailing: TextButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => setState(() => _lines.add(_LineControllers())),
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('Add'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                for (var i = 0; i < _lines.length; i++)
+                  _LineRow(
+                    key: ObjectKey(_lines[i]),
+                    line: _lines[i],
+                    enabled: !_submitting,
+                    onChanged: () => setState(() {}),
+                    onRemove: _lines.length == 1
+                        ? null
+                        : () => setState(() => _lines.removeAt(i).dispose()),
+                  ),
+                const SizedBox(height: 16),
+                Row(
                   children: [
-                    _TotalRow(label: 'Subtotal', amount: _subtotal),
-                    const SizedBox(height: 6),
-                    _TotalRow(label: 'Total', amount: _total, emphasised: true),
-                    const SizedBox(height: 6),
-                    Text(
-                      'The backend works the real totals out; this is a preview.',
-                      style: TextStyle(color: bos.muted, fontSize: 11.5),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _taxRate,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(labelText: 'Tax %'),
+                        onChanged: (_) => setState(() {}),
+                        validator: (value) {
+                          final trimmed = value?.trim() ?? '';
+                          if (trimmed.isEmpty) return null;
+                          final parsed = double.tryParse(trimmed);
+                          if (parsed == null) return 'Enter a number.';
+                          return parsed < 0 || parsed > 100
+                              ? 'Between 0 and 100.'
+                              : null;
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _discount,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Discount',
+                        ),
+                        onChanged: (_) => setState(() {}),
+                        validator: (value) {
+                          final trimmed = value?.trim() ?? '';
+                          if (trimmed.isEmpty) return null;
+                          final parsed = double.tryParse(trimmed);
+                          if (parsed == null) return 'Enter a number.';
+                          return parsed < 0 ? 'Cannot be negative.' : null;
+                        },
+                      ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _description,
-                textCapitalization: TextCapitalization.sentences,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Description (optional)',
-                  alignLabelWithHint: true,
+                const SizedBox(height: 16),
+                AppCard(
+                  child: Column(
+                    children: [
+                      _TotalRow(label: 'Subtotal', amount: _subtotal),
+                      const SizedBox(height: 6),
+                      _TotalRow(
+                        label: 'Total',
+                        amount: _total,
+                        emphasised: true,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'The backend works the real totals out; this is a preview.',
+                        style: TextStyle(color: bos.muted, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _notes,
-                textCapitalization: TextCapitalization.sentences,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Notes (optional)',
-                  alignLabelWithHint: true,
-                ),
-              ),
+              ], // end of the "Line items" (step 1) block
               const SizedBox(height: 18),
-              LoadingButton(
-                label: _isEdit ? 'Save invoice' : 'Raise invoice',
-                loading: _submitting,
-                icon: _isEdit ? Icons.check_rounded : Icons.receipt_long_rounded,
-                onPressed: _submit,
-              ),
+              if (!_isEdit && _step == 0)
+                FilledButton.icon(
+                  onPressed: _goToStep1,
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: const Text('Next: Line items'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                )
+              else ...[
+                LoadingButton(
+                  label: _isEdit ? 'Save invoice' : 'Raise invoice',
+                  loading: _submitting,
+                  icon: _isEdit
+                      ? Icons.check_rounded
+                      : Icons.receipt_long_rounded,
+                  onPressed: _submit,
+                ),
+                if (!_isEdit) ...[
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => setState(() => _step = 0),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                    label: const Text('Back to details'),
+                  ),
+                ],
+              ],
             ],
           ),
         ),
@@ -509,8 +593,9 @@ class _LineRow extends StatelessWidget {
                 child: TextFormField(
                   controller: line.quantity,
                   enabled: enabled,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(labelText: 'Qty'),
                   onChanged: (_) => onChanged(),
                 ),
@@ -520,8 +605,9 @@ class _LineRow extends StatelessWidget {
                 child: TextFormField(
                   controller: line.unitPrice,
                   enabled: enabled,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(labelText: 'Unit price'),
                   onChanged: (_) => onChanged(),
                 ),

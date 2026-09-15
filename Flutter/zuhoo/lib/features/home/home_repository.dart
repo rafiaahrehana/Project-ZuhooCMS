@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
+import '../../core/storage/json_cache.dart';
 import '../profile/employee_repository.dart';
 
 /// A company announcement, from GET /api/announcements/active.
@@ -85,15 +88,25 @@ class Holiday {
 /// the right response to that is a shorter dashboard, not an error screen. So
 /// each fetch swallows its own failure and returns nothing.
 class HomeRepository {
-  HomeRepository(this._api);
+  HomeRepository(this._api, this._cache);
 
   final ApiClient _api;
+  final JsonCache _cache;
 
-  Future<List<Announcement>> activeAnnouncements() =>
-      _optionalList('/announcements/active', Announcement.fromJson);
+  static const _announcementsCacheKey = 'home_announcements';
+  static const _holidaysCacheKey = 'home_holidays';
 
-  Future<List<Holiday>> currentYearHolidays() =>
-      _optionalList('/hr/holidays/current-year', Holiday.fromJson);
+  Future<CachedList<Announcement>> activeAnnouncements() => _cachedList(
+        '/announcements/active',
+        Announcement.fromJson,
+        _announcementsCacheKey,
+      );
+
+  Future<CachedList<Holiday>> currentYearHolidays() => _cachedList(
+        '/hr/holidays/current-year',
+        Holiday.fromJson,
+        _holidaysCacheKey,
+      );
 
   /// Service requests assigned to this employee that are still open.
   Future<int?> openRequestCount() async {
@@ -131,21 +144,52 @@ class HomeRepository {
     }
   }
 
-  Future<List<T>> _optionalList<T>(
+  /// Fetches a plain list, falling back to the last cached copy when the
+  /// request fails because the network itself is unreachable — not for a
+  /// real "no" from the server (403, an empty company-wide list), only for
+  /// "could not ask at all". A cache miss on top of that just means an empty
+  /// list, same as before this existed.
+  Future<CachedList<T>> _cachedList<T>(
     String path,
     T Function(Map<String, dynamic>) fromJson,
+    String cacheKey,
   ) async {
     try {
       final list = await _api.get<List<dynamic>>(path);
-      return list.whereType<Map<String, dynamic>>().map(fromJson).toList();
-    } on ApiException {
-      return const [];
+      final maps = list.whereType<Map<String, dynamic>>().toList(growable: false);
+      unawaited(_cache.write(cacheKey, maps));
+      return CachedList(items: maps.map(fromJson).toList(growable: false));
+    } on ApiException catch (e) {
+      if (e.isNetwork) {
+        final cached = _cache.read(cacheKey);
+        if (cached is List) {
+          final items = cached
+              .whereType<Map<String, dynamic>>()
+              .map(fromJson)
+              .toList(growable: false);
+          if (items.isNotEmpty) {
+            return CachedList(items: items, stale: true);
+          }
+        }
+      }
+      return const CachedList(items: []);
     }
   }
 }
 
+/// The result of [HomeRepository._cachedList]: what to show, and whether it
+/// is what was actually asked for or a saved copy shown in its place because
+/// the network request itself could not be made.
+@immutable
+class CachedList<T> {
+  const CachedList({required this.items, this.stale = false});
+
+  final List<T> items;
+  final bool stale;
+}
+
 final homeRepositoryProvider = Provider<HomeRepository>(
-  (ref) => HomeRepository(ref.watch(apiClientProvider)),
+  (ref) => HomeRepository(ref.watch(apiClientProvider), ref.watch(jsonCacheProvider)),
 );
 
 @immutable
@@ -154,6 +198,7 @@ class NoticeBoard {
     this.announcements = const [],
     this.holidays = const [],
     this.openRequests,
+    this.offline = false,
   });
 
   final List<Announcement> announcements;
@@ -164,6 +209,12 @@ class NoticeBoard {
   /// Null means "could not be determined", which renders as a dash. Zero is a
   /// real answer and renders as zero.
   final int? openRequests;
+
+  /// True when either list above is a cached copy shown because the network
+  /// request itself failed — not because the server said no. The dashboard
+  /// uses this to add a small "showing saved data" note rather than pretend
+  /// the figures are current.
+  final bool offline;
 }
 
 /// Kept separate from [noticeBoardProvider] because it is keyed on the
@@ -190,13 +241,13 @@ final noticeBoardProvider = FutureProvider<NoticeBoard>((ref) async {
   holidaysCall.ignore();
   requestsCall.ignore();
 
-  final announcements = await announcementsCall;
-  final holidays = await holidaysCall;
+  final announcementsResult = await announcementsCall;
+  final holidaysResult = await holidaysCall;
 
-  final upcoming = holidays.where((h) => h.daysAway >= 0).toList()
+  final upcoming = holidaysResult.items.where((h) => h.daysAway >= 0).toList()
     ..sort((a, b) => a.daysAway.compareTo(b.daysAway));
 
-  final sorted = [...announcements]..sort((a, b) {
+  final sorted = [...announcementsResult.items]..sort((a, b) {
       // Higher priority first, then most recent.
       final byPriority = b.priority.compareTo(a.priority);
       if (byPriority != 0) return byPriority;
@@ -207,6 +258,7 @@ final noticeBoardProvider = FutureProvider<NoticeBoard>((ref) async {
     announcements: sorted,
     holidays: upcoming,
     openRequests: await requestsCall,
+    offline: announcementsResult.stale || holidaysResult.stale,
   );
 });
 

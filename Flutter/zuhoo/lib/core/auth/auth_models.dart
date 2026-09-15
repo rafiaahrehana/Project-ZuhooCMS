@@ -96,6 +96,21 @@ class AppUser {
     return (parts.first[0] + parts.last[0]).toUpperCase();
   }
 
+  /// The role to show a person about themselves, as words rather than as the
+  /// backend's constant — "Company owner", not `COMPANY_OWNER`.
+  ///
+  /// Only the first role is shown. Accounts here carry one role that decides
+  /// what they see; listing the rest would fill the line with detail nobody
+  /// reading a drawer header is asking for.
+  String get roleLabel {
+    if (roles.isEmpty) return 'Member';
+    final words = roles.first.split('_').where((w) => w.isNotEmpty);
+    if (words.isEmpty) return 'Member';
+    return words
+        .map((w) => w[0].toUpperCase() + w.substring(1).toLowerCase())
+        .join(' ');
+  }
+
   AppUser copyWith({
     String? fullName,
     List<String>? roles,
@@ -299,6 +314,23 @@ class ChangePasswordRequest {
         'currentPassword': currentPassword,
         'newPassword': newPassword,
         'confirmPassword': confirmPassword,
+      };
+}
+
+/// The email is the sign-in identifier, so changing it is re-authenticated
+/// with the current password — same shape as [ChangePasswordRequest].
+class ChangeEmailRequest {
+  const ChangeEmailRequest({
+    required this.email,
+    required this.currentPassword,
+  });
+
+  final String email;
+  final String currentPassword;
+
+  Map<String, dynamic> toJson() => {
+        'email': email,
+        'currentPassword': currentPassword,
       };
 }
 

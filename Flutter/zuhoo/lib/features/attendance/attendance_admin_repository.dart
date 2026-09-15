@@ -39,8 +39,8 @@ class AttendanceAdminRepository {
         page: page,
         size: size,
         query: {
-          if (status != null) 'status': status,
-          if (date != null) 'date': date,
+          'status': ?status,
+          'date': ?date,
           if (search != null && search.isNotEmpty) 'search': search,
         },
       );
@@ -57,7 +57,7 @@ class AttendanceAdminRepository {
         AttendanceRecord.fromJson,
         page: page,
         size: size,
-        query: {if (date != null) 'date': date},
+        query: {'date': ?date},
       );
 
   // ── Correcting it ───────────────────────────────────────────
@@ -99,7 +99,7 @@ class AttendanceAdminRepository {
   Future<DailyAttendanceReport> dailyReport({String? date}) async {
     final json = await _api.get<Map<String, dynamic>>(
       '$_reports/daily',
-      query: {if (date != null) 'date': date},
+      query: {'date': ?date},
     );
     return DailyAttendanceReport.fromJson(json);
   }
@@ -132,7 +132,7 @@ class AttendanceAdminRepository {
   }) async {
     final json = await _api.get<Map<String, dynamic>>(
       '$_reports/late-absent',
-      query: {if (date != null) 'date': date},
+      query: {'date': ?date},
     );
     return (
       lateCount: (json['lateCount'] as num?)?.toInt() ?? 0,
@@ -176,19 +176,6 @@ class AttendanceAdminRepository {
       _api.delete<dynamic>('$_assignments/$id');
 
   // ── Timesheets ──────────────────────────────────────────────
-
-  /// One person's timesheets.
-  Future<PagedResponse<Timesheet>> timesheetsFor(
-    int employeeId, {
-    int page = 0,
-    int size = 31,
-  }) =>
-      _api.getPaged(
-        '$_timesheets/employee/$employeeId',
-        Timesheet.fromJson,
-        page: page,
-        size: size,
-      );
 
   /// One person's timesheets over a range. A bare list.
   Future<List<Timesheet>> timesheetRange(
@@ -241,20 +228,45 @@ final attendanceDayProvider =
   AttendanceDayController.new,
 );
 
+/// Who the team list is narrowed to. Empty is everybody.
+///
+/// The endpoint has taken a `search` all along and nothing passed one, so on a
+/// day with a few hundred records the only way to find one person was to
+/// scroll. Held separately from the field for the same reason the directory's
+/// is: the controller rebuilds on the term without the text box owning the
+/// request.
+class TeamAttendanceSearchController extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void set(String value) {
+    final trimmed = value.trim();
+    if (state == trimmed) return;
+    state = trimmed;
+  }
+}
+
+final teamAttendanceSearchProvider =
+    NotifierProvider<TeamAttendanceSearchController, String>(
+  TeamAttendanceSearchController.new,
+);
+
 /// Everybody's records for the day in view.
 class TeamAttendanceController extends AsyncNotifier<List<AttendanceRecord>> {
   @override
   Future<List<AttendanceRecord>> build() {
     ref.watch(currentUserProvider);
     ref.watch(attendanceDayProvider);
+    ref.watch(teamAttendanceSearchProvider);
     return _load();
   }
 
   Future<List<AttendanceRecord>> _load() async {
     final day = ref.read(attendanceDayProvider);
+    final search = ref.read(teamAttendanceSearchProvider);
     final page = await ref
         .read(attendanceAdminRepositoryProvider)
-        .records(date: _iso(day));
+        .records(date: _iso(day), search: search.isEmpty ? null : search);
     return page.content;
   }
 

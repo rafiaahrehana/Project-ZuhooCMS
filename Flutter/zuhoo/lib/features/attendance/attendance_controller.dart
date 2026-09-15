@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_controller.dart';
+import '../../core/location/attendance_location.dart';
 import '../../core/network/paged_response.dart';
 import '../../shared/paged_controller.dart';
 import '../profile/employee_repository.dart';
@@ -84,15 +85,17 @@ class AttendanceController extends AsyncNotifier<AttendanceState> {
     state = await AsyncValue.guard(_load);
   }
 
-  Future<void> checkIn({String? notes, String? location}) =>
-      _punch((repo) => repo.checkIn(notes: notes, location: location));
+  Future<void> checkIn({String? notes, String? location, AttendanceLocation? gps}) =>
+      _punch((repo) => repo.checkIn(notes: notes, location: location, gps: gps));
 
-  Future<void> checkOut({String? location}) {
+  Future<void> checkOut({String? location, AttendanceLocation? gps}) {
     final record = state.value?.today;
     if (record == null) {
       throw StateError('Cannot check out before checking in');
     }
-    return _punch((repo) => repo.checkOut(record.id, location: location));
+    return _punch(
+      (repo) => repo.checkOut(record.id, location: location, gps: gps),
+    );
   }
 
   /// Runs a punch, then re-reads the day and the month.

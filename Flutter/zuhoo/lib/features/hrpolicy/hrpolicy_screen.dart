@@ -15,7 +15,9 @@ import 'hrpolicy_sheets.dart';
 /// The standing HR rules: days off, leave, hours, and the letters that record
 /// what was agreed.
 class HrPolicyScreen extends ConsumerWidget {
-  const HrPolicyScreen({super.key});
+  const HrPolicyScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -79,8 +81,13 @@ class HrPolicyScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -392,7 +399,7 @@ class _ShiftsTabState extends ConsumerState<_ShiftsTab> {
           if (shift.gracePeriodMinutes > 0)
             '${shift.gracePeriodMinutes} min grace',
         ].join(' · '),
-        trailingLabel: shift.weeklyOffDays,
+        trailingLabel: shift.weeklyOffLabel,
         busy: _busyId == shift.id,
         onEdit: canEdit ? () => showShiftSheet(context, existing: shift) : null,
         onToggle: canEdit ? () => _toggle(shift) : null,

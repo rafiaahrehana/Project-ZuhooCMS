@@ -10,9 +10,12 @@ import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
 import 'asset_detail_screen.dart';
 import 'asset_form_sheet.dart';
+import '../../shared/widgets/config_list.dart';
+import 'asset_history_screen.dart';
 import 'itam_models.dart';
 import 'itam_repository.dart';
 import 'license_form_sheet.dart';
+import 'software_detail_screen.dart';
 import 'offboarding_detail_screen.dart';
 import 'start_offboarding_sheet.dart';
 
@@ -23,7 +26,9 @@ import 'start_offboarding_sheet.dart';
 /// disappears rather than erroring — the three are independent entitlements
 /// and somebody may hold one and not the others.
 class ItamScreen extends ConsumerWidget {
-  const ItamScreen({super.key});
+  const ItamScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -91,8 +96,13 @@ class ItamScreen extends ConsumerWidget {
         ),
     };
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           final tabController = DefaultTabController.of(context);
@@ -104,6 +114,28 @@ class ItamScreen extends ConsumerWidget {
                 backgroundColor: bos.bgPage,
                 appBar: AppBar(
                   title: const Text('IT assets'),
+                  actions: [
+                    if (permissions.has(ItamPermissions.softwareView))
+                      const _RenewalsButton(),
+                    if (canHardware)
+                      PopupMenuButton<String>(
+                        onSelected: (value) => value == 'history'
+                            ? AssetHistoryScreen.open(context)
+                            : showAssetImportSheet(context),
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: 'history',
+                            child: Text('Where the kit has been'),
+                          ),
+                          if (permissions
+                              .has(ItamPermissions.hardwareCreate))
+                            const PopupMenuItem(
+                              value: 'import',
+                              child: Text('Import a CSV'),
+                            ),
+                        ],
+                      ),
+                  ],
                   bottom: TabBar(
                     tabs: [for (final tab in tabs) Tab(text: tab.label)],
                   ),
@@ -210,8 +242,13 @@ class _AssetRow extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
+                      // The point of this line is *who has it*. When that is
+                      // unknown the honest answer is that it is not recorded —
+                      // falling back to the word "Assigned" repeats the chip
+                      // two lines up and tells the reader nothing they cannot
+                      // already see.
                       asset.isAssigned
-                          ? (asset.assignedToName ?? 'Assigned')
+                          ? (asset.assignedToName ?? 'Holder not recorded')
                           : 'Unassigned',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -242,15 +279,53 @@ class _SoftwareTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return PagedListView<SoftwareLicense>(
-      async: ref.watch(licensesProvider),
-      onRefresh: () => ref.read(licensesProvider.notifier).refresh(),
-      onLoadMore: () => ref.read(licensesProvider.notifier).loadMore(),
-      emptyTitle: 'No licences yet',
-      emptyMessage: 'Software your company pays for appears here.',
-      emptyIcon: Icons.workspaces_outline,
-      errorMessage: 'Could not load the licence list.',
-      itemBuilder: (context, license) => _LicenseCard(license: license),
+    final status = ref.watch(licenceStatusFilterProvider);
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: FilterBar(
+            selected: status,
+            onSelected: ref.read(licenceStatusFilterProvider.notifier).set,
+            options: [
+              (value: null, label: 'All'),
+              for (final value in LicenceStatus.all)
+                (value: value, label: Fmt.label(value)),
+            ],
+          ),
+        ),
+        Expanded(
+          child: PagedListView<SoftwareLicense>(
+            async: ref.watch(licensesProvider),
+            onRefresh: () => ref.read(licensesProvider.notifier).refresh(),
+            onLoadMore: () => ref.read(licensesProvider.notifier).loadMore(),
+            emptyTitle:
+                status == null ? 'No licences yet' : 'Nothing in that state',
+            emptyMessage: 'Software your company pays for appears here.',
+            emptyIcon: Icons.workspaces_outline,
+            errorMessage: 'Could not load the licence list.',
+            itemBuilder: (context, license) => _LicenseCard(license: license),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Opens the renewals view.
+///
+/// Its own screen rather than a filter on the register: chasing renewals is a
+/// job somebody does on a particular day, not a way of browsing software.
+class _RenewalsButton extends StatelessWidget {
+  const _RenewalsButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: () => LicenceRenewalsScreen.open(context),
+      tooltip: 'What is running out',
+      icon: const Icon(Icons.event_busy_outlined),
     );
   }
 }
@@ -311,6 +386,7 @@ class _LicenseCardState extends ConsumerState<_LicenseCard> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
+        onTap: () => SoftwareDetailScreen.open(context, licence: license),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -462,12 +538,22 @@ class _OffboardingTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bos = Theme.of(context).bos;
-    final async = ref.watch(offboardingProvider);
+
+    // Two sources for the same thing: the full list is an archive that grows
+    // for ever, while /pending is only what somebody still has to work
+    // through. Most visits want the second.
+    final openOnly = ref.watch(offboardingOpenOnlyProvider);
+    final async = openOnly
+        ? ref.watch(pendingOffboardingProvider)
+        : ref.watch(offboardingProvider);
 
     return RefreshIndicator(
       color: bos.brand,
       backgroundColor: bos.bgCard,
-      onRefresh: () => ref.read(offboardingProvider.notifier).refresh(),
+      onRefresh: () async {
+        ref.invalidate(pendingOffboardingProvider);
+        await ref.read(offboardingProvider.notifier).refresh();
+      },
       child: async.when(
         loading: () => const Loader(),
         error: (error, _) => ErrorState(
@@ -479,13 +565,16 @@ class _OffboardingTab extends ConsumerWidget {
         data: (checklists) {
           if (checklists.isEmpty) {
             return ListView(
-              children: const [
-                SizedBox(height: 80),
+              children: [
+                const _OffboardingScope(),
+                const SizedBox(height: 60),
                 EmptyState(
                   icon: Icons.checklist_rtl_rounded,
-                  title: 'Nobody is leaving',
-                  message:
-                      'Offboarding checklists appear here when HR starts one.',
+                  title: openOnly ? 'Nothing outstanding' : 'Nobody is leaving',
+                  message: openOnly
+                      ? 'Every checklist has been worked through.'
+                      : 'Offboarding checklists appear here when HR starts '
+                          'one.',
                 ),
               ],
             );
@@ -500,9 +589,11 @@ class _OffboardingTab extends ConsumerWidget {
             });
 
           return ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
-            itemCount: sorted.length,
-            itemBuilder: (context, i) => _ChecklistRow(checklist: sorted[i]),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 90),
+            itemCount: sorted.length + 1,
+            itemBuilder: (context, i) => i == 0
+                ? const _OffboardingScope()
+                : _ChecklistRow(checklist: sorted[i - 1]),
           );
         },
       ),
@@ -593,6 +684,40 @@ class _ChecklistRow extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Whether the offboarding tab is showing only what is still open.
+class OffboardingOpenOnlyController extends Notifier<bool> {
+  @override
+  bool build() => true;
+
+  void set(bool openOnly) => state = openOnly;
+}
+
+final offboardingOpenOnlyProvider =
+    NotifierProvider<OffboardingOpenOnlyController, bool>(
+  OffboardingOpenOnlyController.new,
+);
+
+class _OffboardingScope extends ConsumerWidget {
+  const _OffboardingScope();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: FilterBar(
+        selected: ref.watch(offboardingOpenOnlyProvider) ? 'open' : null,
+        options: const [
+          (value: 'open', label: 'Still open'),
+          (value: null, label: 'All of them'),
+        ],
+        onSelected: (value) => ref
+            .read(offboardingOpenOnlyProvider.notifier)
+            .set(value == 'open'),
       ),
     );
   }

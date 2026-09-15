@@ -3,6 +3,11 @@ abstract final class KbPermissions {
   /// skips the check for a CLIENT user, who browses published, client-visible
   /// articles from the portal through the same endpoint.
   static const view = 'KNOWLEDGE_BASE_VIEW';
+  static const create = 'KNOWLEDGE_BASE_CREATE';
+
+  /// The one code that covers editing, publishing and archiving alike — there
+  /// is no separate publish permission, so anybody who can edit can publish.
+  static const update = 'KNOWLEDGE_BASE_UPDATE';
 }
 
 abstract final class KbArticleStatus {
@@ -26,7 +31,9 @@ class KbArticle {
     this.summary,
     this.content,
     this.keywords,
+    this.categoryId,
     this.categoryName,
+    this.relatedServiceId,
     this.relatedServiceName,
     this.authorName,
     this.clientVisible = false,
@@ -41,7 +48,9 @@ class KbArticle {
   final String? summary;
   final String? content;
   final String? keywords;
+  final int? categoryId;
   final String? categoryName;
+  final int? relatedServiceId;
   final String? relatedServiceName;
   final String? authorName;
 
@@ -87,10 +96,89 @@ class KbArticle {
         summary: json['summary'] as String?,
         content: json['content'] as String?,
         keywords: json['keywords'] as String?,
+        categoryId: (json['categoryId'] as num?)?.toInt(),
         categoryName: json['categoryName'] as String?,
+        relatedServiceId: (json['relatedServiceId'] as num?)?.toInt(),
         relatedServiceName: json['relatedServiceName'] as String?,
         authorName: json['authorName'] as String?,
         clientVisible: json['clientVisible'] as bool? ?? false,
         publishedAt: json['publishedAt'] as String?,
       );
+}
+
+
+/// Writing or rewriting an article.
+///
+/// `PATCH` in name only. `KbArticleServiceImpl.update` assigns every field
+/// without a null check, so an omitted key clears what was there — and
+/// `clientVisible` is a Java primitive, meaning an absent one arrives as
+/// `false` and quietly hides the article from clients. Nothing is optional in
+/// this model for that reason: the edit form always loads the article first
+/// and sends it back whole.
+///
+/// The status is not in here. Publishing and archiving have their own
+/// endpoints, and an edit never changes it.
+class KbArticleRequest {
+  const KbArticleRequest({
+    required this.title,
+    required this.content,
+    required this.clientVisible,
+    this.summary,
+    this.keywords,
+    this.categoryId,
+    this.relatedServiceId,
+  });
+
+  final String title;
+  final String content;
+  final bool clientVisible;
+  final String? summary;
+
+  /// Free text, comma-separated by convention. The backend stores the string
+  /// as given and searches it with a LIKE, so nothing enforces the commas.
+  final String? keywords;
+
+  final int? categoryId;
+  final int? relatedServiceId;
+
+  /// Seeds an edit from what is already there, so the fields the form does not
+  /// show are sent back unchanged rather than wiped.
+  factory KbArticleRequest.from(KbArticle article) => KbArticleRequest(
+        title: article.title,
+        content: article.content ?? '',
+        clientVisible: article.clientVisible,
+        summary: article.summary,
+        keywords: article.keywords,
+        categoryId: article.categoryId,
+        relatedServiceId: article.relatedServiceId,
+      );
+
+  KbArticleRequest copyWith({
+    String? title,
+    String? content,
+    bool? clientVisible,
+    String? summary,
+    String? keywords,
+    int? categoryId,
+    int? relatedServiceId,
+  }) =>
+      KbArticleRequest(
+        title: title ?? this.title,
+        content: content ?? this.content,
+        clientVisible: clientVisible ?? this.clientVisible,
+        summary: summary ?? this.summary,
+        keywords: keywords ?? this.keywords,
+        categoryId: categoryId ?? this.categoryId,
+        relatedServiceId: relatedServiceId ?? this.relatedServiceId,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'content': content,
+        'clientVisible': clientVisible,
+        'summary': summary,
+        'keywords': keywords,
+        'categoryId': categoryId,
+        'relatedServiceId': relatedServiceId,
+      };
 }

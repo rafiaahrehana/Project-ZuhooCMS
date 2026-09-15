@@ -32,7 +32,9 @@ class _TabAction {
 /// tabs are assembled from whatever survives — a rep with only LEAD_VIEW gets a
 /// one-tab screen rather than two tabs that 403.
 class CrmScreen extends ConsumerWidget {
-  const CrmScreen({super.key});
+  const CrmScreen({super.key, this.initialTabLabel});
+
+  final String? initialTabLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -94,8 +96,13 @@ class CrmScreen extends ConsumerWidget {
       );
     }
 
+    final initialIndex = initialTabLabel == null
+        ? 0
+        : tabs.indexWhere((t) => t.label == initialTabLabel).clamp(0, tabs.length - 1);
+
     return DefaultTabController(
       length: tabs.length,
+      initialIndex: initialIndex,
       child: Builder(
         builder: (context) {
           // Read from the controller so the FAB follows the tab — a "New lead"

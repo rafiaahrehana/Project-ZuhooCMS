@@ -4,7 +4,9 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/paged_response.dart';
 import '../../core/providers.dart';
+import '../../shared/widgets/attachment_picker.dart' show PickedAttachment;
 import 'accounting_models.dart';
+import 'reconciliation_models.dart';
 
 /// The books.
 ///
@@ -38,11 +40,6 @@ class AccountingRepository {
         page: page,
         size: size,
       );
-
-  Future<Account> account(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_accounts/$id');
-    return Account.fromJson(json);
-  }
 
   Future<Account> createAccount(AccountRequest request) async {
     final json =
@@ -143,11 +140,6 @@ class AccountingRepository {
     );
   }
 
-  Future<LedgerLine> ledgerLine(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_ledger/$id');
-    return LedgerLine.fromJson(json);
-  }
-
   /// What one account currently stands at.
   ///
   /// Answers with a **bare number**, not an object — the endpoint declares
@@ -166,6 +158,128 @@ class AccountingRepository {
         ? ''
         : '?notes=${Uri.encodeQueryComponent(trimmed)}';
     return _api.post<dynamic>('$_ledger/$id/reconcile$query');
+  }
+
+  // ── Squaring the books against the bank ─────────────────────
+
+  static const _reconciliation = '/company/finance/reconciliation';
+
+  Future<PagedResponse<BankReconciliation>> reconciliations({
+    int page = 0,
+    int size = 20,
+  }) =>
+      _api.getPaged(
+        _reconciliation,
+        BankReconciliation.fromJson,
+        page: page,
+        size: size,
+      );
+
+  /// The ones still open. A bare list.
+  Future<List<BankReconciliation>> pendingReconciliations() async {
+    final list = await _api.get<List<dynamic>>('$_reconciliation/pending');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(BankReconciliation.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<BankReconciliation> reconciliation(int id) async {
+    final json =
+        await _api.get<Map<String, dynamic>>('$_reconciliation/$id');
+    return BankReconciliation.fromJson(json);
+  }
+
+  /// Opens one against a bank account. The ledger balance and the date are
+  /// worked out server-side.
+  Future<BankReconciliation> openReconciliation(
+    BankReconciliationRequest request,
+  ) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      _reconciliation,
+      request.toJson(),
+    );
+    return BankReconciliation.fromJson(json);
+  }
+
+  /// Ledger entries on this reconciliation's account that the bank has not
+  /// shown yet. These are what get ticked off.
+  Future<List<LedgerLine>> unclearedTransactions(int id) async {
+    final list = await _api.get<List<dynamic>>(
+      '$_reconciliation/$id/uncleared-transactions',
+    );
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(LedgerLine.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Ticks one entry as cleared, or un-ticks it. The flag is a required query
+  /// parameter, and the reconciliation comes back with its figures redone.
+  Future<BankReconciliation> toggleTransaction(
+    int id,
+    int glEntryId, {
+    required bool cleared,
+  }) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_reconciliation/$id/transactions/$glEntryId/toggle?cleared=$cleared',
+    );
+    return BankReconciliation.fromJson(json);
+  }
+
+  /// Reads a bank statement CSV and ticks off whatever it can match. What it
+  /// could not match comes back line by line with a reason.
+  Future<StatementImportResult> importStatement(
+    int id,
+    String filePath,
+    String fileName,
+  ) async {
+    final json = await _api.postFile<Map<String, dynamic>>(
+      '$_reconciliation/$id/import-statement',
+      filePath,
+      fileName,
+    );
+    return StatementImportResult.fromJson(json);
+  }
+
+  /// Files the statement itself against the reconciliation — a name and a URL
+  /// from an earlier upload, not the file. Keeping it is what makes the
+  /// reconciliation auditable later.
+  Future<BankReconciliation> attachStatement(
+    int id,
+    String fileName,
+    String fileUrl,
+  ) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_reconciliation/$id/statement',
+      {'fileName': fileName, 'fileUrl': fileUrl},
+    );
+    return BankReconciliation.fromJson(json);
+  }
+
+  /// Uploads the statement file and files it against the reconciliation in
+  /// one go.
+  ///
+  /// Two calls, because the backend splits them: the generic upload endpoint
+  /// stores the file and answers with a URL, and only then does the
+  /// reconciliation get told about it. Doing this in the repository keeps the
+  /// screen from having to know that.
+  Future<BankReconciliation> attachUploadedStatement(
+    int id,
+    PickedAttachment file,
+  ) async {
+    final uploaded = await _api.uploadDocument(file.path, file.name);
+    return attachStatement(id, uploaded.fileName, uploaded.fileUrl);
+  }
+
+  /// Signs it off. Refused while the two sides still differ. The note is an
+  /// optional query parameter and the response is empty.
+  Future<void> markReconciled(int id, {String? notes}) {
+    final trimmed = notes?.trim();
+    final query = (trimmed == null || trimmed.isEmpty)
+        ? ''
+        : '?notes=${Uri.encodeQueryComponent(trimmed)}';
+    return _api.post<dynamic>('$_reconciliation/$id/reconcile$query');
   }
 }
 
@@ -343,4 +457,30 @@ final accountBalanceProvider =
     FutureProvider.autoDispose.family<double, int>(
   (ref, accountId) =>
       ref.read(accountingRepositoryProvider).accountBalance(accountId),
+);
+
+/// Reconciliations that are still open. The list somebody actually works from.
+final pendingReconciliationsProvider =
+    FutureProvider.autoDispose<List<BankReconciliation>>((ref) {
+  ref.watch(currentUserProvider);
+  return ref.read(accountingRepositoryProvider).pendingReconciliations();
+});
+
+/// Every reconciliation, closed ones included.
+final allReconciliationsProvider =
+    FutureProvider.autoDispose<List<BankReconciliation>>((ref) async {
+  ref.watch(currentUserProvider);
+  final page =
+      await ref.read(accountingRepositoryProvider).reconciliations(size: 50);
+  return page.content;
+});
+
+final reconciliationProvider =
+    FutureProvider.autoDispose.family<BankReconciliation, int>(
+  (ref, id) => ref.read(accountingRepositoryProvider).reconciliation(id),
+);
+
+final unclearedTransactionsProvider =
+    FutureProvider.autoDispose.family<List<LedgerLine>, int>(
+  (ref, id) => ref.read(accountingRepositoryProvider).unclearedTransactions(id),
 );

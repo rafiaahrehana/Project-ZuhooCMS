@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_controller.dart';
+import '../../core/chat/live_message_buffer.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/theme/bos_tokens.dart';
@@ -46,8 +47,35 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
 
   ThreadKey get _threadKey => (ticketId: widget.id, kind: widget.kind);
 
+  final _live = LiveMessageBuffer<SupportMessage>(
+    idOf: (m) => m.id,
+    createdAtOf: (m) => m.createdAt,
+  );
+  void Function()? _unsubscribeChat;
+
+  @override
+  void initState() {
+    super.initState();
+    // The backend only ever pushes to this destination for a ticket's
+    // external (client-facing) messages — internal notes never leave the web
+    // app (SupportMessageServiceImpl: "internal notes are staff-only by
+    // definition, never alert the other side"). Subscribing here regardless
+    // of [ThreadKind] is still correct either way: the client-chat view shows
+    // exactly what arrives live, and the platform view's own fetch already
+    // includes external messages as part of the full thread, so a live one
+    // merges into a list it already belonged in.
+    _unsubscribeChat = connectLiveMessages<SupportMessage>(
+      socket: ref.read(chatSocketServiceProvider),
+      destination: '/user/queue/support-tickets/${widget.id}/messages',
+      fromJson: SupportMessage.fromJson,
+      buffer: _live,
+      onMessage: () => setState(() {}),
+    );
+  }
+
   @override
   void dispose() {
+    _unsubscribeChat?.call();
     _composer.dispose();
     super.dispose();
   }
@@ -261,6 +289,7 @@ class _TicketDetailScreenState extends ConsumerState<TicketDetailScreen> {
               const SizedBox(height: 20),
               _Conversation(
                 threadKey: _threadKey,
+                liveExtra: _live,
                 composer: _composer,
                 onSend: _send,
                 sending: _sending,
@@ -437,6 +466,7 @@ class _Facts extends StatelessWidget {
 class _Conversation extends ConsumerWidget {
   const _Conversation({
     required this.threadKey,
+    required this.liveExtra,
     required this.composer,
     required this.onSend,
     required this.sending,
@@ -448,6 +478,7 @@ class _Conversation extends ConsumerWidget {
   });
 
   final ThreadKey threadKey;
+  final LiveMessageBuffer<SupportMessage> liveExtra;
   final TextEditingController composer;
   final VoidCallback onSend;
   final bool sending;
@@ -482,7 +513,7 @@ class _Conversation extends ConsumerWidget {
               style: TextStyle(color: bos.muted, fontSize: 13),
             ),
             data: (messages) => ChatThread(
-              messages: messages,
+              messages: liveExtra.merge(messages),
               currentUserId: me?.id,
               controller: composer,
               onSend: onSend,

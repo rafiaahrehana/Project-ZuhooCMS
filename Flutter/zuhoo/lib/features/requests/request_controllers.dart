@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/paged_response.dart';
 import '../../shared/paged_controller.dart';
+import 'proposal_models.dart';
 import 'request_models.dart';
 import 'request_repository.dart';
 
@@ -123,6 +124,16 @@ final requestCommentsProvider =
 final requestDocumentsProvider =
     FutureProvider.autoDispose.family<List<RequestDocument>, int>((ref, id) {
   return ref.watch(requestRepositoryProvider).documents(id);
+});
+
+/// The proposal on a request, if there is one.
+///
+/// Resolves to null rather than erroring when none has been drafted — that is
+/// the common case, and an error state would put a red box on every request
+/// that has simply not reached the proposal stage.
+final requestProposalProvider =
+    FutureProvider.autoDispose.family<Proposal?, int>((ref, id) {
+  return ref.watch(requestRepositoryProvider).proposal(id);
 });
 
 final requestHistoryProvider = FutureProvider.autoDispose

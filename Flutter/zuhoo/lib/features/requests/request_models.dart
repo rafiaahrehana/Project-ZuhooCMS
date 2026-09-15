@@ -17,6 +17,12 @@ abstract final class RequestPermissions {
   /// role-gated server-side with no code of its own, so this stands in as the
   /// closest thing a tenant actually configures.
   static const packageView = 'SERVICE_PACKAGE_VIEW';
+
+  /// Gates Angular's "Reviews" sidebar row (`ServiceReviewServiceImpl`).
+  /// `reviews_screen.dart` itself checks nothing today — the button that
+  /// opens it relies on the caller having reached the screen at all — so
+  /// this is named here purely for the nav entry to gate on.
+  static const reviewView = 'REVIEW_VIEW';
 }
 
 abstract final class RequestStatus {
@@ -544,7 +550,10 @@ class ServiceReview {
     required this.rating,
     required this.published,
     this.comment,
+    this.hubServiceId,
     this.hubServiceName,
+    this.clientName,
+    this.serviceRequestId,
     this.createdAt,
   });
 
@@ -556,7 +565,14 @@ class ServiceReview {
   final bool published;
 
   final String? comment;
+  final int? hubServiceId;
   final String? hubServiceName;
+
+  /// Who wrote it. Absent on a client's own list, where it would only ever say
+  /// their own name.
+  final String? clientName;
+
+  final int? serviceRequestId;
   final String? createdAt;
 
   factory ServiceReview.fromJson(Map<String, dynamic> json) => ServiceReview(
@@ -564,7 +580,10 @@ class ServiceReview {
         rating: (json['rating'] as num?)?.toInt() ?? 0,
         published: json['published'] as bool? ?? false,
         comment: json['comment'] as String?,
+        hubServiceId: (json['hubServiceId'] as num?)?.toInt(),
         hubServiceName: json['hubServiceName'] as String?,
+        clientName: json['clientName'] as String?,
+        serviceRequestId: (json['serviceRequestId'] as num?)?.toInt(),
         createdAt: json['createdAt'] as String?,
       );
 }

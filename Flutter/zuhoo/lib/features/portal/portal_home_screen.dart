@@ -12,6 +12,7 @@ import '../requests/request_card.dart';
 import '../requests/request_controllers.dart';
 import '../requests/request_detail_screen.dart';
 import 'portal_models.dart';
+import 'portal_packages_screen.dart';
 import 'portal_repository.dart';
 
 /// What a client sees when they open the app.
@@ -187,28 +188,33 @@ class _Subscriptions extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final subscriptions = ref.watch(clientSubscriptionsProvider).value;
 
-    // A client who buys work one job at a time has no plan. That is normal,
-    // so the panel simply is not there.
-    if (subscriptions == null || subscriptions.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
+    // Unlike the rest of this dashboard, "no plan" gets a header anyway: a
+    // client who buys work one job at a time still needs a way to discover
+    // that plans exist at all, or "Browse" never gets found.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionHeader('Your plan', icon: Icons.card_membership_outlined),
-        for (var i = 0; i < subscriptions.length; i++) ...[
-          if (i > 0) const SizedBox(height: 10),
-          _SubscriptionCard(subscription: subscriptions[i]),
-        ],
+        SectionHeader(
+          'Your plan',
+          icon: Icons.card_membership_outlined,
+          trailing: TextButton(
+            onPressed: () => PortalPackagesScreen.open(context),
+            child: const Text('Browse plans'),
+          ),
+        ),
+        if (subscriptions != null && subscriptions.isNotEmpty)
+          for (var i = 0; i < subscriptions.length; i++) ...[
+            if (i > 0) const SizedBox(height: 10),
+            SubscriptionCard(subscription: subscriptions[i]),
+          ],
         const SizedBox(height: 22),
       ],
     );
   }
 }
 
-class _SubscriptionCard extends StatelessWidget {
-  const _SubscriptionCard({required this.subscription});
+class SubscriptionCard extends StatelessWidget {
+  const SubscriptionCard({super.key, required this.subscription});
 
   final PackageSubscription subscription;
 

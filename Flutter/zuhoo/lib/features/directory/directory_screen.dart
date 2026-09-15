@@ -1,11 +1,15 @@
-import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/auth/permission_controller.dart';
+import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/widgets/paged_list_view.dart';
+import '../../shared/widgets/search_field.dart';
 import '../../shared/widgets/primitives.dart';
 import 'directory_models.dart';
 import 'directory_repository.dart';
@@ -28,7 +32,7 @@ class DirectoryScreen extends ConsumerWidget {
     if (!permissions.loaded && permissions.codes.isEmpty) {
       return Scaffold(
         backgroundColor: bos.bgPage,
-        appBar: AppBar(title: const Text('People')),
+        appBar: AppBar(title: const Text('Employees')),
         body: const Loader(),
       );
     }
@@ -36,7 +40,7 @@ class DirectoryScreen extends ConsumerWidget {
     if (!permissions.has(DirectoryPermissions.employeeView)) {
       return Scaffold(
         backgroundColor: bos.bgPage,
-        appBar: AppBar(title: const Text('People')),
+        appBar: AppBar(title: const Text('Employees')),
         body: const EmptyState(
           icon: Icons.lock_outline_rounded,
           title: 'Not available to you',
@@ -49,7 +53,16 @@ class DirectoryScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: bos.bgPage,
-      appBar: AppBar(title: const Text('People')),
+      appBar: AppBar(
+        title: const Text('Employees'),
+        actions: [
+          IconButton(
+            tooltip: 'Export a PDF',
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            onPressed: () => _exportPdf(context, ref),
+          ),
+        ],
+      ),
       floatingActionButton:
           permissions.has(DirectoryPermissions.employeeCreate)
               ? FloatingActionButton.extended(
@@ -69,7 +82,7 @@ class DirectoryScreen extends ConsumerWidget {
               async: ref.watch(directoryProvider),
               onRefresh: () => ref.read(directoryProvider.notifier).refresh(),
               onLoadMore: () => ref.read(directoryProvider.notifier).loadMore(),
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
               emptyTitle: 'Nobody here',
               emptyMessage:
                   'No colleague matches that. Try a different name or clear '
@@ -85,65 +98,20 @@ class DirectoryScreen extends ConsumerWidget {
   }
 }
 
-class _SearchField extends ConsumerStatefulWidget {
+class _SearchField extends ConsumerWidget {
   const _SearchField();
 
   @override
-  ConsumerState<_SearchField> createState() => _SearchFieldState();
-}
-
-class _SearchFieldState extends ConsumerState<_SearchField> {
-  final _controller = TextEditingController();
-  Timer? _debounce;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  /// Debounced, because every change to the term restarts a paged request.
-  /// Typing a six-letter name would otherwise fire six searches and let an
-  /// earlier, slower one land last.
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 350), () {
-      ref.read(directorySearchProvider.notifier).set(value);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bos = Theme.of(context).bos;
-
+  Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: TextField(
-        controller: _controller,
-        textInputAction: TextInputAction.search,
-        onChanged: _onChanged,
-        onSubmitted: (value) {
-          _debounce?.cancel();
-          ref.read(directorySearchProvider.notifier).set(value);
-        },
-        decoration: InputDecoration(
-          hintText: 'Search by name',
-          prefixIcon: Icon(Icons.search_rounded, size: 20, color: bos.muted),
-          suffixIcon: _controller.text.isEmpty
-              ? null
-              : IconButton(
-                  icon: Icon(Icons.close_rounded, size: 18, color: bos.muted),
-                  onPressed: () {
-                    _controller.clear();
-                    _debounce?.cancel();
-                    ref.read(directorySearchProvider.notifier).set('');
-                    setState(() {});
-                  },
-                  tooltip: 'Clear',
-                ),
-          isDense: true,
-        ),
+      child: AppSearchField(
+        hint: 'Search by name',
+        // Debounced, because every change to the term restarts a paged
+        // request. Typing a six-letter name would otherwise fire six searches
+        // and let an earlier, slower one land last.
+        onChanged: (value) =>
+            ref.read(directorySearchProvider.notifier).set(value),
       ),
     );
   }
@@ -306,6 +274,36 @@ class _PersonRow extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Saves the people list as a PDF and opens it.
+///
+/// Narrowed the same way the screen is, so the printed list matches what was
+/// on it — a discrepancy between the two gets noticed at the worst moment.
+Future<void> _exportPdf(BuildContext context, WidgetRef ref) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final bytes = await ref.read(directoryRepositoryProvider).peoplePdf(
+          search: ref.read(directorySearchProvider),
+          departmentId: ref.read(departmentFilterProvider),
+        );
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}${Platform.pathSeparator}people.pdf');
+    await file.writeAsBytes(bytes, flush: true);
+
+    final result = await OpenFilex.open(file.path);
+    if (result.type != ResultType.done) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No app on this device can open a PDF.')),
+      );
+    }
+  } on ApiException catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text(e.message)));
+  } catch (_) {
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Could not produce that PDF.')),
     );
   }
 }

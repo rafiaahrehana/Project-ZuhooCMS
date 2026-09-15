@@ -228,7 +228,7 @@ class _RecordPaymentSheetState extends ConsumerState<_RecordPaymentSheet> {
                   for (final method in paymentMethods)
                     DropdownMenuItem(
                       value: method,
-                      child: Text(Fmt.label(method)),
+                      child: Text(paymentMethodLabel(method)),
                     ),
                 ],
                 onChanged: _submitting

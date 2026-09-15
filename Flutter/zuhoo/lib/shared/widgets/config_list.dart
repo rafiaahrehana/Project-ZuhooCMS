@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
@@ -178,7 +179,11 @@ class FilterBar extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: SizedBox(
-        height: 34,
+        // Chips are text in a fixed-height strip, so the height has to follow
+        // the reader's text size or the labels clip. Every other filter strip
+        // in the app already does this; this one is shared by more screens
+        // than any of them.
+        height: scaledStripHeight(context, 34),
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: options.length,
@@ -219,8 +224,14 @@ class ConfigList<T> extends StatelessWidget {
   final Widget Function(BuildContext, T) itemBuilder;
   final IconData emptyIcon;
 
-  /// Drawn above the rows — a filter bar, a summary line. Not shown when the
-  /// list is empty, where the empty state says everything there is to say.
+  /// Drawn above the rows — a filter bar, a day switcher, a summary line.
+  ///
+  /// Shown when the list is empty too, which it did not used to be. A header
+  /// is usually the control that *caused* the list to be empty — the filter
+  /// that matched nothing, the day nobody clocked in on — so hiding it there
+  /// takes away the only way back. Team attendance had exactly that dead end:
+  /// land on a day with no records and the previous/next-day buttons went with
+  /// the rows, leaving the screen with nothing to do but back out of it.
   final Widget? header;
 
   @override
@@ -240,8 +251,20 @@ class ConfigList<T> extends StatelessWidget {
         data: (rows) {
           if (rows.isEmpty) {
             return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              // The bottom 90 is the floating button's room, same as the
+              // paged list keeps. It matters more here than it looks: with a
+              // tall header — the attendance day switcher, its figures and
+              // its summary — the empty state is pushed right down into the
+              // button's corner, and without something below it to scroll
+              // into, half the sentence explaining why the list is empty sits
+              // under the button permanently.
+              padding: header == null
+                  ? const EdgeInsets.only(bottom: 90)
+                  : const EdgeInsets.fromLTRB(16, 12, 16, 90),
               children: [
-                const SizedBox(height: 60),
+                ?header,
+                const SizedBox(height: 40),
                 EmptyState(
                   icon: emptyIcon,
                   title: emptyTitle,

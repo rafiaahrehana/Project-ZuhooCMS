@@ -5,11 +5,11 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
-import '../../core/network/api_exception.dart';
 import '../../core/network/paged_response.dart';
 import '../../core/providers.dart';
 import '../payslips/payslip_models.dart' show Payslip;
 import 'payroll_models.dart';
+import 'salary_sheet_models.dart';
 
 /// Running payroll for the company.
 ///
@@ -36,23 +36,6 @@ class PayrollRepository {
         .whereType<Map<String, dynamic>>()
         .map(PayrollRun.fromJson)
         .toList(growable: false);
-  }
-
-  /// The run for one period, or null when none has been started.
-  ///
-  /// A missing run is the normal state at the beginning of a month, not an
-  /// error, so a 404 comes back as null rather than throwing.
-  Future<PayrollRun?> runForPeriod(int month, int year) async {
-    try {
-      final json = await _api.get<Map<String, dynamic>>(
-        '$_runs/period',
-        query: {'month': month, 'year': year},
-      );
-      return PayrollRun.fromJson(json);
-    } on ApiException catch (e) {
-      if (e.statusCode == 404) return null;
-      rethrow;
-    }
   }
 
   /// Opens a run for a period. Refused when one already exists, with a message
@@ -97,7 +80,7 @@ class PayrollRepository {
     final json = await _api.post<Map<String, dynamic>>('$_runs/$id/pay', {
       'paymentMethod': paymentMethod,
       if (trimmed != null && trimmed.isNotEmpty) 'referencePrefix': trimmed,
-      if (paymentDate != null) 'paymentDate': paymentDate,
+      'paymentDate': ?paymentDate,
     });
     return PayrollRun.fromJson(json);
   }
@@ -123,11 +106,6 @@ class PayrollRepository {
         size: size,
         query: {'month': month, 'year': year},
       );
-
-  Future<Payslip> line(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_payroll/$id');
-    return Payslip.fromJson(json);
-  }
 
   /// Builds a draft line for everybody with a salary structure.
   ///
@@ -180,6 +158,20 @@ class PayrollRepository {
         'csv',
       );
 
+  /// The month's pay for the whole company, worked out live.
+  ///
+  /// Not the same thing as a payroll run: this is what the month currently
+  /// looks like given the structures and the attendance recorded so far, and
+  /// it moves as attendance is corrected. A row with a payrollId on it has
+  /// been run; the rest are still projections.
+  Future<SalarySheet> salarySheet(int month, int year) async {
+    final json = await _api.get<Map<String, dynamic>>(
+      '/hr/salary-sheet',
+      query: {'month': month, 'year': year},
+    );
+    return SalarySheet.fromJson(json);
+  }
+
   /// The month's salary sheet as a PDF. Both parameters are optional
   /// server-side; the screen always knows which month it is looking at.
   Future<String> salarySheetPdf(int month, int year) => _download(
@@ -218,8 +210,8 @@ class PayrollRepository {
     final json = await _api.get<Map<String, dynamic>>(
       '/hr/payroll-dashboard',
       query: {
-        if (month != null) 'month': month,
-        if (year != null) 'year': year,
+        'month': ?month,
+        'year': ?year,
       },
     );
     return PayrollDashboard.fromJson(json);

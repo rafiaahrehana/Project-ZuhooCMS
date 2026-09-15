@@ -5,11 +5,14 @@ import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/contact_actions.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
 import 'crm_controllers.dart';
 import 'crm_models.dart';
 import 'crm_repository.dart';
 import 'edit_lead_sheet.dart';
+import 'opportunity_form_sheet.dart';
 import 'leads_tab.dart' show TagChip;
 import 'opportunity_detail_screen.dart';
 
@@ -158,7 +161,10 @@ class _LeadDetailScreenState extends ConsumerState<LeadDetailScreen> {
       appBar: AppBar(
         title: const Text('Lead'),
         actions: [
-          if (lead != null && (canEdit || canDelete))
+          // Shown whenever a lead is loaded: summarising is a read, and
+          // gating the whole menu on being able to edit would hide it from
+          // everybody who can only look.
+          if (lead != null)
             _LeadMenu(
               lead: lead,
               canEdit: canEdit,
@@ -187,6 +193,8 @@ class _LeadDetailScreenState extends ConsumerState<LeadDetailScreen> {
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
             children: [
               _Header(lead: lead),
+              const SizedBox(height: 14),
+              ContactActions(phone: lead.phone, email: lead.email),
               const SizedBox(height: 20),
               _Facts(lead: lead),
               const SizedBox(height: 20),
@@ -234,6 +242,14 @@ class _LeadMenu extends StatelessWidget {
       onSelected: (value) {
         if (value == 'edit') {
           showEditLeadSheet(context, lead);
+        } else if (value == 'summarise') {
+          showLeadSummarySheet(context, lead: lead);
+        } else if (value == 'another') {
+          showAnotherDealSheet(
+            context,
+            leadId: lead.id,
+            leadName: lead.contactName,
+          );
         } else if (value == 'delete') {
           onDelete(lead);
         }
@@ -241,6 +257,14 @@ class _LeadMenu extends StatelessWidget {
       itemBuilder: (context) => [
         if (canEdit)
           const PopupMenuItem(value: 'edit', child: Text('Edit lead')),
+        const PopupMenuItem(value: 'summarise', child: Text('Summarise')),
+        // Only once it has produced one. Before that, converting is the route,
+        // and offering both would make it unclear which to use.
+        if (canEdit && lead.converted)
+          const PopupMenuItem(
+            value: 'another',
+            child: Text('Another deal from this'),
+          ),
         if (canDelete)
           const PopupMenuItem(value: 'delete', child: Text('Delete')),
       ],
@@ -496,7 +520,20 @@ class _Activities extends ConsumerWidget {
                 children: [
                   for (var i = 0; i < activities.length; i++) ...[
                     if (i > 0) const SizedBox(height: 14),
-                    _ActivityRow(activity: activities[i]),
+                    _ActivityRow(
+                      activity: activities[i],
+                      // System entries are the audit trail. Letting somebody
+                      // delete the record that a stage changed would make the
+                      // trail worth less than nothing.
+                      onDelete: activities[i].systemGenerated
+                          ? null
+                          : () => _removeActivity(
+                                context,
+                                ref,
+                                leadId: id,
+                                activity: activities[i],
+                              ),
+                    ),
                   ],
                 ],
               );
@@ -508,10 +545,42 @@ class _Activities extends ConsumerWidget {
   }
 }
 
+/// Removes one entry from a lead's timeline.
+Future<void> _removeActivity(
+  BuildContext context,
+  WidgetRef ref, {
+  required int leadId,
+  required CrmActivity activity,
+}) async {
+  final confirmed = await confirmAction(
+    context,
+    title: 'Remove this entry?',
+    message: 'It goes from the timeline for good.',
+    action: 'Remove',
+  );
+  if (!confirmed || !context.mounted) return;
+
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    await ref
+        .read(crmRepositoryProvider)
+        .deleteLeadActivity(leadId, activity.id);
+    ref.invalidate(leadActivitiesProvider(leadId));
+    messenger.showSnackBar(const SnackBar(content: Text('Removed.')));
+  } on ApiException catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text(e.message)));
+  } catch (_) {
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Could not remove that entry.')),
+    );
+  }
+}
+
 class _ActivityRow extends StatelessWidget {
-  const _ActivityRow({required this.activity});
+  const _ActivityRow({required this.activity, this.onDelete});
 
   final CrmActivity activity;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -554,6 +623,25 @@ class _ActivityRow extends StatelessWidget {
                     Fmt.relative(activity.activityDate),
                     style: TextStyle(color: bos.muted, fontSize: 11),
                   ),
+                  if (onDelete != null)
+                    // An IconButton, not a bare GestureDetector round an
+                    // Icon. The icon was 14 logical pixels with 8 of padding
+                    // on one side — a destructive action in a target of about
+                    // 22 by 16, and announced by a screen reader as nothing
+                    // at all. The glyph stays 14 so the timeline row does not
+                    // grow; the tap box and the name come from the button.
+                    IconButton(
+                      onPressed: onDelete,
+                      tooltip: 'Remove this entry',
+                      padding: EdgeInsets.zero,
+                      constraints:
+                          const BoxConstraints(minWidth: 44, minHeight: 44),
+                      icon: Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: bos.muted,
+                      ),
+                    ),
                 ],
               ),
               if (activity.description != null &&
@@ -848,6 +936,101 @@ class _ConvertLeadSheetState extends State<_ConvertLeadSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A drafted read on a lead.
+///
+/// Asking for it is what produces it — nothing is stored, and the same lead
+/// asked twice may read differently. Labelled as machine-written every time it
+/// is shown, because a précis of somebody's dealings with a customer must not
+/// be mistaken for a colleague's note.
+Future<void> showLeadSummarySheet(
+  BuildContext context, {
+  required Lead lead,
+}) =>
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _LeadSummarySheet(lead: lead),
+    );
+
+class _LeadSummarySheet extends ConsumerStatefulWidget {
+  const _LeadSummarySheet({required this.lead});
+
+  final Lead lead;
+
+  @override
+  ConsumerState<_LeadSummarySheet> createState() => _LeadSummarySheetState();
+}
+
+class _LeadSummarySheetState extends ConsumerState<_LeadSummarySheet> {
+  late final Future<Lead> _summary =
+      ref.read(crmRepositoryProvider).summariseLead(widget.lead.id);
+
+  @override
+  Widget build(BuildContext context) {
+    final bos = Theme.of(context).bos;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            widget.lead.contactName,
+            style: TextStyle(
+              color: bos.text,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Written by the assistant, not by a person.',
+            style: TextStyle(
+              color: bos.muted,
+              fontSize: 11.5,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 14),
+          FutureBuilder<Lead>(
+            future: _summary,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Loader(padding: 20, message: 'Reading it');
+              }
+              if (snapshot.hasError) {
+                final error = snapshot.error;
+                return MessageBanner.error(
+                  error is ApiException
+                      ? error.message
+                      : 'Could not summarise that lead.',
+                );
+              }
+
+              final summary = snapshot.data?.aiSummary?.trim() ?? '';
+              if (summary.isEmpty) {
+                return Text(
+                  'Nothing came back. There may be too little on this lead '
+                  'to say anything about, or the assistant may not be '
+                  'configured.',
+                  style:
+                      TextStyle(color: bos.muted, fontSize: 13, height: 1.5),
+                );
+              }
+
+              return SelectableText(
+                summary,
+                style: TextStyle(color: bos.text, fontSize: 13.5, height: 1.6),
+              );
+            },
+          ),
+        ],
       ),
     );
   }

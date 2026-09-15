@@ -6,6 +6,7 @@
 /// policy can only be written by a platform administrator, while a support
 /// manager can staff the desk. Each list below is the exact set from the
 /// controller's `@PreAuthorize`.
+library;
 
 /// Agents: create, list, edit, set status.
 const supportAgentAdminRoles = <String>['SUPER_ADMIN', 'SUPPORT_MANAGER'];
@@ -334,6 +335,10 @@ class SupportAuditEntry {
     this.resourceId,
     this.contextSwitchToCompanyName,
     this.createdAt,
+    this.actionByUserId,
+    this.changes,
+    this.ipAddress,
+    this.userAgent,
   });
 
   final int id;
@@ -349,6 +354,18 @@ class SupportAuditEntry {
 
   final String? createdAt;
 
+  /// Who did it, as an id — what the "everything this person did" lookup
+  /// needs. The list rows only show the name.
+  final int? actionByUserId;
+
+  /// A serialised record of what changed. Free-form JSON as far as this app
+  /// is concerned: it is shown as it came rather than parsed, because its
+  /// shape depends on which module wrote the entry.
+  final String? changes;
+
+  final String? ipAddress;
+  final String? userAgent;
+
   factory SupportAuditEntry.fromJson(Map<String, dynamic> json) =>
       SupportAuditEntry(
         id: (json['id'] as num?)?.toInt() ?? 0,
@@ -360,6 +377,10 @@ class SupportAuditEntry {
         contextSwitchToCompanyName:
             json['contextSwitchToCompanyName'] as String?,
         createdAt: json['createdAt'] as String?,
+        actionByUserId: (json['actionByUserId'] as num?)?.toInt(),
+        changes: json['changes'] as String?,
+        ipAddress: json['ipAddress'] as String?,
+        userAgent: json['userAgent'] as String?,
       );
 }
 

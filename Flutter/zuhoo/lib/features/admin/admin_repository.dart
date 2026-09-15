@@ -56,6 +56,19 @@ class AdminRepository {
 
   // ── Designations ────────────────────────────────────────────
 
+  /// The designations in use, rather than every one ever created.
+  ///
+  /// What a form offers when somebody is given a job title — a retired
+  /// designation should not be assignable, only readable on the people who
+  /// still carry it.
+  Future<List<Designation>> activeDesignations() async {
+    final list = await _api.get<List<dynamic>>('/hr/designations/active');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(Designation.fromJson)
+        .toList(growable: false);
+  }
+
   Future<PagedResponse<Designation>> designations({
     int page = 0,
     int size = 50,
@@ -407,3 +420,10 @@ final rolePermissionsProvider =
     FutureProvider.autoDispose.family<List<String>, int>(
   (ref, roleId) => ref.read(adminRepositoryProvider).rolePermissions(roleId),
 );
+
+
+/// The designations a form may offer.
+final activeDesignationsProvider =
+    FutureProvider.autoDispose<List<Designation>>((ref) {
+  return ref.read(adminRepositoryProvider).activeDesignations();
+});

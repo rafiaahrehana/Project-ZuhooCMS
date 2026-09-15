@@ -7,6 +7,7 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import 'crm_controllers.dart';
 import 'crm_models.dart';
+import 'crm_repository.dart';
 
 /// Opening a deal always starts from a client.
 ///
@@ -30,6 +31,31 @@ Future<void> showNewOpportunitySheet(
   );
 }
 
+/// Another deal off a lead that has already produced one.
+///
+/// Distinct from converting: converting turns the lead into an opportunity
+/// once and marks it converted. This adds a further deal against the same
+/// lead and leaves it as it is, which is what happens when one enquiry turns
+/// into several pieces of work.
+///
+/// No client is passed. The backend takes the one the lead was converted into,
+/// and falls back to the request only if there is none — so the sheet does not
+/// ask a question that is already answered.
+Future<void> showAnotherDealSheet(
+  BuildContext context, {
+  required int leadId,
+  required String leadName,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (_) => _OpportunityFormSheet(
+      fromLeadId: leadId,
+      clientName: leadName,
+    ),
+  );
+}
+
 Future<void> showEditOpportunitySheet(
   BuildContext context,
   Opportunity opportunity,
@@ -46,6 +72,7 @@ class _OpportunityFormSheet extends ConsumerStatefulWidget {
     this.existing,
     this.clientId,
     this.clientName,
+    this.fromLeadId,
   });
 
   /// Null when opening a new deal.
@@ -53,6 +80,11 @@ class _OpportunityFormSheet extends ConsumerStatefulWidget {
 
   final int? clientId;
   final String? clientName;
+
+  /// Set when the deal is being opened against a lead. Routes the save through
+  /// `/crm/opportunities/from-lead/{id}` instead of the plain create, which is
+  /// what links the deal back to the enquiry it came from.
+  final int? fromLeadId;
 
   @override
   ConsumerState<_OpportunityFormSheet> createState() =>
@@ -142,6 +174,11 @@ class _OpportunityFormSheetState extends ConsumerState<_OpportunityFormSheet> {
     try {
       if (_isEdit) {
         await controller.updateItem(widget.existing!.id, _buildRequest());
+      } else if (widget.fromLeadId != null) {
+        await ref
+            .read(crmRepositoryProvider)
+            .opportunityFromLead(widget.fromLeadId!, _buildRequest());
+        await controller.refresh();
       } else {
         await controller.create(_buildRequest());
       }

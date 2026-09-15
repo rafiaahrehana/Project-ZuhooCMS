@@ -66,6 +66,25 @@ class PortalRepository {
         size: size,
       );
 
+  /// Starts an online checkout for paying down this invoice's balance.
+  ///
+  /// Mirrors `CompanyRepository.initiateSubscriptionUpgrade` — SSLCommerz's
+  /// hosted checkout is a web page, and the backend's own success/failure
+  /// callbacks redirect back to the *web* app (`app.frontend-url`), not
+  /// anywhere this app could intercept, so the caller hands the returned URL
+  /// to the system browser rather than trying to embed it.
+  Future<String> initiatePayment(Invoice invoice) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '/payments/sslcommerz/initiate',
+      {
+        'purpose': 'INVOICE',
+        'targetId': invoice.id,
+        'amount': invoice.balanceAmount,
+      },
+    );
+    return json['gatewayUrl'] as String? ?? '';
+  }
+
   /// Downloads an invoice PDF to a temp file and returns its path.
   ///
   /// Temp rather than permanent storage: it is handed straight to the platform
@@ -90,6 +109,34 @@ class PortalRepository {
         page: page,
         size: size,
       );
+
+  /// Subscribes the caller to a package. Created `PENDING_PAYMENT` — nothing
+  /// is granted until the payment this returns leads to actually completes;
+  /// the gateway activates it on a validated success callback, same as an
+  /// invoice payment.
+  Future<PackageSubscription> subscribeToPackage(int packageId) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_packages/subscribe',
+      {'packageId': packageId},
+    );
+    return PackageSubscription.fromJson(json);
+  }
+
+  /// Starts an online checkout for a package subscription just created by
+  /// [subscribeToPackage]. Same external-browser pattern as
+  /// [initiatePayment] and `FinanceRepository.initiateWalletTopUp` — see
+  /// their doc comments for why.
+  Future<String> initiatePackagePayment(PackageSubscription subscription) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '/payments/sslcommerz/initiate',
+      {
+        'purpose': 'PACKAGE_SUBSCRIPTION',
+        'targetId': subscription.id,
+        'amount': subscription.pricePaid,
+      },
+    );
+    return json['gatewayUrl'] as String? ?? '';
+  }
 
   /// The client's own support tickets — raised by them, to this company.
   ///
@@ -173,6 +220,30 @@ final clientSubscriptionsProvider =
     return const [];
   }
 });
+
+/// The paged, error-surfacing sibling of [clientSubscriptionsProvider] — that
+/// one swallows a failure into "no plan", which is right for a dashboard
+/// panel that is allowed to just be absent, and wrong for a dedicated screen
+/// where a client trying to see their plans deserves to know loading them
+/// actually failed.
+class ClientSubscriptionsController
+    extends AsyncNotifier<PagedState<PackageSubscription>>
+    with PagedLoader<PackageSubscription> {
+  @override
+  Future<PagedState<PackageSubscription>> build() {
+    ref.watch(currentUserProvider);
+    return loadFirstPage();
+  }
+
+  @override
+  Future<PagedResponse<PackageSubscription>> fetchPage(int page) =>
+      ref.read(portalRepositoryProvider).subscriptions(page: page);
+}
+
+final clientPackageSubscriptionsProvider = AsyncNotifierProvider<
+    ClientSubscriptionsController, PagedState<PackageSubscription>>(
+  ClientSubscriptionsController.new,
+);
 
 class ClientInvoicesController extends AsyncNotifier<PagedState<Invoice>>
     with PagedLoader<Invoice> {

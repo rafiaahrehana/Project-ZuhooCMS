@@ -1,3 +1,4 @@
+import '../../shared/util/formatters.dart';
 import '../portal/portal_models.dart' show Invoice, InvoiceItem;
 
 /// Permission codes this module gates on. Each screen asks for the one the
@@ -168,6 +169,7 @@ class Expense {
     this.title,
     this.vendorName,
     this.category,
+    this.expenseAccountId,
     this.expenseAccountName,
     this.receiptUrl,
     this.submittedByName,
@@ -191,6 +193,12 @@ class Expense {
   final String? title;
   final String? vendorName;
   final String? category;
+  /// The chart-of-accounts row this expense posts to when it is paid. The id
+  /// matters as much as the name: an edit that omitted it would detach the
+  /// expense from its account, because the update assigns the account without
+  /// a null check.
+  final int? expenseAccountId;
+
   final String? expenseAccountName;
   final String? receiptUrl;
   final String? submittedByName;
@@ -230,6 +238,7 @@ class Expense {
         title: json['title'] as String?,
         vendorName: json['vendorName'] as String?,
         category: json['category'] as String?,
+        expenseAccountId: (json['expenseAccountId'] as num?)?.toInt(),
         expenseAccountName: json['expenseAccountName'] as String?,
         receiptUrl: json['receiptUrl'] as String?,
         submittedByName: json['submittedByName'] as String?,
@@ -323,6 +332,22 @@ class Wallet {
       );
 }
 
+/// The only wallet transaction type that takes money out.
+const walletDebitType = 'DEBIT';
+
+/// Every type the backend's `credit()` path records.
+///
+/// `WalletServiceImpl` has exactly one debit path and one credit path; these
+/// four are everything the credit path can write. Pinned by a test, so a
+/// fifth added upstream fails loudly here instead of quietly rendering as a
+/// withdrawal.
+const walletCreditTypes = {
+  'CREDIT',
+  'CREDIT_APPLIED',
+  'REFUND_CREDIT',
+  'REFERRAL_REWARD',
+};
+
 class WalletTransaction {
   const WalletTransaction({
     required this.id,
@@ -347,14 +372,16 @@ class WalletTransaction {
   /// Decided from the type rather than the sign of [amount]: the backend
   /// stores amounts as positive magnitudes on both sides, so reading the sign
   /// would show every debit as a credit.
-  bool get isCredit => const {
-        'TOP_UP',
-        'CREDIT',
-        'REFUND',
-        'DEPOSIT',
-        'BONUS',
-        'ADJUSTMENT_CREDIT',
-      }.contains(type);
+  /// The credits are listed rather than inferred from "not DEBIT", so a type
+  /// nobody has seen before shows as money out — the smaller error, and the
+  /// rule this has always followed.
+  ///
+  /// What was wrong was the list itself. It was invented: TOP_UP, DEPOSIT,
+  /// BONUS and ADJUSTMENT_CREDIT are not types the backend has, and three of
+  /// the four it does have were missing — so an applied credit, a refund and
+  /// a referral reward each drew a red arrow pointing out of the wallet.
+  /// Angular has had the right five all along.
+  bool get isCredit => walletCreditTypes.contains(type);
 
   factory WalletTransaction.fromJson(Map<String, dynamic> json) =>
       WalletTransaction(
@@ -378,7 +405,7 @@ const paymentTermsOptions = <String>[
   'NET_90',
 ];
 
-/// How a payment arrived.
+/// How a payment arrived. Money coming *in*, so every rail is valid.
 const paymentMethods = <String>[
   'BKASH',
   'NAGAD',
@@ -388,6 +415,50 @@ const paymentMethods = <String>[
   'CASH',
   'WALLET',
   'CHEQUE',
+];
+
+/// A payment method as a person writes it.
+///
+/// `Fmt.label` title-cases each word, which is right for BANK_TRANSFER and
+/// wrong for the brands: it renders bKash as "Bkash" and SSLCommerz as
+/// "Sslcommerz". These are proper nouns with their own capitalisation, and
+/// three of them are the rails most of this app's payments actually run on.
+///
+/// Angular prints the raw enum through titlecase and has the same flaw; this
+/// is not a difference between the two clients, just the better rendering.
+String paymentMethodLabel(String? method) => switch (method) {
+      'BKASH' => 'bKash',
+      'NAGAD' => 'Nagad',
+      'ROCKET' => 'Rocket',
+      'SSLCOMMERZ' => 'SSLCommerz',
+      null => Fmt.dash,
+      _ => Fmt.label(method),
+    };
+
+/// How a salary went *out*, which is a smaller set.
+///
+/// `PaymentMethod` is shared across invoices, expenses and payroll, so it
+/// carries collection rails that cannot pay anybody. SSLCommerz moves money
+/// to the company from a payer's card — it has no payout API, so recording a
+/// salary as paid by it describes something that cannot have happened. WALLET
+/// is a company-level balance with no per-employee counterparty.
+///
+/// `PayrollServiceImpl.guardPayoutMethod` rejects both with a 400, and the
+/// run-level pay loops over payslips calling the same guarded method — so
+/// offering them here does not merely fail, it can fail part-way through a
+/// run. Both payroll sheets used to get this wrong in opposite directions:
+/// one offered all eight, the other only three, hiding the mobile-money
+/// rails most Bangladeshi payrolls actually use.
+///
+/// The order matches the backend's own error message, and Angular's
+/// `PAYROLL_PAYMENT_METHODS`.
+const payrollPaymentMethods = <String>[
+  'BANK_TRANSFER',
+  'BKASH',
+  'NAGAD',
+  'ROCKET',
+  'CHEQUE',
+  'CASH',
 ];
 
 /// POST and PATCH /company/finance/invoices
@@ -585,4 +656,92 @@ class ExpenseDraft {
         title: json['title'] as String? ?? '',
         description: json['description'] as String? ?? '',
       );
+}
+
+
+/// Changing an expense that has not been decided on yet.
+///
+/// A `PATCH` that mostly is not one. `ExpenseServiceImpl.update` guards only
+/// title, currency and the vendor name; description, amount, category, the
+/// expense account, the date, the receipt and the notes are all assigned
+/// straight from the request. Omitting one clears it.
+///
+/// So this always sends the lot, and [UpdateExpenseRequest.from] seeds it from
+/// the expense as it stands — including the account id, which no form here
+/// shows. Two other things the backend enforces and this mirrors: only a
+/// PENDING expense may be changed at all, and somebody without EXPENSE_UPDATE
+/// may only change their own.
+class UpdateExpenseRequest {
+  const UpdateExpenseRequest({
+    required this.description,
+    required this.amount,
+    required this.expenseDate,
+    this.title,
+    this.currency,
+    this.vendorName,
+    this.category,
+    this.expenseAccountId,
+    this.receiptUrl,
+    this.notes,
+  });
+
+  final String description;
+  final double amount;
+  final String expenseDate;
+  final String? title;
+  final String? currency;
+  final String? vendorName;
+  final String? category;
+  final int? expenseAccountId;
+  final String? receiptUrl;
+  final String? notes;
+
+  factory UpdateExpenseRequest.from(Expense expense) => UpdateExpenseRequest(
+        description: expense.description,
+        amount: expense.amount,
+        expenseDate: expense.expenseDate,
+        title: expense.title,
+        currency: expense.currency,
+        vendorName: expense.vendorName,
+        category: expense.category,
+        expenseAccountId: expense.expenseAccountId,
+        receiptUrl: expense.receiptUrl,
+        notes: expense.notes,
+      );
+
+  UpdateExpenseRequest copyWith({
+    String? description,
+    double? amount,
+    String? expenseDate,
+    String? title,
+    String? vendorName,
+    String? category,
+    String? notes,
+  }) =>
+      UpdateExpenseRequest(
+        description: description ?? this.description,
+        amount: amount ?? this.amount,
+        expenseDate: expenseDate ?? this.expenseDate,
+        title: title ?? this.title,
+        currency: currency,
+        vendorName: vendorName ?? this.vendorName,
+        category: category ?? this.category,
+        expenseAccountId: expenseAccountId,
+        receiptUrl: receiptUrl,
+        notes: notes ?? this.notes,
+      );
+
+  /// Every key, nulls included — an absent one is not "leave it alone" here.
+  Map<String, dynamic> toJson() => {
+        'description': description.trim(),
+        'amount': amount,
+        'expenseDate': expenseDate,
+        'title': title,
+        'currency': currency,
+        'vendorName': vendorName,
+        'category': category,
+        'expenseAccountId': expenseAccountId,
+        'receiptUrl': receiptUrl,
+        'notes': notes,
+      };
 }

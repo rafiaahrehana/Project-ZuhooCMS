@@ -1,13 +1,12 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/router.dart';
 import '../../core/auth/auth_controller.dart';
-import '../../core/config/env.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
+import '../../shared/widgets/brand_mark.dart';
 import '../../shared/widgets/primitives.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -26,6 +25,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _loading = false;
   String? _error;
   bool _unverified = false;
+  bool _startingDemo = false;
 
   @override
   void dispose() {
@@ -68,6 +68,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Opens the read-only demo tenant. No credentials are exchanged — the
+  /// backend mints a short session for the seeded company.
+  Future<void> _startDemo() async {
+    if (_loading || _startingDemo) return;
+
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _startingDemo = true;
+      _error = null;
+      _unverified = false;
+    });
+
+    try {
+      await ref.read(authControllerProvider.notifier).startDemo();
+      // As with _submit: the router's redirect moves us when the auth state
+      // flips, and navigating here as well would race it.
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _error = 'The demo could not be started. Please try again.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _startingDemo = false);
     }
   }
 
@@ -181,25 +210,62 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: bos.border)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'or',
+                          style: TextStyle(color: bos.muted, fontSize: 12.5),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: bos.border)),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _loading || _startingDemo ? null : _startDemo,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: bos.brandInk,
+                        side: BorderSide(color: bos.border),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      icon: _startingDemo
+                          ? SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: bos.brandInk,
+                              ),
+                            )
+                          : const Icon(Icons.visibility_outlined, size: 18),
+                      label: Text(
+                        _startingDemo ? 'Opening the demo...' : 'Explore the demo',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  // Said before they go in, not after: somebody who spends ten
+                  // minutes filling in a form only to be refused at Save has
+                  // been misled, and the refusal comes from the backend where
+                  // no wording of ours can soften it.
+                  Text(
+                    'A live, read-only tour. Nothing you change is saved.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: bos.muted, fontSize: 12),
+                  ),
                   const SizedBox(height: 6),
                   TextButton(
-                    onPressed:
-                        _loading ? null : () => context.push(Routes.register),
+                    onPressed: _loading || _startingDemo
+                        ? null
+                        : () => context.push(Routes.register),
                     child: const Text("Don't have a workspace? Create one"),
                   ),
-                  const SizedBox(height: 16),
-                  // Which backend this build talks to is genuinely useful on a
-                  // phone: an emulator, a device on the office wifi and a
-                  // staging build all look identical otherwise, and "it says
-                  // wrong password" is usually "it is asking the wrong server".
-                  // Debug-only: a public release has no business telling a
-                  // stranger holding the phone what its backend host is.
-                  if (kDebugMode)
-                    Text(
-                      Env.apiUrl,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: bos.muted, fontSize: 11.5),
-                    ),
                 ],
               ),
             ),
@@ -219,16 +285,7 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Container(
-          height: 64,
-          width: 64,
-          decoration: BoxDecoration(
-            color: bos.brand,
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: const Icon(Icons.grid_view_rounded,
-              color: Colors.white, size: 30),
-        ),
+        const BrandMark(size: 64),
         const SizedBox(height: 16),
         Text(
           'Zuhoo',

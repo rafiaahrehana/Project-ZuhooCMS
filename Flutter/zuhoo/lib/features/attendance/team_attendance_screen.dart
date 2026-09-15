@@ -13,8 +13,11 @@ import '../../shared/widgets/form_sheet.dart';
 import '../../shared/widgets/primitives.dart';
 import '../../shared/widgets/prompts.dart';
 import '../../shared/widgets/stat_card.dart';
+import '../../shared/widgets/search_field.dart';
 import 'attendance_admin_repository.dart';
 import 'attendance_models.dart';
+import 'employee_attendance_screen.dart';
+import 'shift_roster_screen.dart';
 
 /// Who turned up, and who did not.
 ///
@@ -68,6 +71,11 @@ class TeamAttendanceScreen extends ConsumerWidget {
               tooltip: 'Fill in missing absences',
               icon: const Icon(Icons.event_repeat_rounded),
             ),
+          IconButton(
+            onPressed: () => ShiftRosterScreen.open(context),
+            tooltip: 'Who is on what',
+            icon: const Icon(Icons.schedule_outlined),
+          ),
         ],
       ),
       floatingActionButton: canMark
@@ -181,6 +189,12 @@ class _BodyState extends ConsumerState<_Body> {
                   ),
                 ],
               ),
+            ),
+            const SizedBox(height: 12),
+            AppSearchField(
+              hint: 'Search by name',
+              onChanged: (value) =>
+                  ref.read(teamAttendanceSearchProvider.notifier).set(value),
             ),
             if (daily != null) ...[
               const SizedBox(height: 12),
@@ -304,6 +318,14 @@ class _RecordRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: AppCard(
+        // This screen answers "who is in today". Tapping a row switches the
+        // question to "how has this person been", which is the other half of
+        // what somebody looking at attendance wants.
+        onTap: () => EmployeeAttendanceScreen.open(
+          context,
+          employeeId: record.employeeId,
+          name: record.employeeName,
+        ),
         child: Row(
           children: [
             Expanded(
@@ -352,7 +374,10 @@ class _RecordRow extends StatelessWidget {
                 onPressed: onApprove,
                 icon: const Icon(Icons.check_rounded, size: 18),
                 tooltip: 'Approve',
-                visualDensity: VisualDensity.compact,
+                // 44, not the 40 `visualDensity: compact` gives — see
+                // MessageBanner's dismiss. The row stays tight because
+                // the glyph is still 18; only the tap box grows.
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               ),
           ],
         ),

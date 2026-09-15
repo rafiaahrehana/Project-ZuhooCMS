@@ -7,6 +7,7 @@ import '../../shared/util/formatters.dart';
 import '../../shared/widgets/date_field.dart';
 import '../../shared/widgets/employee_picker.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/step_indicator.dart';
 import 'directory_models.dart';
 import 'directory_repository.dart';
 
@@ -39,6 +40,8 @@ class _EmployeeFormSheet extends ConsumerStatefulWidget {
 }
 
 class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
+  static const _stepLabels = ['Account', 'Role & organisation'];
+
   final _formKey = GlobalKey<FormState>();
 
   late final TextEditingController _firstName;
@@ -63,6 +66,14 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
 
   bool _submitting = false;
   String? _error;
+
+  /// Only meaningful when creating: the account fields (name, email,
+  /// password, and the two account-only optional fields) are step 0, role
+  /// and organisation fields are step 1. Splitting a 15-field sheet into two
+  /// screens' worth rather than one long scroll — an edit has no account
+  /// step at all, so it never shows this chrome and behaves exactly as
+  /// before.
+  int _step = 0;
 
   bool get _isEdit => widget.existing != null;
 
@@ -109,6 +120,17 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
       _employmentStatus != null &&
       terminalEmploymentStatuses.contains(_employmentStatus) &&
       _employmentStatus != widget.existing?.employmentStatus;
+
+  /// Validates only the fields currently on screen — step 0's, since step 1
+  /// is not built yet — then reveals step 1. Nothing in step 1 is required
+  /// in create mode, so there is no validation left to do once it appears;
+  /// [_submit] still calls `validate()` again as a harmless no-op check
+  /// before it sends the request.
+  void _goToStep1() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    FocusScope.of(context).unfocus();
+    setState(() => _step = 1);
+  }
 
   Future<void> _submit() async {
     if (_submitting) return;
@@ -182,8 +204,9 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
             departmentId: _departmentId,
             reportingManagerId: _manager?.id,
             gender: _gender,
-            dateOfBirth:
-                _dateOfBirth == null ? null : Fmt.isoDate(_dateOfBirth!),
+            dateOfBirth: _dateOfBirth == null
+                ? null
+                : Fmt.isoDate(_dateOfBirth!),
             hireDate: _hireDate == null ? null : Fmt.isoDate(_hireDate!),
             officeLocation: _officeLocation.text,
           ),
@@ -204,9 +227,11 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
       if (mounted) setState(() => _error = e.message);
     } catch (_) {
       if (mounted) {
-        setState(() => _error = _isEdit
-            ? 'Could not save that employee.'
-            : 'Could not add that employee.');
+        setState(
+          () => _error = _isEdit
+              ? 'Could not save that employee.'
+              : 'Could not add that employee.',
+        );
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -244,6 +269,10 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                   style: TextStyle(color: bos.muted, fontSize: 13),
                 ),
               ],
+              if (!_isEdit) ...[
+                const SizedBox(height: 14),
+                FormStepIndicator(labels: _stepLabels, step: _step),
+              ],
               const SizedBox(height: 18),
               if (_error != null) ...[
                 MessageBanner.error(
@@ -253,11 +282,11 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                 const SizedBox(height: 14),
               ],
 
-              // ── Identity: create only ─────────────────────
+              // ── Identity: create only, step 0 ─────────────
               // Name and email live on the person's user account and this
               // endpoint cannot change them, so on an edit they are shown as
               // the subtitle above rather than as fields that would not save.
-              if (!_isEdit) ...[
+              if (!_isEdit && _step == 0) ...[
                 TextFormField(
                   controller: _firstName,
                   autofocus: true,
@@ -269,7 +298,9 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                   validator: (value) {
                     final trimmed = value?.trim() ?? '';
                     if (trimmed.isEmpty) return 'A first name is required.';
-                    return trimmed.length < 2 ? 'At least two characters.' : null;
+                    return trimmed.length < 2
+                        ? 'At least two characters.'
+                        : null;
                   },
                 ),
                 const SizedBox(height: 16),
@@ -283,7 +314,9 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                   validator: (value) {
                     final trimmed = value?.trim() ?? '';
                     if (trimmed.isEmpty) return 'A last name is required.';
-                    return trimmed.length < 2 ? 'At least two characters.' : null;
+                    return trimmed.length < 2
+                        ? 'At least two characters.'
+                        : null;
                   },
                 ),
                 const SizedBox(height: 16),
@@ -299,7 +332,9 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                   validator: (value) {
                     final trimmed = value?.trim() ?? '';
                     if (trimmed.isEmpty) return 'An email is required.';
-                    return trimmed.contains('@') ? null : 'That is not an email.';
+                    return trimmed.contains('@')
+                        ? null
+                        : 'That is not an email.';
                   },
                 ),
                 const SizedBox(height: 16),
@@ -375,165 +410,198 @@ class _EmployeeFormSheetState extends ConsumerState<_EmployeeFormSheet> {
                   lastDate: DateTime(now.year - 14),
                   onChanged: (date) => setState(() => _dateOfBirth = date),
                 ),
-                const SizedBox(height: 22),
-                const SectionHeader('Role', icon: Icons.work_outline_rounded),
-                const SizedBox(height: 12),
               ],
 
-              // ── Role: both ────────────────────────────────
-              TextFormField(
-                controller: _jobTitle,
-                textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(
-                  labelText: 'Job title (optional)',
-                  prefixIcon: Icon(Icons.badge_outlined),
-                ),
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: _employmentType,
-                decoration: const InputDecoration(
-                  labelText: 'Employment type',
-                  prefixIcon: Icon(Icons.schedule_rounded),
-                ),
-                items: [
-                  for (final type in employmentTypes)
-                    DropdownMenuItem(value: type, child: Text(Fmt.label(type))),
+              // ── Role & organisation: edit always, create step 1 ────────
+              if (_isEdit || _step == 1) ...[
+                if (!_isEdit) ...[
+                  const SectionHeader(
+                    'Role & organisation',
+                    icon: Icons.work_outline_rounded,
+                  ),
+                  const SizedBox(height: 12),
                 ],
-                onChanged: _submitting
-                    ? null
-                    : (value) => setState(() => _employmentType = value),
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: _employmentStatus,
-                decoration: const InputDecoration(
-                  labelText: 'Status (optional)',
-                  prefixIcon: Icon(Icons.toggle_on_outlined),
-                ),
-                items: [
-                  for (final status in employmentStatuses)
-                    DropdownMenuItem(
-                      value: status,
-                      child: Text(Fmt.label(status)),
-                    ),
-                ],
-                onChanged: _submitting
-                    ? null
-                    : (value) => setState(() => _employmentStatus = value),
-              ),
-              if (_willDeactivate) ...[
-                const SizedBox(height: 12),
-                const MessageBanner.warning(
-                  'This also marks them inactive and disables their login.',
-                ),
-              ],
-              const SizedBox(height: 16),
-              if (departments.isNotEmpty) ...[
-                DropdownButtonFormField<int?>(
-                  initialValue: departments.any((d) => d.id == _departmentId)
-                      ? _departmentId
-                      : null,
+                TextFormField(
+                  controller: _jobTitle,
+                  textCapitalization: TextCapitalization.words,
                   decoration: const InputDecoration(
-                    labelText: 'Department (optional)',
-                    prefixIcon: Icon(Icons.apartment_rounded),
+                    labelText: 'Job title (optional)',
+                    prefixIcon: Icon(Icons.badge_outlined),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: _employmentType,
+                  decoration: const InputDecoration(
+                    labelText: 'Employment type',
+                    prefixIcon: Icon(Icons.schedule_rounded),
                   ),
                   items: [
-                    const DropdownMenuItem(value: null, child: Text('None')),
-                    for (final department in departments)
+                    for (final type in employmentTypes)
                       DropdownMenuItem(
-                        value: department.id,
-                        child: Text(department.name),
+                        value: type,
+                        child: Text(Fmt.label(type)),
                       ),
                   ],
                   onChanged: _submitting
                       ? null
-                      : (value) => setState(() => _departmentId = value),
+                      : (value) => setState(() => _employmentType = value),
                 ),
                 const SizedBox(height: 16),
-              ],
-              InkWell(
-                onTap: _submitting ? null : _pickManager,
-                borderRadius: BorderRadius.circular(8),
-                child: InputDecorator(
+                DropdownButtonFormField<String>(
+                  initialValue: _employmentStatus,
                   decoration: const InputDecoration(
-                    labelText: 'Reports to (optional)',
-                    prefixIcon: Icon(Icons.supervisor_account_outlined),
+                    labelText: 'Status (optional)',
+                    prefixIcon: Icon(Icons.toggle_on_outlined),
                   ),
-                  child: Text(
-                    _manager?.fullName ??
-                        widget.existing?.reportingManagerName ??
-                        'Choose a colleague',
-                    style: TextStyle(
-                      color: _manager == null &&
-                              widget.existing?.reportingManagerName == null
-                          ? bos.muted
-                          : bos.text,
-                      fontSize: 15,
-                    ),
+                  items: [
+                    for (final status in employmentStatuses)
+                      DropdownMenuItem(
+                        value: status,
+                        child: Text(Fmt.label(status)),
+                      ),
+                  ],
+                  onChanged: _submitting
+                      ? null
+                      : (value) => setState(() => _employmentStatus = value),
+                ),
+                if (_willDeactivate) ...[
+                  const SizedBox(height: 12),
+                  const MessageBanner.warning(
+                    'This also marks them inactive and disables their login.',
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _workPhone,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: 'Work phone (optional)',
-                  prefixIcon: Icon(Icons.phone_outlined),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _officeLocation,
-                textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(
-                  labelText: 'Office (optional)',
-                  prefixIcon: Icon(Icons.place_outlined),
-                ),
-              ),
-              const SizedBox(height: 16),
-              DateField(
-                label: 'Start date (optional)',
-                value: _hireDate,
-                enabled: !_submitting,
-                firstDate: DateTime(now.year - 40),
-                lastDate: DateTime(now.year + 1),
-                onChanged: (date) => setState(() => _hireDate = date),
-              ),
-              if (_isEdit) ...[
-                const SizedBox(height: 12),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.info_outline_rounded,
-                      size: 15,
-                      color: bos.muted,
+                ],
+                const SizedBox(height: 16),
+                if (departments.isNotEmpty) ...[
+                  DropdownButtonFormField<int?>(
+                    initialValue: departments.any((d) => d.id == _departmentId)
+                        ? _departmentId
+                        : null,
+                    decoration: const InputDecoration(
+                      labelText: 'Department (optional)',
+                      prefixIcon: Icon(Icons.apartment_rounded),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Pay, bank details and emergency contacts are edited on '
-                        'the web — this app does not show them, so it does not '
-                        'offer to change them.',
-                        style: TextStyle(
-                          color: bos.muted,
-                          fontSize: 12.5,
-                          height: 1.4,
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('None')),
+                      for (final department in departments)
+                        DropdownMenuItem(
+                          value: department.id,
+                          child: Text(department.name),
                         ),
+                    ],
+                    onChanged: _submitting
+                        ? null
+                        : (value) => setState(() => _departmentId = value),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                InkWell(
+                  onTap: _submitting ? null : _pickManager,
+                  borderRadius: BorderRadius.circular(8),
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Reports to (optional)',
+                      prefixIcon: Icon(Icons.supervisor_account_outlined),
+                    ),
+                    child: Text(
+                      _manager?.fullName ??
+                          widget.existing?.reportingManagerName ??
+                          'Choose a colleague',
+                      style: TextStyle(
+                        color:
+                            _manager == null &&
+                                widget.existing?.reportingManagerName == null
+                            ? bos.muted
+                            : bos.text,
+                        fontSize: 15,
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ],
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _workPhone,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Work phone (optional)',
+                    prefixIcon: Icon(Icons.phone_outlined),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _officeLocation,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Office (optional)',
+                    prefixIcon: Icon(Icons.place_outlined),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                DateField(
+                  label: 'Start date (optional)',
+                  value: _hireDate,
+                  enabled: !_submitting,
+                  firstDate: DateTime(now.year - 40),
+                  lastDate: DateTime(now.year + 1),
+                  onChanged: (date) => setState(() => _hireDate = date),
+                ),
+                if (_isEdit) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.info_outline_rounded,
+                        size: 15,
+                        color: bos.muted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Pay, bank details and emergency contacts are edited on '
+                          'the web — this app does not show them, so it does not '
+                          'offer to change them.',
+                          style: TextStyle(
+                            color: bos.muted,
+                            fontSize: 12.5,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ], // end of the role & organisation block
               const SizedBox(height: 18),
-              LoadingButton(
-                label: _isEdit ? 'Save changes' : 'Add employee',
-                loading: _submitting,
-                icon: _isEdit ? Icons.check_rounded : Icons.person_add_alt_rounded,
-                onPressed: _submit,
-              ),
+              if (!_isEdit && _step == 0)
+                FilledButton.icon(
+                  onPressed: _goToStep1,
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: const Text('Next: Role & organisation'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                )
+              else ...[
+                LoadingButton(
+                  label: _isEdit ? 'Save changes' : 'Add employee',
+                  loading: _submitting,
+                  icon: _isEdit
+                      ? Icons.check_rounded
+                      : Icons.person_add_alt_rounded,
+                  onPressed: _submit,
+                ),
+                if (!_isEdit) ...[
+                  const SizedBox(height: 8),
+                  TextButton.icon(
+                    onPressed: _submitting
+                        ? null
+                        : () => setState(() => _step = 0),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                    label: const Text('Back to account details'),
+                  ),
+                ],
+              ],
             ],
           ),
         ),

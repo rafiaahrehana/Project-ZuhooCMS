@@ -50,7 +50,7 @@ final searchQueryProvider = NotifierProvider<SearchQueryController, String>(
 /// The filtering happens here rather than in the widget so that every consumer
 /// gets the same list — there is no path through the app that reaches the
 /// unfiltered response.
-final searchResultsProvider = FutureProvider<SearchResults?>((ref) async {
+final searchResultsProvider = FutureProvider.autoDispose<SearchResults?>((ref) async {
   final query = ref.watch(searchQueryProvider);
 
   // One character matches most of a database and tells the reader nothing.

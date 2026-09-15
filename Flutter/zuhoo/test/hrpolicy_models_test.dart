@@ -234,4 +234,50 @@ void main() {
       expect(forCandidate.containsKey('employeeId'), isFalse);
     });
   });
+
+  group('Shift.weeklyOffLabel', () {
+    Shift shiftWith(String? offDays) => Shift.fromJson({
+          'id': 1,
+          'name': 'General Shift',
+          'shiftType': 'MORNING',
+          'gracePeriodMinutes': 10,
+          'workingMinutes': 540,
+          'startTime': '09:00:00',
+          'endTime': '18:00:00',
+          'weeklyOffDays': ?offDays,
+        });
+
+    test('says what the days are, not just which', () {
+      // "FRI,SAT" beside a shift name reads as neither the days worked nor
+      // the days off, which is the only thing it could usefully mean.
+      expect(shiftWith('FRI,SAT').weeklyOffLabel, 'Off Fri, Sat');
+    });
+
+    test('tolerates the spacing the field is actually stored with', () {
+      expect(shiftWith('fri , sat ,').weeklyOffLabel, 'Off Fri, Sat');
+    });
+
+    test('is null when nothing is set, so the row omits it', () {
+      expect(shiftWith(null).weeklyOffLabel, isNull);
+      expect(shiftWith('').weeklyOffLabel, isNull);
+      expect(shiftWith(' , ').weeklyOffLabel, isNull);
+    });
+  });
+
+  group('Shift.hours', () {
+    test('a day shift is the plain difference', () {
+      expect(
+        Shift.fromJson({'id': 1, 'workingMinutes': 540}).hours,
+        9,
+      );
+    });
+
+    test('an overnight shift arrives negative and is wrapped', () {
+      // 22:00 to 06:00 comes back as -960 minutes.
+      expect(
+        Shift.fromJson({'id': 1, 'workingMinutes': -960}).hours,
+        8,
+      );
+    });
+  });
 }

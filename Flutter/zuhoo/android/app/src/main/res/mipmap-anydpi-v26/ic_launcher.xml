@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon, for Android 8 and up. Without one the launcher takes the
+     legacy bitmap and shrinks it inside a plate, and Android 12's splash —
+     which draws this same icon — does the same.
+
+     No <monochrome> layer on purpose. That layer is what a themed-icon
+     launcher tints, and it has to be a single-colour silhouette; handing it
+     the full-colour mark would have it tinted into an unreadable blob on any
+     device with themed icons switched on. Better absent than wrong: those
+     launchers fall back to drawing this icon as it is. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

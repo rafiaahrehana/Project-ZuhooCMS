@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_controller.dart';
+import '../../core/chat/live_message_buffer.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/theme/bos_tokens.dart';
@@ -97,8 +98,30 @@ class _PortalTicketDetailScreenState
   String? _attachmentName;
   bool _attaching = false;
 
+  final _live = LiveMessageBuffer<SupportMessage>(
+    idOf: (m) => m.id,
+    createdAtOf: (m) => m.createdAt,
+  );
+  void Function()? _unsubscribeChat;
+
+  @override
+  void initState() {
+    super.initState();
+    // Mirrors Angular's `client-ticket-detail.ts` connectLive(): messages
+    // pushed while this screen is open arrive here directly, without waiting
+    // on a pull-to-refresh.
+    _unsubscribeChat = connectLiveMessages<SupportMessage>(
+      socket: ref.read(chatSocketServiceProvider),
+      destination: '/user/queue/support-tickets/${widget.ticket.id}/messages',
+      fromJson: SupportMessage.fromJson,
+      buffer: _live,
+      onMessage: () => setState(() {}),
+    );
+  }
+
   @override
   void dispose() {
+    _unsubscribeChat?.call();
     _composer.dispose();
     super.dispose();
   }
@@ -240,7 +263,7 @@ class _PortalTicketDetailScreenState
                   style: TextStyle(color: bos.muted, fontSize: 13),
                 ),
                 data: (list) => ChatThread(
-                  messages: list,
+                  messages: _live.merge(list),
                   currentUserId: me?.id,
                   controller: _composer,
                   onSend: _send,

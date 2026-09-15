@@ -234,21 +234,53 @@ class Timesheet {
 class ShiftAssignment {
   const ShiftAssignment({
     required this.shiftName,
+    this.id,
+    this.employeeId,
+    this.employeeName,
+    this.shiftId,
     this.assignmentStartDate,
     this.assignmentEndDate,
+    this.active = true,
+    this.reason,
+    this.assignedBy,
     this.notes,
   });
 
   final String shiftName;
+
+  /// Absent on the "my shift" read, which answers with the assignment as it
+  /// affects the caller rather than as a record to act on. Present on the
+  /// roster, where it is what the edit and end actions key on.
+  final int? id;
+
+  final int? employeeId;
+  final String? employeeName;
+  final int? shiftId;
   final String? assignmentStartDate;
+
+  /// Null while it is open-ended. Ending an assignment is what sets it.
   final String? assignmentEndDate;
+
+  final bool active;
+
+  /// Why they were put on this shift. Free text, and the only record of it.
+  final String? reason;
+
+  final String? assignedBy;
   final String? notes;
 
   factory ShiftAssignment.fromJson(Map<String, dynamic> json) =>
       ShiftAssignment(
         shiftName: json['shiftName'] as String? ?? 'Unnamed shift',
+        id: (json['id'] as num?)?.toInt(),
+        employeeId: (json['employeeId'] as num?)?.toInt(),
+        employeeName: json['employeeName'] as String?,
+        shiftId: (json['shiftId'] as num?)?.toInt(),
         assignmentStartDate: json['assignmentStartDate'] as String?,
         assignmentEndDate: json['assignmentEndDate'] as String?,
+        active: json['active'] as bool? ?? true,
+        reason: json['reason'] as String?,
+        assignedBy: json['assignedBy'] as String?,
         notes: json['notes'] as String?,
       );
 }
@@ -256,7 +288,13 @@ class ShiftAssignment {
 abstract final class AttendancePermissions {
   /// Putting somebody on a shift. Distinct from SHIFT_CREATE, which is about
   /// defining the shift itself — that stays on the web.
+  static const shiftAssignmentView = 'SHIFT_ASSIGNMENT_VIEW';
   static const shiftAssignmentCreate = 'SHIFT_ASSIGNMENT_CREATE';
+
+  /// Changing an assignment and deleting one are separate codes, and rightly
+  /// so: taking somebody off a shift keeps the record, deleting it does not.
+  static const shiftAssignmentUpdate = 'SHIFT_ASSIGNMENT_UPDATE';
+  static const shiftAssignmentDelete = 'SHIFT_ASSIGNMENT_DELETE';
 
   /// Reading the shift catalogue, which the assignment form needs to offer a
   /// choice at all.

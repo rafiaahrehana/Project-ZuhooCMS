@@ -174,8 +174,12 @@ class Person {
         hireDate: json['hireDate'] as String?,
         employmentStatus: json['employmentStatus'] as String?,
         employmentType: json['employmentType'] as String?,
-        officeLocation:
-            json['officeLocation'] as String? ?? json['location'] as String?,
+        // `location` on this payload is the employee's structured address
+        // (EmployeeResponse.location, an AddressResponse), never a plain
+        // string — treating it as one crashed the parse for anyone with an
+        // address on file but no free-text office location, which is a
+        // common combination, not an edge case.
+        officeLocation: json['officeLocation'] as String?,
         // The record carries the employee's own image and the linked user
         // account's; either can be the one that was set.
         imageUrl: Env.resolveImageUrl(

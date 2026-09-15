@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/bos_tokens.dart';
+import '../../shared/util/attachment_launcher.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
 import 'support_models.dart';
@@ -77,7 +78,8 @@ class ChatThread extends StatelessWidget {
             if (i > 0) const SizedBox(height: 10),
             _Bubble(
               message: messages[i],
-              mine: currentUserId != null &&
+              mine:
+                  currentUserId != null &&
                   messages[i].sentById == currentUserId,
             ),
           ],
@@ -106,9 +108,7 @@ class ChatThread extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      attaching
-                          ? 'Uploading…'
-                          : pendingAttachmentName ?? '',
+                      attaching ? 'Uploading…' : pendingAttachmentName ?? '',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: bos.textSecondary, fontSize: 12),
@@ -123,8 +123,15 @@ class ChatThread extends StatelessWidget {
                   else if (onRemoveAttachment != null)
                     IconButton(
                       onPressed: onRemoveAttachment,
-                      icon: Icon(Icons.close_rounded, size: 16, color: bos.muted),
-                      constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                      icon: Icon(
+                        Icons.close_rounded,
+                        size: 16,
+                        color: bos.muted,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 44,
+                        minHeight: 44,
+                      ),
                       padding: EdgeInsets.zero,
                       tooltip: 'Remove attachment',
                     ),
@@ -167,8 +174,11 @@ class ChatThread extends StatelessWidget {
                           color: Colors.white,
                         ),
                       )
-                    : const Icon(Icons.send_rounded,
-                        size: 18, color: Colors.white),
+                    : const Icon(
+                        Icons.send_rounded,
+                        size: 18,
+                        color: Colors.white,
+                      ),
               ),
             ],
           ),
@@ -195,12 +205,10 @@ class _Bubble extends StatelessWidget {
         ? bos.brand
         : (bos.isDark ? bos.bgHover : bos.bgSubtle);
     final foreground = mine ? Colors.white : bos.text;
-    final metaColour =
-        mine ? Colors.white.withValues(alpha: 0.75) : bos.muted;
+    final metaColour = mine ? Colors.white.withValues(alpha: 0.75) : bos.muted;
 
     return Row(
-      mainAxisAlignment:
-          mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+      mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         if (!mine) ...[
@@ -248,21 +256,33 @@ class _Bubble extends StatelessWidget {
                 ),
                 if (message.hasAttachment) ...[
                   const SizedBox(height: 6),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.attach_file_rounded,
-                          size: 13, color: metaColour),
-                      const SizedBox(width: 4),
-                      Flexible(
-                        child: Text(
-                          message.attachmentFileName ?? 'Attachment',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: metaColour, fontSize: 11.5),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: () =>
+                        openAttachmentUrl(context, message.attachmentUrl),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.attach_file_rounded,
+                          size: 13,
+                          color: metaColour,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            message.attachmentFileName ?? 'Attachment',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: metaColour,
+                              fontSize: 11.5,
+                              decoration: TextDecoration.underline,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
                 const SizedBox(height: 4),
@@ -273,8 +293,11 @@ class _Bubble extends StatelessWidget {
                     // client is a privacy failure, and the only defence at
                     // reading time is that it says what it is.
                     if (message.isInternal) ...[
-                      Icon(Icons.lock_outline_rounded,
-                          size: 11, color: metaColour),
+                      Icon(
+                        Icons.lock_outline_rounded,
+                        size: 11,
+                        color: metaColour,
+                      ),
                       const SizedBox(width: 3),
                       Text(
                         'Internal',
@@ -287,8 +310,11 @@ class _Bubble extends StatelessWidget {
                       const SizedBox(width: 6),
                     ],
                     if (message.isResolution) ...[
-                      Icon(Icons.check_circle_outline_rounded,
-                          size: 11, color: metaColour),
+                      Icon(
+                        Icons.check_circle_outline_rounded,
+                        size: 11,
+                        color: metaColour,
+                      ),
                       const SizedBox(width: 3),
                       Text(
                         'Resolution',

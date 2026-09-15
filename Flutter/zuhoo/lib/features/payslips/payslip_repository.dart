@@ -29,15 +29,6 @@ class PayslipRepository {
         size: size,
       );
 
-  /// Downloads the payslip PDF to a temp file and returns its path.
-  ///
-  /// The backend scopes this endpoint itself — PAYROLL_VIEW downloads anyone's,
-  /// everyone else only their own — so calling it from an employee's own screen
-  /// needs no extra guard here.
-  ///
-  /// The file goes to the temp directory rather than anywhere permanent: it is
-  /// handed straight to the platform viewer, and a payslip is not something to
-  /// leave lying in app storage indefinitely.
   /// Creates one month's record for one employee by hand.
   ///
   /// Needs PAYROLL_PROCESS. Refused when a record already exists for that
@@ -47,6 +38,15 @@ class PayslipRepository {
     return Payslip.fromJson(json);
   }
 
+  /// Downloads the payslip PDF to a temp file and returns its path.
+  ///
+  /// The backend scopes this endpoint itself — PAYROLL_VIEW downloads anyone's,
+  /// everyone else only their own — so calling it from an employee's own screen
+  /// needs no extra guard here.
+  ///
+  /// The file goes to the temp directory rather than anywhere permanent: it is
+  /// handed straight to the platform viewer, and a payslip is not something to
+  /// leave lying in app storage indefinitely.
   Future<String> downloadPdf(Payslip payslip) async {
     final bytes = await _api.getBytes('$_base/${payslip.id}/payslip');
     final dir = await getTemporaryDirectory();

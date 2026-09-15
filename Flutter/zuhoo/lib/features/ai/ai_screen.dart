@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../app/router.dart';
 import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/voice_input_button.dart';
 import '../search/search_screen.dart' show openSearchHit;
 import 'ai_chat_screen.dart';
 import 'ai_models.dart';
@@ -86,7 +89,25 @@ class _AiScreenState extends ConsumerState<AiScreen> {
 
     return Scaffold(
       backgroundColor: bos.bgPage,
-      appBar: AppBar(title: const Text('AI Assistant')),
+      appBar: AppBar(
+        title: const Text('AI Assistant'),
+        actions: [
+          IconButton(
+            tooltip: 'Drafting',
+            icon: const Icon(Icons.description_outlined),
+            onPressed: () => context.push(Routes.aiDrafts),
+          ),
+          // Configuring the assistant is a different job from using it, and a
+          // different permission — most people who see this screen have no
+          // business changing which provider the company runs on.
+          if (permissions.has(AiPermissions.admin))
+            IconButton(
+              tooltip: 'Assistant settings',
+              icon: const Icon(Icons.tune_rounded),
+              onPressed: () => context.push(Routes.aiSettings),
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
         children: [
@@ -103,9 +124,10 @@ class _AiScreenState extends ConsumerState<AiScreen> {
                   maxLines: 4,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => _ask(),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     hintText: 'Which invoices are overdue?',
                     border: InputBorder.none,
+                    suffixIcon: VoiceInputButton(controller: _controller),
                   ),
                 ),
                 const SizedBox(height: 8),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/location/attendance_location.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
@@ -100,6 +101,32 @@ class _Body extends ConsumerWidget {
             ),
           ],
         ),
+        if (today != null &&
+            ((today.checkInLocation?.trim().isNotEmpty ?? false) ||
+                (today.checkOutLocation?.trim().isNotEmpty ?? false))) ...[
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.location_on_outlined, size: 13, color: bos.muted),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                  // Check-out overwrites check-in as the day's most recent
+                  // whereabouts once both exist — same reasoning as showing
+                  // the completed day's total hours below and nothing before
+                  // it.
+                  today.checkOutLocation?.trim().isNotEmpty ?? false
+                      ? today.checkOutLocation!
+                      : today.checkInLocation!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: bos.muted, fontSize: 11.5),
+                ),
+              ),
+            ],
+          ),
+        ],
         if (today != null && today.isLate && today.lateMinutes > 0) ...[
           const SizedBox(height: 12),
           MessageBanner.info('Marked late by ${Fmt.minutes(today.lateMinutes)}.'),
@@ -169,19 +196,34 @@ class _Stamp extends StatelessWidget {
   }
 }
 
-class _Action extends ConsumerWidget {
+class _Action extends ConsumerStatefulWidget {
   const _Action({required this.state});
 
   final AttendanceState state;
 
-  Future<void> _punch(BuildContext context, WidgetRef ref, bool checkingIn) async {
+  @override
+  ConsumerState<_Action> createState() => _ActionState();
+}
+
+class _ActionState extends ConsumerState<_Action> {
+  bool _locating = false;
+
+  Future<void> _punch(bool checkingIn) async {
     final controller = ref.read(attendanceControllerProvider.notifier);
     final messenger = ScaffoldMessenger.of(context);
+
+    // Best-effort and silent by construction — see AttendanceLocation's own
+    // doc comment. A denied permission or a device with no GPS chip must
+    // never be the reason a punch fails.
+    setState(() => _locating = true);
+    final gps = await AttendanceLocation.current();
+    if (mounted) setState(() => _locating = false);
+
     try {
       if (checkingIn) {
-        await controller.checkIn();
+        await controller.checkIn(gps: gps);
       } else {
-        await controller.checkOut();
+        await controller.checkOut(gps: gps);
       }
       messenger.showSnackBar(
         SnackBar(
@@ -200,24 +242,26 @@ class _Action extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final bos = Theme.of(context).bos;
+    final state = widget.state;
+    final busy = state.busy || _locating;
 
     if (state.canCheckIn) {
       return LoadingButton(
         label: 'Check in',
-        loading: state.busy,
+        loading: busy,
         icon: Icons.login_rounded,
-        onPressed: () => _punch(context, ref, true),
+        onPressed: () => _punch(true),
       );
     }
 
     if (state.canCheckOut) {
       return LoadingButton(
         label: 'Check out',
-        loading: state.busy,
+        loading: busy,
         icon: Icons.logout_rounded,
-        onPressed: () => _punch(context, ref, false),
+        onPressed: () => _punch(false),
       );
     }
 

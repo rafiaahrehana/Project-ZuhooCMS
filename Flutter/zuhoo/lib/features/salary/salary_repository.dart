@@ -2,10 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
-import '../../core/network/api_exception.dart';
 import '../../core/network/paged_response.dart';
 import '../../core/providers.dart';
 import 'salary_models.dart';
+import 'template_models.dart';
 
 /// Pay agreements, loans, and the component catalogue they draw on.
 class SalaryRepository {
@@ -38,22 +38,6 @@ class SalaryRepository {
         .whereType<Map<String, dynamic>>()
         .map(SalaryStructure.fromJson)
         .toList(growable: false);
-  }
-
-  /// The structure in force for one employee, or null when they have none.
-  ///
-  /// Having none is the ordinary state for a new joiner and the reason payroll
-  /// skips somebody, so a 404 comes back as null rather than throwing.
-  Future<SalaryStructure?> activeFor(int employeeId) async {
-    try {
-      final json = await _api.get<Map<String, dynamic>>(
-        '$_structures/employee/$employeeId/active',
-      );
-      return SalaryStructure.fromJson(json);
-    } on ApiException catch (e) {
-      if (e.statusCode == 404) return null;
-      rethrow;
-    }
   }
 
   /// Adds a structure. If the employee already has one, this supersedes it —
@@ -91,14 +75,6 @@ class SalaryRepository {
   /// A bare list. Everything outstanding across the company.
   Future<List<LoanAdvance>> loans() async {
     final list = await _api.get<List<dynamic>>(_loans);
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map(LoanAdvance.fromJson)
-        .toList(growable: false);
-  }
-
-  Future<List<LoanAdvance>> loansFor(int employeeId) async {
-    final list = await _api.get<List<dynamic>>('$_loans/employee/$employeeId');
     return list
         .whereType<Map<String, dynamic>>()
         .map(LoanAdvance.fromJson)
@@ -154,6 +130,82 @@ class SalaryRepository {
       request.toJson(),
     );
     return SalaryComponent.fromJson(json);
+  }
+
+  // ── Structure templates ─────────────────────────────────────
+
+  /// The recipes a grade's pay is built from. A bare list.
+  ///
+  /// The first read of this on a new company seeds a standard catalogue, so
+  /// an empty answer means somebody deleted them rather than that none exist.
+  Future<List<SalaryTemplate>> templates() async {
+    final list = await _api.get<List<dynamic>>('$_components/templates');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(SalaryTemplate.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<SalaryTemplate> createTemplate(SalaryTemplateRequest request) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_components/templates',
+      request.toJson(),
+    );
+    return SalaryTemplate.fromJson(json);
+  }
+
+  /// A PUT, and it means it — every figure is overwritten with what is sent,
+  /// and an absent one is written as zero. See [SalaryTemplateRequest].
+  Future<SalaryTemplate> updateTemplate(
+    int id,
+    SalaryTemplateRequest request,
+  ) async {
+    final json = await _api.put<Map<String, dynamic>>(
+      '$_components/templates/$id',
+      request.toJson(),
+    );
+    return SalaryTemplate.fromJson(json);
+  }
+
+  Future<void> deleteTemplate(int id) =>
+      _api.delete<dynamic>('$_components/templates/$id');
+
+  /// What a template pays out at a given gross. The figure is a required
+  /// query parameter.
+  Future<SalaryBreakdown> breakdown(int templateId, double gross) async {
+    final json = await _api.get<Map<String, dynamic>>(
+      '$_components/templates/$templateId/breakdown',
+      query: {'gross': gross},
+    );
+    return SalaryBreakdown.fromJson(json);
+  }
+
+  // ── Extras on one person's structure ────────────────────────
+
+  Future<List<StructureExtra>> extras(int structureId) async {
+    final list =
+        await _api.get<List<dynamic>>('$_components/structure/$structureId');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(StructureExtra.fromJson)
+        .toList(growable: false);
+  }
+
+  /// Replaces the extras on a structure wholesale — the backend deletes what
+  /// is there and writes back exactly this list, so it must always carry
+  /// every line that should survive.
+  Future<List<StructureExtra>> setExtras(
+    int structureId,
+    List<StructureExtraLine> lines,
+  ) async {
+    final list = await _api.put<List<dynamic>>(
+      '$_components/structure/$structureId',
+      [for (final line in lines) line.toJson()],
+    );
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(StructureExtra.fromJson)
+        .toList(growable: false);
   }
 }
 
@@ -266,4 +318,17 @@ final structureHistoryProvider =
 final repaymentsProvider =
     FutureProvider.autoDispose.family<List<LoanRepayment>, int>(
   (ref, loanId) => ref.read(salaryRepositoryProvider).repayments(loanId),
+);
+
+/// The salary recipes.
+final salaryTemplatesProvider =
+    FutureProvider.autoDispose<List<SalaryTemplate>>((ref) {
+  ref.watch(currentUserProvider);
+  return ref.read(salaryRepositoryProvider).templates();
+});
+
+/// The extras bolted onto one employee's structure.
+final structureExtrasProvider =
+    FutureProvider.autoDispose.family<List<StructureExtra>, int>(
+  (ref, structureId) => ref.read(salaryRepositoryProvider).extras(structureId),
 );

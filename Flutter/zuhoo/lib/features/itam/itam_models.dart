@@ -610,3 +610,121 @@ class OffboardingChecklistRequest {
     };
   }
 }
+
+
+/// One spell of somebody having a piece of kit.
+///
+/// A row per hand-over rather than per event: [returnedAt] being null is what
+/// makes it current, and the condition is recorded twice — once when it went
+/// out and once when it came back.
+class AssetHistoryEntry {
+  const AssetHistoryEntry({
+    required this.id,
+    this.assetId,
+    this.assetName,
+    this.employeeId,
+    this.employeeName,
+    this.assignedAt,
+    this.returnedAt,
+    this.condition,
+    this.conditionOnReturn,
+    this.notes,
+    this.assignedByName,
+  });
+
+  final int id;
+  final int? assetId;
+  final String? assetName;
+  final int? employeeId;
+  final String? employeeName;
+  final String? assignedAt;
+
+  /// Null while they still have it.
+  final String? returnedAt;
+
+  /// What state it was in when it went out.
+  final String? condition;
+
+  /// What state it was in when it came back. Null until it does.
+  final String? conditionOnReturn;
+
+  final String? notes;
+  final String? assignedByName;
+
+  bool get stillOut => returnedAt == null;
+
+  factory AssetHistoryEntry.fromJson(Map<String, dynamic> json) =>
+      AssetHistoryEntry(
+        id: (json['id'] as num?)?.toInt() ?? 0,
+        assetId: (json['assetId'] as num?)?.toInt(),
+        assetName: json['assetName'] as String?,
+        employeeId: (json['employeeId'] as num?)?.toInt(),
+        employeeName: json['employeeName'] as String?,
+        assignedAt: json['assignedAt'] as String?,
+        returnedAt: json['returnedAt'] as String?,
+        condition: json['condition'] as String?,
+        conditionOnReturn: json['conditionOnReturn'] as String?,
+        notes: json['notes'] as String?,
+        assignedByName: json['assignedByName'] as String?,
+      );
+}
+
+/// What came of importing a CSV of assets.
+class AssetImportResult {
+  const AssetImportResult({
+    required this.totalRows,
+    required this.succeeded,
+    required this.failed,
+    required this.errors,
+  });
+
+  final int totalRows;
+  final int succeeded;
+  final int failed;
+
+  /// Which row failed and why. The useful half — a count alone tells nobody
+  /// what to fix.
+  final List<AssetImportRowError> errors;
+
+  factory AssetImportResult.fromJson(Map<String, dynamic> json) =>
+      AssetImportResult(
+        totalRows: (json['totalRows'] as num?)?.toInt() ?? 0,
+        succeeded: (json['succeeded'] as num?)?.toInt() ?? 0,
+        failed: (json['failed'] as num?)?.toInt() ?? 0,
+        errors: (json['errors'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(AssetImportRowError.fromJson)
+            .toList(growable: false),
+      );
+}
+
+class AssetImportRowError {
+  const AssetImportRowError({required this.row, required this.reason});
+
+  /// The line in the file, counting the header.
+  final int row;
+
+  final String reason;
+
+  factory AssetImportRowError.fromJson(Map<String, dynamic> json) =>
+      AssetImportRowError(
+        row: (json['row'] as num?)?.toInt() ?? 0,
+        reason: json['reason'] as String? ?? '',
+      );
+}
+
+/// The states a software licence can be in.
+///
+/// The backend's `LicenseStatus`, which is not the same thing as the
+/// `expiringSoon` and `expired` flags on the licence itself: those are worked
+/// out from the expiry date on every read, while the status is stored and can
+/// also say SUSPENDED or REVOKED, which no date implies.
+abstract final class LicenceStatus {
+  static const active = 'ACTIVE';
+  static const expiringSoon = 'EXPIRING_SOON';
+  static const expired = 'EXPIRED';
+  static const suspended = 'SUSPENDED';
+  static const revoked = 'REVOKED';
+
+  static const all = [active, expiringSoon, expired, suspended, revoked];
+}

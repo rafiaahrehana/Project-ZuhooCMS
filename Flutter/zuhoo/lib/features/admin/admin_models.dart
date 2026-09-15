@@ -4,6 +4,10 @@
 /// and each is gated on its own permission, so the screen shows only the tabs
 /// a given administrator could actually load.
 abstract final class AdminPermissions {
+  /// Who has a login to this company. A different question from the People
+  /// directory, which is about employment rather than access.
+  static const userView = 'USER_VIEW';
+
   static const departmentView = 'DEPARTMENT_VIEW';
   static const departmentCreate = 'DEPARTMENT_CREATE';
   static const departmentUpdate = 'DEPARTMENT_UPDATE';

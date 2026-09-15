@@ -113,6 +113,42 @@ class LeaveRepository {
     );
     return LeaveBalance.fromJson(json);
   }
+
+  /// Changes an entitlement.
+  ///
+  /// A full replace, not a patch: `update` assigns the type, the year and the
+  /// days from whatever it is sent. Only the employee is guarded, and only
+  /// against being changed to a different person by accident.
+  ///
+  /// It sets the entitlement, not what is left. Used days and pending days are
+  /// derived from the requests themselves and cannot be edited here.
+  Future<LeaveBalance> updateBalance(
+    int id,
+    LeaveBalanceRequest request,
+  ) async {
+    final json = await _api.put<Map<String, dynamic>>(
+      '$_balances/$id',
+      request.toJson(),
+    );
+    return LeaveBalance.fromJson(json);
+  }
+
+  Future<void> deleteBalance(int id) =>
+      _api.delete<dynamic>('$_balances/$id');
+
+  /// Everybody's balances for a year.
+  Future<PagedResponse<LeaveBalance>> allBalances({
+    int? year,
+    int page = 0,
+    int size = 50,
+  }) =>
+      _api.getPaged(
+        _balances,
+        LeaveBalance.fromJson,
+        page: page,
+        size: size,
+        query: {'year': ?year},
+      );
 }
 
 final leaveRepositoryProvider = Provider<LeaveRepository>(

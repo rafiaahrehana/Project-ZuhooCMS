@@ -80,6 +80,14 @@ class PerformanceReview {
     this.goalCompletionPercent,
     this.aiSummary,
     this.createdAt,
+    this.selfAssessmentAt,
+    this.selfAssessmentBy,
+    this.managerReviewAt,
+    this.managerReviewBy,
+    this.hrApprovalAt,
+    this.hrApprovalBy,
+    this.finalApprovalAt,
+    this.finalApprovalBy,
   });
 
   final int id;
@@ -119,6 +127,46 @@ class PerformanceReview {
   final String? aiSummary;
 
   final String? createdAt;
+
+  /// Who signed off which stage and when — stamped by `POST /{id}/advance`
+  /// for the stage it just moved *past*, so [selfAssessmentAt] is only ever
+  /// set once the review has left [PerformanceStage.selfAssessment], and so
+  /// on. Absent entirely for a stage the review has not yet cleared.
+  final String? selfAssessmentAt;
+  final String? selfAssessmentBy;
+  final String? managerReviewAt;
+  final String? managerReviewBy;
+  final String? hrApprovalAt;
+  final String? hrApprovalBy;
+  final String? finalApprovalAt;
+  final String? finalApprovalBy;
+
+  /// Every stage transition this review has actually recorded, oldest first
+  /// — the audit trail the detail screen renders as a timeline. A stage with
+  /// no timestamp yet (including the one currently in progress) is omitted
+  /// rather than shown as a blank entry.
+  List<({String stage, String? at, String? by})> get stageHistory => [
+        (
+          stage: PerformanceStage.selfAssessment,
+          at: selfAssessmentAt,
+          by: selfAssessmentBy,
+        ),
+        (
+          stage: PerformanceStage.managerReview,
+          at: managerReviewAt,
+          by: managerReviewBy,
+        ),
+        (
+          stage: PerformanceStage.hrApproval,
+          at: hrApprovalAt,
+          by: hrApprovalBy,
+        ),
+        (
+          stage: PerformanceStage.finalApproval,
+          at: finalApprovalAt,
+          by: finalApprovalBy,
+        ),
+      ].where((s) => s.at != null).toList(growable: false);
 
   String get personLabel => employeeName?.trim().isNotEmpty == true
       ? employeeName!.trim()
@@ -218,6 +266,14 @@ class PerformanceReview {
             (json['goalCompletionPercent'] as num?)?.toInt(),
         aiSummary: json['aiSummary'] as String?,
         createdAt: json['createdAt'] as String?,
+        selfAssessmentAt: json['selfAssessmentAt'] as String?,
+        selfAssessmentBy: json['selfAssessmentBy'] as String?,
+        managerReviewAt: json['managerReviewAt'] as String?,
+        managerReviewBy: json['managerReviewBy'] as String?,
+        hrApprovalAt: json['hrApprovalAt'] as String?,
+        hrApprovalBy: json['hrApprovalBy'] as String?,
+        finalApprovalAt: json['finalApprovalAt'] as String?,
+        finalApprovalBy: json['finalApprovalBy'] as String?,
       );
 }
 
@@ -346,4 +402,147 @@ class PerformanceReviewRequest {
         'goalCompletionPercent': goalCompletionPercent,
     };
   }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Around the review: the objective figures for the period it
+// covers, and the files kept with it.
+// ─────────────────────────────────────────────────────────────
+
+/// What the modules that own the data say about somebody over a period.
+///
+/// Nothing here is stored on the review. It is recomputed on every read from
+/// attendance, leave, tasks, requests and client ratings, so the same period
+/// reads the same way today as it did last week.
+///
+/// Several fields are deliberately nullable, and null does not mean zero: an
+/// employee with no client ratings has an unknown satisfaction score, not a
+/// score of nought. They are shown as a dash.
+class PerformanceKpis {
+  const PerformanceKpis({
+    required this.daysPresent,
+    required this.daysAbsent,
+    required this.workingDaysRecorded,
+    required this.lateArrivals,
+    required this.leaveDaysTaken,
+    required this.tasksCompleted,
+    required this.projectsCompleted,
+    this.employeeId,
+    this.periodStart,
+    this.periodEnd,
+    this.attendancePercent,
+    this.customerSatisfaction,
+  });
+
+  final int daysPresent;
+  final int daysAbsent;
+
+  /// Working days with an attendance record of any kind — the denominator.
+  final int workingDaysRecorded;
+
+  final int lateArrivals;
+  final int leaveDaysTaken;
+  final int tasksCompleted;
+  final int projectsCompleted;
+  final int? employeeId;
+  final String? periodStart;
+  final String? periodEnd;
+
+  /// 0 to 100. Null when nothing was recorded for the period at all, which is
+  /// different from an attendance of zero.
+  final double? attendancePercent;
+
+  /// The mean client rating, 1 to 5. Null when nobody rated their work.
+  final double? customerSatisfaction;
+
+  /// Whether there is anything worth showing. A period before the company
+  /// started recording attendance comes back all zeroes and nulls.
+  bool get hasAnything =>
+      workingDaysRecorded > 0 ||
+      tasksCompleted > 0 ||
+      projectsCompleted > 0 ||
+      leaveDaysTaken > 0;
+
+  factory PerformanceKpis.fromJson(Map<String, dynamic> json) {
+    int count(String key) => (json[key] as num?)?.toInt() ?? 0;
+
+    return PerformanceKpis(
+      daysPresent: count('daysPresent'),
+      daysAbsent: count('daysAbsent'),
+      workingDaysRecorded: count('workingDaysRecorded'),
+      lateArrivals: count('lateArrivals'),
+      leaveDaysTaken: count('leaveDaysTaken'),
+      tasksCompleted: count('tasksCompleted'),
+      projectsCompleted: count('projectsCompleted'),
+      employeeId: (json['employeeId'] as num?)?.toInt(),
+      periodStart: json['periodStart'] as String?,
+      periodEnd: json['periodEnd'] as String?,
+      attendancePercent: (json['attendancePercent'] as num?)?.toDouble(),
+      customerSatisfaction: (json['customerSatisfaction'] as num?)?.toDouble(),
+    );
+  }
+}
+
+/// A file kept with a review.
+class ReviewAttachment {
+  const ReviewAttachment({
+    required this.id,
+    required this.fileName,
+    required this.fileUrl,
+    this.fileType,
+    this.fileSizeBytes,
+    this.label,
+    this.uploadedByName,
+    this.createdAt,
+  });
+
+  final int id;
+  final String fileName;
+  final String fileUrl;
+  final String? fileType;
+  final int? fileSizeBytes;
+  final String? label;
+  final String? uploadedByName;
+  final String? createdAt;
+
+  factory ReviewAttachment.fromJson(Map<String, dynamic> json) =>
+      ReviewAttachment(
+        id: (json['id'] as num?)?.toInt() ?? 0,
+        fileName: json['fileName'] as String? ?? '',
+        fileUrl: json['fileUrl'] as String? ?? '',
+        fileType: json['fileType'] as String?,
+        fileSizeBytes: (json['fileSizeBytes'] as num?)?.toInt(),
+        label: json['label'] as String?,
+        uploadedByName: json['uploadedByName'] as String?,
+        createdAt: json['createdAt'] as String?,
+      );
+}
+
+/// Recording a file against a review.
+///
+/// The file itself goes to `POST /upload` first; this only records what came
+/// back. Nothing here carries bytes.
+class ReviewAttachmentRequest {
+  const ReviewAttachmentRequest({
+    required this.fileName,
+    required this.fileUrl,
+    this.fileType,
+    this.fileSizeBytes,
+    this.label,
+  });
+
+  final String fileName;
+  final String fileUrl;
+  final String? fileType;
+  final int? fileSizeBytes;
+  final String? label;
+
+  Map<String, dynamic> toJson() => {
+        'fileName': fileName,
+        'fileUrl': fileUrl,
+        if (fileType != null) 'fileType': fileType,
+        if (fileSizeBytes != null) 'fileSizeBytes': fileSizeBytes,
+        if (label != null && label!.trim().isNotEmpty) 'label': label!.trim(),
+      };
 }

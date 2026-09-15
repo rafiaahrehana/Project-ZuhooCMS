@@ -7,11 +7,11 @@ import '../../core/providers.dart';
 import '../../shared/paged_controller.dart';
 import 'kb_models.dart';
 
-/// The knowledge base, read-only.
+/// The knowledge base.
 ///
-/// Writing articles is `POST`/`PATCH /kb/articles` plus publish and archive —
-/// an editor's job, and a long-form one. What a phone is for here is looking
-/// something up while a customer is waiting, and saying whether it helped.
+/// Mostly what a phone is for here is looking something up while a customer is
+/// waiting, and saying whether it helped. Writing is the other half and is
+/// gated on KNOWLEDGE_BASE_CREATE / _UPDATE, which most staff do not have.
 class KbRepository {
   KbRepository(this._api);
 
@@ -45,6 +45,47 @@ class KbRepository {
   /// what increments its view count server-side.
   Future<KbArticle> article(int id) async {
     final json = await _api.get<Map<String, dynamic>>('$_base/$id');
+    return KbArticle.fromJson(json);
+  }
+
+  /// Everything, whatever state it is in — for whoever writes the articles
+  /// rather than whoever reads them. [articles] deliberately shows only what
+  /// is published; this is the other view.
+  Future<PagedResponse<KbArticle>> allArticles({
+    String? keyword,
+    String? status,
+    int page = 0,
+    int size = 20,
+  }) =>
+      _api.getPaged(
+        _base,
+        KbArticle.fromJson,
+        page: page,
+        size: size,
+        query: {'keyword': keyword, 'status': status},
+      );
+
+  Future<KbArticle> create(KbArticleRequest request) async {
+    final json = await _api.post<Map<String, dynamic>>(_base, request.toJson());
+    return KbArticle.fromJson(json);
+  }
+
+  /// A PATCH in name only — see [KbArticleRequest] for what it really does.
+  Future<KbArticle> update(int id, KbArticleRequest request) async {
+    final json =
+        await _api.patch<Map<String, dynamic>>('$_base/$id', request.toJson());
+    return KbArticle.fromJson(json);
+  }
+
+  /// Publishing also stamps the moment. There is no unpublish — archiving is
+  /// the way back out, and it leaves the stamp behind.
+  Future<KbArticle> publish(int id) async {
+    final json = await _api.patch<Map<String, dynamic>>('$_base/$id/publish');
+    return KbArticle.fromJson(json);
+  }
+
+  Future<KbArticle> archive(int id) async {
+    final json = await _api.patch<Map<String, dynamic>>('$_base/$id/archive');
     return KbArticle.fromJson(json);
   }
 

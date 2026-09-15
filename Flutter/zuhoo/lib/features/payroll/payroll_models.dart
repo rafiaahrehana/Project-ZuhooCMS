@@ -4,6 +4,7 @@
 /// lives in the payslips module. This is the administrator's side: the run that
 /// produces those payslips, and the settings that decide how the figures are
 /// worked out.
+library;
 
 /// Where a payroll run stands. Mirrors `PayrollRun.RunStatus`.
 ///
@@ -23,7 +24,7 @@ abstract final class RunStatus {
 
   /// Which statuses each action is allowed from. Copied exactly from
   /// `PayrollRunService.requireStatus` — the backend refuses anything else with
-  /// "Cannot <action> a <status> payroll run", so the screen offers only what
+  /// `Cannot <action> a <status> payroll run`, so the screen offers only what
   /// will work rather than letting somebody find out.
   static const recalculateFrom = {draft, calculated, pendingApproval, rejected};
   static const submitFrom = {draft, calculated, rejected};

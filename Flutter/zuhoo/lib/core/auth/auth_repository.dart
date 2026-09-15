@@ -43,6 +43,36 @@ class AuthRepository {
     }
   }
 
+  /// Starts the public read-only demo: no credentials exchanged.
+  ///
+  /// The backend mints a 45-minute token for the seeded demo tenant and
+  /// deliberately issues **no refresh token** — when the access token dies the
+  /// demo is over, which is why [SecureStore.writeTokens] tolerates a null one.
+  /// Every write the token could attempt is refused by the backend's
+  /// `DemoReadOnlyFilter`, which is what makes handing sessions out safe.
+  ///
+  /// A 404 is the documented "demo is switched off" answer (`app.demo.enabled`
+  /// is false, or the tenant was never seeded), not a missing route, so it is
+  /// translated into something a person can act on.
+  Future<LoginResponse> startDemo() async {
+    try {
+      final json =
+          await _api.post<Map<String, dynamic>>('/public/demo/session');
+      final res = LoginResponse.fromJson(json);
+      await _store.writeTokens(res.accessToken, res.refreshToken);
+      return res;
+    } on ApiException catch (e) {
+      if (e.statusCode == 404 && !e.fromServer) {
+        throw ApiException(
+          'The demo is not available right now.',
+          statusCode: e.statusCode,
+          cause: e.cause,
+        );
+      }
+      rethrow;
+    }
+  }
+
   /// Best-effort server-side revoke. The local session is cleared by the
   /// caller first, so a failure here must not block signing out.
   Future<void> logout(String? refreshToken) async {
@@ -141,6 +171,14 @@ class AuthRepository {
 
   Future<UserProfile> updateProfile(Map<String, dynamic> patch) async {
     final json = await _api.patch<Map<String, dynamic>>('/users/profile', patch);
+    return UserProfile.fromJson(json);
+  }
+
+  /// Like [changePassword], the backend re-checks the current password before
+  /// applying this, since the email is what's typed in at the login screen.
+  Future<UserProfile> changeEmail(ChangeEmailRequest request) async {
+    final json =
+        await _api.patch<Map<String, dynamic>>('/users/profile', request.toJson());
     return UserProfile.fromJson(json);
   }
 

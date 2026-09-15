@@ -6,6 +6,7 @@ import '../config/env.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import '../push/push_service.dart';
+import '../storage/json_cache.dart';
 import 'auth_models.dart';
 import 'impersonation_controller.dart';
 import 'permission_controller.dart';
@@ -65,6 +66,11 @@ class AuthController extends AsyncNotifier<AppUser?> {
       await store.clear();
       return null;
     }
+
+    // A demo that survived a restart is still a demo, and the banner has to
+    // say so — the token looks like any other, so this flag is the only thing
+    // that remembers.
+    ref.read(demoSessionProvider.notifier).set(await store.readIsDemo());
 
     // Render immediately from the cached permission set, then let the network
     // correct it. Blocking the splash on a round trip would mean a slow
@@ -139,6 +145,42 @@ class AuthController extends AsyncNotifier<AppUser?> {
       // holding a credential that was never completed.
       await ref.read(secureStoreProvider).clear();
       ref.read(permissionControllerProvider.notifier).clear();
+      if (state.value != null) state = const AsyncValue.data(null);
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  /// Starts the public read-only demo — no credentials, no password field.
+  ///
+  /// Mirrors [login]'s ordering because the router depends on it: permissions
+  /// have to be cached before anything navigates, or the first guarded route
+  /// bounces straight back to the login screen.
+  ///
+  /// Two things it deliberately does *not* do. It does not register a push
+  /// token: the demo is one shared account, and every device that opened it
+  /// would then receive notifications meant for whoever opened it next. And it
+  /// does not fetch the profile, because the demo owner's name is already in
+  /// the response and the extra round trip buys nothing.
+  Future<AppUser> startDemo() async {
+    try {
+      final res = await ref.read(authRepositoryProvider).startDemo();
+      final user = AppUser.fromLogin(res);
+
+      final store = ref.read(secureStoreProvider);
+      await store.writeUser(user.toJson());
+      await store.writeIsDemo();
+      ref.read(demoSessionProvider.notifier).set(true);
+
+      await ref.read(permissionControllerProvider.notifier).load();
+
+      state = AsyncValue.data(user);
+      return user;
+    } catch (error, stackTrace) {
+      // Same reasoning as login(): stay signed out rather than becoming an
+      // error state, and leave no half-written session behind.
+      await ref.read(secureStoreProvider).clear();
+      ref.read(permissionControllerProvider.notifier).clear();
+      ref.read(demoSessionProvider.notifier).set(false);
       if (state.value != null) state = const AsyncValue.data(null);
       Error.throwWithStackTrace(error, stackTrace);
     }
@@ -297,8 +339,16 @@ class AuthController extends AsyncNotifier<AppUser?> {
   /// by the HTTP layer when a refresh is definitively rejected.
   Future<void> clearSession() async {
     ref.read(impersonationControllerProvider.notifier).set(null);
+    // Covers both ways a demo ends: "Exit demo", and the access token simply
+    // expiring 45 minutes in — the HTTP layer calls this when a refresh is
+    // refused, and with no refresh token that is exactly what happens.
+    ref.read(demoSessionProvider.notifier).set(false);
     await ref.read(secureStoreProvider).clear();
     ref.read(permissionControllerProvider.notifier).clear();
+    // Not tenant-scoped storage — a cached dashboard figure surviving into
+    // the next person's session on this device would be a cross-tenant leak
+    // the moment their own fetch happened to fail offline.
+    await ref.read(jsonCacheProvider).clearAll();
     state = const AsyncValue.data(null);
   }
 
@@ -346,6 +396,25 @@ class AuthController extends AsyncNotifier<AppUser?> {
 
 final authControllerProvider =
     AsyncNotifierProvider<AuthController, AppUser?>(AuthController.new);
+
+/// Whether this session is the public read-only demo.
+///
+/// Held separately from the user because nothing about the account or the
+/// token says so — the demo owner is an ordinary COMPANY_OWNER, and the only
+/// difference is that the backend refuses its writes. Kept in sync with the
+/// stored flag by [AuthController], so a restart does not silently turn a
+/// demo into what looks like a normal session.
+class DemoSessionController extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void set(bool value) {
+    if (state != value) state = value;
+  }
+}
+
+final demoSessionProvider =
+    NotifierProvider<DemoSessionController, bool>(DemoSessionController.new);
 
 /// The signed-in user, or null while loading or signed out. Screens behind the
 /// auth redirect can rely on this being non-null.

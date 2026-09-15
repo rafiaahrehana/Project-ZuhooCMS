@@ -9,7 +9,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/network/paged_response.dart';
 import '../../core/providers.dart';
 import '../../shared/paged_controller.dart';
-import '../portal/portal_models.dart' show Invoice;
+import '../portal/portal_models.dart' show Invoice, InvoiceStatus;
 import 'finance_models.dart';
 
 /// Which slice of expenses to show.
@@ -41,18 +41,30 @@ class FinanceRepository {
     String? status,
     int page = 0,
     int size = 20,
-  }) {
-    // The backend splits these: a status filter has its own path rather than
-    // a query parameter on the list.
+  }) async {
+    // Overdue is a status in the enum but not a reliable one on a record: it
+    // is only stamped when something runs, whereas the dedicated endpoint
+    // works it out from the due date. Filtering by the stored status would
+    // quietly miss invoices that went overdue this morning.
+    if (status == InvoiceStatus.overdue) {
+      final overdue = await overdueInvoices();
+      // A bare list on the wire, so it is wrapped as a single complete page —
+      // the caller's pager then knows there is nothing more to fetch.
+      return PagedResponse(
+        content: overdue,
+        totalElements: overdue.length,
+        totalPages: 1,
+        currentPage: 0,
+        pageSize: overdue.length,
+      );
+    }
+
+    // The backend splits the rest: a status filter has its own path rather
+    // than a query parameter on the list.
     final path = status == null
         ? '$_base/invoices'
         : '$_base/invoices/status/$status';
     return _api.getPaged(path, Invoice.fromJson, page: page, size: size);
-  }
-
-  Future<Invoice> invoice(int id) async {
-    final json = await _api.get<Map<String, dynamic>>('$_base/invoices/$id');
-    return Invoice.fromJson(json);
   }
 
   Future<Invoice> createInvoice(InvoiceRequest request) async {
@@ -117,6 +129,86 @@ class FinanceRepository {
     }
   }
 
+  /// One expense in full. The list carries the same shape, but a detail view
+  /// re-reads it so what is edited is what the server currently holds.
+  Future<Expense> expense(int id) async {
+    final json =
+        await _api.get<Map<String, dynamic>>('$_base/expenses/$id');
+    return Expense.fromJson(json);
+  }
+
+  /// Everything billed by one supplier. Matched on the name as typed, since
+  /// an expense records a vendor name rather than a vendor record.
+  Future<PagedResponse<Expense>> expensesByVendor(
+    String vendorName, {
+    int page = 0,
+    int size = 20,
+  }) =>
+      _api.getPaged(
+        '$_base/expenses/vendor/${Uri.encodeComponent(vendorName)}',
+        Expense.fromJson,
+        page: page,
+        size: size,
+      );
+
+  /// Changes an expense. Only a PENDING one, and the payload is complete
+  /// rather than partial — see [UpdateExpenseRequest].
+  Future<Expense> updateExpense(int id, UpdateExpenseRequest request) async {
+    final json = await _api.patch<Map<String, dynamic>>(
+      '$_base/expenses/$id',
+      request.toJson(),
+    );
+    return Expense.fromJson(json);
+  }
+
+  /// Records that an approved expense has actually been paid back. Both
+  /// details are optional query parameters, and the response is empty.
+  Future<void> markExpensePaid(
+    int id, {
+    String? method,
+    String? reference,
+  }) {
+    final query = <String>[
+      if (method != null && method.trim().isNotEmpty)
+        'reimbursementMethod=${Uri.encodeQueryComponent(method.trim())}',
+      if (reference != null && reference.trim().isNotEmpty)
+        'referenceNumber=${Uri.encodeQueryComponent(reference.trim())}',
+    ];
+    final suffix = query.isEmpty ? '' : '?${query.join('&')}';
+    return _api.post<dynamic>('$_base/expenses/$id/mark-as-paid$suffix');
+  }
+
+  /// Company owner only — not merely somebody with EXPENSE_UPDATE.
+  Future<void> deleteExpense(int id) =>
+      _api.delete<dynamic>('$_base/expenses/$id');
+
+  // ── Invoices that need chasing ──────────────────────────────
+
+  /// Invoices past their due date. A bare list rather than a page.
+  Future<List<Invoice>> overdueInvoices() async {
+    final list = await _api.get<List<dynamic>>('$_base/invoices/overdue');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(Invoice.fromJson)
+        .toList(growable: false);
+  }
+
+  /// A drafted note about an invoice. Nothing is saved — it comes back as text
+  /// to read and use, or not.
+  Future<String> invoiceSummary(int id) async {
+    final json =
+        await _api.get<Map<String, dynamic>>('$_base/invoices/$id/ai-summary');
+    return json['summary'] as String? ?? json['result'] as String? ?? '';
+  }
+
+  /// Puts a payment against an invoice. The amount is a query parameter, not a
+  /// body, and the response is empty.
+  ///
+  /// Distinct from [createReceipt]: that raises a receipt document against the
+  /// client, this only moves the invoice's paid figure.
+  Future<void> recordInvoicePayment(int id, double amount) =>
+      _api.post<dynamic>('$_base/invoices/$id/record-payment?amount=$amount');
+
   /// Asks the assistant to draft a title and description from rough notes.
   ///
   /// Gated on AI_CHAT underneath — `AiServiceImpl.generateRaw` checks it no
@@ -173,6 +265,27 @@ class FinanceRepository {
         page: page,
         size: size,
       );
+
+  /// Starts an online checkout for adding money to the wallet.
+  ///
+  /// Mirrors `CompanyRepository.initiateSubscriptionUpgrade` and
+  /// `PortalRepository.initiatePayment` — SSLCommerz's hosted checkout is a
+  /// web page, and the backend's own success/failure callbacks redirect back
+  /// to the *web* app (`app.frontend-url`), not anywhere this app could
+  /// intercept, so the caller hands the returned URL to the system browser
+  /// rather than trying to embed it. `targetId` is null: a top-up has no
+  /// target row to attach to until the payment actually lands.
+  Future<String> initiateWalletTopUp(double amount) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '/payments/sslcommerz/initiate',
+      {
+        'purpose': 'WALLET_TOPUP',
+        'targetId': null,
+        'amount': amount,
+      },
+    );
+    return json['gatewayUrl'] as String? ?? '';
+  }
 }
 
 final financeRepositoryProvider = Provider<FinanceRepository>(
@@ -226,7 +339,7 @@ class InvoicesController extends AsyncNotifier<PagedState<Invoice>>
     return created;
   }
 
-  Future<Invoice> update(int id, InvoiceRequest request) async {
+  Future<Invoice> updateItem(int id, InvoiceRequest request) async {
     final updated =
         await ref.read(financeRepositoryProvider).updateInvoice(id, request);
     replaceItem((invoice) => invoice.id == id, updated);
@@ -300,6 +413,25 @@ class ExpensesController extends AsyncNotifier<PagedState<Expense>>
     }
     // The approval may have pushed a category over budget; the caller shows it.
     return warning;
+  }
+
+  Future<void> edit(int id, UpdateExpenseRequest request) async {
+    final updated =
+        await ref.read(financeRepositoryProvider).updateExpense(id, request);
+    replaceItem((expense) => expense.id == id, updated);
+  }
+
+  /// Records reimbursement. The endpoint answers empty, so the row is
+  /// re-read rather than patched from a response that carries nothing.
+  Future<void> markPaid(int id, {String? method, String? reference}) async {
+    final repo = ref.read(financeRepositoryProvider);
+    await repo.markExpensePaid(id, method: method, reference: reference);
+    replaceItem((expense) => expense.id == id, await repo.expense(id));
+  }
+
+  Future<void> remove(int id) async {
+    await ref.read(financeRepositoryProvider).deleteExpense(id);
+    removeItem((expense) => expense.id == id);
   }
 }
 

@@ -123,6 +123,7 @@ class SelfUpdateEmployeeRequest {
     this.emergencyContactName,
     this.emergencyContactPhone,
     this.emergencyContactRelation,
+    this.profileImageUrl,
   });
 
   /// Personal mobile. Lives on the User account, unlike [workPhone] which
@@ -134,9 +135,15 @@ class SelfUpdateEmployeeRequest {
   final String? emergencyContactPhone;
   final String? emergencyContactRelation;
 
-  /// Omits absent keys rather than sending nulls: a PATCH with an explicit
-  /// null would clear the stored value, which is not what leaving a field
-  /// untouched means.
+  /// A URL from `POST /upload/avatar`, not the image itself. Saving it also
+  /// sets it on the linked User account, so the photo follows you everywhere
+  /// rather than only onto the employee record.
+  final String? profileImageUrl;
+
+  /// Omits absent keys rather than sending nulls. `updateMyProfile` guards
+  /// every field with a null check, so an explicit null would be ignored
+  /// rather than clearing anything — but sending one still says something
+  /// this app does not mean, and there is no way to clear a field here.
   Map<String, dynamic> toJson() => {
         if (phone != null) 'phone': phone,
         if (workPhone != null) 'workPhone': workPhone,
@@ -147,6 +154,7 @@ class SelfUpdateEmployeeRequest {
           'emergencyContactPhone': emergencyContactPhone,
         if (emergencyContactRelation != null)
           'emergencyContactRelation': emergencyContactRelation,
+        if (profileImageUrl != null) 'profileImageUrl': profileImageUrl,
       };
 }
 

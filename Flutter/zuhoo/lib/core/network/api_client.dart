@@ -131,6 +131,37 @@ class ApiClient {
         return UploadedFile.fromJson(res.data ?? const {});
       });
 
+  /// `POST /api/upload/avatar` — a separate endpoint from [uploadDocument]
+  /// with tighter rules: images only, verified as real image data rather than
+  /// trusted by extension, and a 5MB cap rather than 10.
+  ///
+  /// Uploading only stores the file and hands back a URL. Nothing is attached
+  /// to anybody until that URL is saved onto a record.
+  Future<UploadedFile> uploadAvatar(String filePath, String fileName) =>
+      _guard(() async {
+        final form = FormData.fromMap({
+          'file': await MultipartFile.fromFile(filePath, filename: fileName),
+        });
+        final res = await dio.post<Map<String, dynamic>>(
+          '/upload/avatar',
+          data: form,
+        );
+        return UploadedFile.fromJson(res.data ?? const {});
+      });
+
+  /// A multipart POST to any endpoint that takes a `file` part and answers
+  /// with something other than an upload receipt — a statement import, for
+  /// instance, which returns what it made of the file rather than where it
+  /// was stored.
+  Future<T> postFile<T>(String path, String filePath, String fileName) =>
+      _guard(() async {
+        final form = FormData.fromMap({
+          'file': await MultipartFile.fromFile(filePath, filename: fileName),
+        });
+        final res = await dio.post<T>(path, data: form);
+        return res.data as T;
+      });
+
   // ── Paging ──────────────────────────────────────────────────
 
   Future<PagedResponse<T>> getPaged<T>(

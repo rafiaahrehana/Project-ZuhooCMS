@@ -5,11 +5,15 @@ import '../../core/auth/permission_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
+import '../../shared/widgets/contact_actions.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
 import 'client_form_sheet.dart';
+import 'activity_timeline.dart';
 import 'crm_controllers.dart';
 import 'crm_models.dart';
+import 'crm_repository.dart';
 import 'leads_tab.dart' show TagChip;
 import 'opportunity_form_sheet.dart';
 
@@ -220,8 +224,12 @@ class ClientDetailScreen extends ConsumerWidget {
                   ],
                 ),
               ),
+              const SizedBox(height: 14),
+              ContactActions(phone: client.phone, email: client.email),
               const SizedBox(height: 20),
               _ClientFacts(client: client),
+              const SizedBox(height: 20),
+              ActivityTimeline(clientId: client.id),
             ],
           ),
         ),
@@ -338,6 +346,37 @@ class _ClientMenu extends ConsumerWidget {
   final bool canDelete;
   final bool canOpenDeal;
 
+  /// Sends the client an invitation to the portal, and switches their access
+  /// on.
+  ///
+  /// One press, two consequences — an email leaves the building and the client
+  /// gains a way in — so it asks first rather than doing it on a tap.
+  Future<void> _invite(BuildContext context, WidgetRef ref) async {
+    final confirmed = await confirmAction(
+      context,
+      title: 'Invite ${client.headline} to the portal?',
+      message: 'An invitation goes to them by email, and their portal access '
+          'is switched on.',
+      action: 'Send it',
+      destructive: false,
+    );
+    if (!confirmed || !context.mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.read(crmRepositoryProvider).inviteToPortal(client.id);
+      ref.invalidate(clientDetailProvider(client.id));
+      messenger.showSnackBar(const SnackBar(content: Text('Invitation sent.')));
+    } on ApiException catch (e) {
+      // A client with no email address is refused with a message saying so.
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not send that invitation.')),
+      );
+    }
+  }
+
   Future<void> _delete(BuildContext context, WidgetRef ref) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -393,6 +432,8 @@ class _ClientMenu extends ConsumerWidget {
               clientId: client.id,
               clientName: client.headline,
             );
+          case 'portal':
+            _invite(context, ref);
           case 'delete':
             _delete(context, ref);
         }
@@ -402,6 +443,13 @@ class _ClientMenu extends ConsumerWidget {
           const PopupMenuItem(value: 'edit', child: Text('Edit client')),
         if (canOpenDeal)
           const PopupMenuItem(value: 'deal', child: Text('New deal')),
+        // Only worth offering once. Inviting somebody who already has portal
+        // access would send a second invitation for an account they have.
+        if (canEdit && client.portalAccessEnabled != true)
+          const PopupMenuItem(
+            value: 'portal',
+            child: Text('Invite to the portal'),
+          ),
         if (canDelete)
           const PopupMenuItem(value: 'delete', child: Text('Delete')),
       ],

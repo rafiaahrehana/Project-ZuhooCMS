@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/location/attendance_location.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/paged_response.dart';
@@ -63,22 +64,38 @@ class AttendanceRepository {
   /// ISO instant and not UTC. The backend compares it against the assigned
   /// shift's start time, which is itself a local wall clock, so sending an
   /// instant would make everyone in a non-UTC timezone permanently late.
-  Future<AttendanceRecord> checkIn({String? notes, String? location}) async {
+  Future<AttendanceRecord> checkIn({
+    String? notes,
+    String? location,
+    AttendanceLocation? gps,
+  }) async {
     final json = await _api.post<Map<String, dynamic>>('$_base/check-in', {
       'checkInTime': Fmt.wallClockNow(),
-      'method': 'MANUAL',
+      'method': gps == null ? 'MANUAL' : 'GPS',
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
-      if (location != null && location.trim().isNotEmpty)
+      if (gps != null) ...{
+        'latitude': '${gps.latitude}',
+        'longitude': '${gps.longitude}',
+        'location': gps.label ?? '${gps.latitude}, ${gps.longitude}',
+      } else if (location != null && location.trim().isNotEmpty)
         'location': location.trim(),
     });
     return AttendanceRecord.fromJson(json);
   }
 
-  Future<AttendanceRecord> checkOut(int id, {String? location}) async {
+  Future<AttendanceRecord> checkOut(
+    int id, {
+    String? location,
+    AttendanceLocation? gps,
+  }) async {
     final json = await _api.post<Map<String, dynamic>>('$_base/$id/check-out', {
       'checkOutTime': Fmt.wallClockNow(),
-      'method': 'MANUAL',
-      if (location != null && location.trim().isNotEmpty)
+      'method': gps == null ? 'MANUAL' : 'GPS',
+      if (gps != null) ...{
+        'latitude': '${gps.latitude}',
+        'longitude': '${gps.longitude}',
+        'location': gps.label ?? '${gps.latitude}, ${gps.longitude}',
+      } else if (location != null && location.trim().isNotEmpty)
         'location': location.trim(),
     });
     return AttendanceRecord.fromJson(json);
@@ -117,6 +134,30 @@ class AttendanceRepository {
         'description': description.trim(),
     });
     return Timesheet.fromJson(json);
+  }
+
+  /// Turns rough notes into a timesheet description.
+  ///
+  /// It drafts and stops: what comes back is text for the person to read and
+  /// edit before they log anything. Nothing is written by asking.
+  ///
+  /// The response has carried the text under two names — the DTO declares
+  /// both `taskDescription` and `description` — so both are read.
+  Future<String> composeTimesheetEntry({
+    String? projectName,
+    required String roughNotes,
+  }) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_timesheets/ai-compose',
+      {
+        if (projectName != null && projectName.trim().isNotEmpty)
+          'projectName': projectName.trim(),
+        'roughNotes': roughNotes.trim(),
+      },
+    );
+    return json['taskDescription'] as String? ??
+        json['description'] as String? ??
+        '';
   }
 
   /// Corrects an entry that has not been sent for review yet.

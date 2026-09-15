@@ -271,7 +271,7 @@ class _DesignationSheetState extends ConsumerState<_DesignationSheet> {
   @override
   Widget build(BuildContext context) {
     final departments =
-        ref.watch(departmentsAdminProvider).valueOrNull ?? const <Department>[];
+        ref.watch(departmentsAdminProvider).value ?? const <Department>[];
 
     return FormSheetFrame(
       title: _isEdit ? 'Edit grade' : 'New grade',

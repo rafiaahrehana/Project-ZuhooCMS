@@ -6,7 +6,9 @@ import '../../core/network/api_exception.dart';
 import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/prompts.dart';
 import 'itam_models.dart';
+import 'software_detail_screen.dart';
 import 'itam_repository.dart';
 
 /// One person's offboarding: five things that have to happen before they go.
@@ -39,6 +41,39 @@ class _OffboardingDetailScreenState
     extends ConsumerState<OffboardingDetailScreen> {
   late OffboardingChecklist _checklist = widget.checklist;
   String? _busyStep;
+
+  /// Removes the whole checklist.
+  ///
+  /// Not a step back — there is no way to un-tick one. This throws away the
+  /// record that the leaver was being processed at all, which is only ever
+  /// right when the checklist was opened by mistake.
+  Future<void> _delete() async {
+    final confirmed = await confirmAction(
+      context,
+      title: 'Delete this checklist?',
+      message: 'Everything ticked off so far goes with it. Do this only if '
+          'the checklist should never have been opened.',
+      action: 'Delete',
+    );
+    if (!confirmed || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    try {
+      await ref.read(itamRepositoryProvider).deleteChecklist(_checklist.id);
+      ref.invalidate(pendingOffboardingProvider);
+      await ref.read(offboardingProvider.notifier).refresh();
+      if (!mounted) return;
+      navigator.pop();
+      messenger.showSnackBar(const SnackBar(content: Text('Deleted.')));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not delete that checklist.')),
+      );
+    }
+  }
 
   Future<void> _complete(OffboardingStep step) async {
     final notes = await showDialog<String>(
@@ -82,7 +117,24 @@ class _OffboardingDetailScreenState
 
     return Scaffold(
       backgroundColor: bos.bgPage,
-      appBar: AppBar(title: Text(_checklist.personLabel)),
+      appBar: AppBar(
+        title: Text(_checklist.personLabel),
+        actions: [
+          if (canManage)
+            PopupMenuButton<String>(
+              onSelected: (_) => _delete(),
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(
+                    'Delete the checklist',
+                    style: TextStyle(color: bos.danger),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
         children: [
@@ -103,6 +155,10 @@ class _OffboardingDetailScreenState
               busy: _busyStep == step.key,
               onComplete: () => _complete(step),
             ),
+          const SizedBox(height: 18),
+          // What they still hold, so "licences revoked" can be ticked off
+          // knowing what it actually covers.
+          _LicencesHeld(employeeId: _checklist.employeeId),
           if (_checklist.overallNotes?.trim().isNotEmpty == true) ...[
             const SizedBox(height: 18),
             const SectionHeader('Notes', icon: Icons.sticky_note_2_outlined),
@@ -359,6 +415,74 @@ class _NotesDialogState extends State<_NotesDialog> {
         TextButton(
           onPressed: () => Navigator.pop(context, _controller.text),
           child: const Text('Mark done'),
+        ),
+      ],
+    );
+  }
+}
+
+/// The software seats one person still holds.
+///
+/// Read straight from the licence register rather than from the checklist:
+/// the checklist records that revoking *happened*, and this says what there
+/// is to revoke.
+class _LicencesHeld extends ConsumerWidget {
+  const _LicencesHeld({required this.employeeId});
+
+  final int employeeId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bos = Theme.of(context).bos;
+    final async = ref.watch(licencesHeldProvider(employeeId));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SectionHeader('Software they hold',
+            icon: Icons.workspaces_outline),
+        const SizedBox(height: 8),
+        async.when(
+          loading: () => const Loader(padding: 8),
+          // A failure here must not look like "they hold nothing" — that would
+          // invite ticking the step off wrongly.
+          error: (error, _) => MessageBanner.warning(
+            'Could not check what software they hold.',
+          ),
+          data: (seats) {
+            if (seats.isEmpty) {
+              return AppCard(
+                child: Text(
+                  'No software seats are assigned to them.',
+                  style: TextStyle(color: bos.muted, fontSize: 13),
+                ),
+              );
+            }
+            return AppCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final seat in seats)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          Icon(Icons.circle, size: 6, color: bos.muted),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              seat.softwareName ?? 'Licence ${seat.id}',
+                              style:
+                                  TextStyle(color: bos.text, fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            );
+          },
         ),
       ],
     );

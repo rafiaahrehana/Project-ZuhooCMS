@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The mark is a green hexagon drawn on white in the brand artwork, so the
+         plate behind it is white too and the two meet without a seam. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

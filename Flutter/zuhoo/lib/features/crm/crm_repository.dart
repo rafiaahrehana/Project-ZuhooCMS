@@ -91,8 +91,86 @@ class CrmRepository {
     return CrmActivity.fromJson(json);
   }
 
+  /// Leads narrowed by anything at all. A POST that reads — the filter is a
+  /// body because there are fourteen criteria.
+  Future<PagedResponse<Lead>> filterLeads(
+    LeadFilter filter, {
+    int page = 0,
+    int size = 20,
+  }) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_leads/filter?page=$page&size=$size',
+      filter.toJson(),
+    );
+    return PagedResponse.fromJson(json, Lead.fromJson);
+  }
+
+  /// How many leads are still live. A bare number, not an object.
+  Future<int> activeLeadCount() async {
+    final value = await _api.get<dynamic>('$_leads/stats/active');
+    return (value as num?)?.toInt() ?? 0;
+  }
+
+  /// How many of those are yours.
+  Future<int> myActiveLeadCount() async {
+    final value = await _api.get<dynamic>('$_leads/stats/my-active');
+    return (value as num?)?.toInt() ?? 0;
+  }
+
+  /// The lead with a drafted summary filled in. Reading it is what produces
+  /// the summary — nothing is stored by asking.
+  Future<Lead> summariseLead(int id) async {
+    final json = await _api.get<Map<String, dynamic>>('$_leads/$id/summary');
+    return Lead.fromJson(json);
+  }
+
+  /// Removes one entry from a lead's timeline.
+  Future<void> deleteLeadActivity(int leadId, int activityId) =>
+      _api.delete<dynamic>('$_leads/$leadId/activities/$activityId');
+
+  /// Reads a CSV and creates what it can. Rows it could not use come back
+  /// with a reason rather than being silently dropped; the backend caps the
+  /// file and refuses an empty one outright.
+  Future<LeadImportResult> importLeads(String filePath, String fileName) async {
+    final json = await _api.postFile<Map<String, dynamic>>(
+      '$_leads/import',
+      filePath,
+      fileName,
+    );
+    return LeadImportResult.fromJson(json);
+  }
+
+  /// The lead list as a PDF, optionally narrowed to one status.
+  Future<List<int>> leadsPdf({String? status}) => _api.getBytes(
+        status == null ? '$_leads/pdf' : '$_leads/pdf?status=$status',
+      );
+
+  /// Another opportunity against a lead that already has one.
+  ///
+  /// Different from [convertLead]: converting turns the lead into an
+  /// opportunity and marks it converted, once. This adds a further
+  /// opportunity and leaves the lead as it is, which is what happens when one
+  /// enquiry turns into several pieces of work.
+  Future<Opportunity> opportunityFromLead(
+    int leadId,
+    OpportunityRequest request,
+  ) async {
+    final json = await _api.post<Map<String, dynamic>>(
+      '$_opportunities/from-lead/$leadId',
+      request.toJson(),
+    );
+    return Opportunity.fromJson(json);
+  }
+
   // ── Opportunities ───────────────────────────────────────────
 
+  /// The pipeline list.
+  ///
+  /// With no stage chosen this asks for open deals only, which is what the
+  /// screen's "All open" chip claims to show. Without `openOnly` the endpoint
+  /// returns closed deals too, so a company with a year of them buried its
+  /// live ones behind pages of history — and the chip counted opens while the
+  /// list showed everything.
   Future<PagedResponse<Opportunity>> opportunities({
     String? stage,
     int page = 0,
@@ -103,7 +181,10 @@ class CrmRepository {
         Opportunity.fromJson,
         page: page,
         size: size,
-        query: {'stage': stage},
+        query: {
+          'stage': stage,
+          if (stage == null) 'openOnly': true,
+        },
       );
 
   Future<Opportunity> opportunity(int id) async {
@@ -312,8 +393,8 @@ extension CrmContactsAndTags on CrmRepository {
         page: page,
         size: size,
         query: {
-          if (clientId != null) 'clientId': clientId,
-          if (opportunityId != null) 'opportunityId': opportunityId,
+          'clientId': ?clientId,
+          'opportunityId': ?opportunityId,
         },
       );
 
@@ -343,8 +424,8 @@ extension CrmContactsAndTags on CrmRepository {
     final json = await _api.get<Map<String, dynamic>>(
       '/crm/activities/summary',
       query: {
-        if (clientId != null) 'clientId': clientId,
-        if (opportunityId != null) 'opportunityId': opportunityId,
+        'clientId': ?clientId,
+        'opportunityId': ?opportunityId,
       },
     );
     return json['summary'] as String? ?? '';

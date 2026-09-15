@@ -85,6 +85,19 @@ class HrPolicyRepository {
 
   Future<void> deletePolicy(int id) => _api.deleteText('$_policies/$id');
 
+  /// The policies actually in force, rather than every one ever written.
+  ///
+  /// Its own endpoint rather than a filter, and a bare list rather than a
+  /// page. This is what somebody applying for leave is entitled to under —
+  /// a switched-off policy still exists but grants nothing.
+  Future<List<LeavePolicy>> activePolicies() async {
+    final list = await _api.get<List<dynamic>>('$_policies/active');
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(LeavePolicy.fromJson)
+        .toList(growable: false);
+  }
+
   /// Writes a leave policy document from the entitlements already configured.
   ///
   /// Returns prose, not a policy record — this drafts the *document* a company
@@ -168,8 +181,8 @@ class HrPolicyRepository {
   }) async {
     final json = await _api.post<Map<String, dynamic>>('$_letters/draft', {
       'letterType': letterType,
-      if (employeeId != null) 'employeeId': employeeId,
-      if (jobApplicationId != null) 'jobApplicationId': jobApplicationId,
+      'employeeId': ?employeeId,
+      'jobApplicationId': ?jobApplicationId,
     });
     return json['content'] as String? ?? '';
   }
@@ -356,3 +369,10 @@ final lettersForEmployeeProvider =
     return page.content;
   },
 );
+
+
+/// The leave policies in force — what somebody applying is entitled to under.
+final activeLeavePoliciesProvider =
+    FutureProvider.autoDispose<List<LeavePolicy>>((ref) {
+  return ref.read(hrPolicyRepositoryProvider).activePolicies();
+});

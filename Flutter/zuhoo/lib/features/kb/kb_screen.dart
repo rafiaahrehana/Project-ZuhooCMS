@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +8,7 @@ import '../../core/theme/bos_tokens.dart';
 import '../../shared/util/formatters.dart';
 import '../../shared/widgets/paged_list_view.dart';
 import '../../shared/widgets/primitives.dart';
+import '../../shared/widgets/search_field.dart';
 import 'kb_models.dart';
 import 'kb_repository.dart';
 
@@ -72,59 +72,19 @@ class KbScreen extends ConsumerWidget {
   }
 }
 
-class _SearchField extends ConsumerStatefulWidget {
+class _SearchField extends ConsumerWidget {
   const _SearchField();
 
   @override
-  ConsumerState<_SearchField> createState() => _SearchFieldState();
-}
-
-class _SearchFieldState extends ConsumerState<_SearchField> {
-  final _controller = TextEditingController();
-  Timer? _debounce;
-
-  @override
-  void dispose() {
-    _debounce?.cancel();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  /// Debounced for the same reason the directory's is: every change restarts a
-  /// paged request, and an earlier slower one must not land last.
-  void _onChanged(String value) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 350), () {
-      ref.read(kbSearchProvider.notifier).set(value);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bos = Theme.of(context).bos;
-
+  Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: TextField(
-        controller: _controller,
-        onChanged: _onChanged,
-        textInputAction: TextInputAction.search,
-        decoration: InputDecoration(
-          hintText: 'Search articles',
-          prefixIcon: const Icon(Icons.search_rounded),
-          suffixIcon: _controller.text.isEmpty
-              ? null
-              : IconButton(
-                  icon: Icon(Icons.close_rounded, size: 18, color: bos.muted),
-                  tooltip: 'Clear',
-                  onPressed: () {
-                    _controller.clear();
-                    _debounce?.cancel();
-                    ref.read(kbSearchProvider.notifier).set(null);
-                    setState(() {});
-                  },
-                ),
-        ),
+      child: AppSearchField(
+        hint: 'Search articles',
+        // The provider takes a null for "no filter" rather than an empty string,
+        // so an emptied box has to clear the filter, not search for ''.
+        onChanged: (value) =>
+            ref.read(kbSearchProvider.notifier).set(value.isEmpty ? null : value),
       ),
     );
   }
@@ -260,7 +220,7 @@ class _KbArticleScreenState extends ConsumerState<KbArticleScreen> {
     // then upgraded to the full record — the list carries a summary, and the
     // body only arrives with the article itself.
     final full = ref.watch(kbArticleProvider(widget.article.id));
-    final article = full.valueOrNull ?? widget.article;
+    final article = full.value ?? widget.article;
 
     return Scaffold(
       backgroundColor: bos.bgPage,
