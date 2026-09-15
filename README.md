@@ -41,7 +41,7 @@ It is a **solo project**: I designed the database, built the backend, and wrote 
 ## Screenshots
 
 
-| Dashboard | HRM: Attendance | CRM Pipeline | IT Asset |
+| Dashboard | HRM | CRM Pipeline | IT Asset |
 |---|---|---|---|
 | ![Dashboard](document/screenshots/dashboard.png) | ![Attendance](document/screenshots/attendance.png) | ![CRM](document/screenshots/crm.png) | ![IT-Asset](document/screenshots/itasset.png) |
 
