@@ -40,15 +40,14 @@ It is a **solo project**: I designed the database, built the backend, and wrote 
 
 ## Screenshots
 
-> _Add screenshots to `document/screenshots/` and they will show here._
 
 | Dashboard | HRM: Attendance | CRM Pipeline | IT Asset |
 |---|---|---|---|
 | ![Dashboard](document/screenshots/dashboard.png) | ![Attendance](document/screenshots/attendance.png) | ![CRM](document/screenshots/crm.png) | ![IT-Asset](document/screenshots/itasset.png) |
 
-| Finance | AI Assistant | Service Desk | Recruitment |
+| Finance | Service Desk | Recruitment |
 |---|---|---|---|
-| ![Finance](document/screenshots/finance.png) | ![AI](document/screenshots/ai-assistant.png) | ![Mobile](document/screenshots/service-desk.png) |![Recruitment](document/screenshots/recruitment.png) |
+| ![Finance](document/screenshots/finance.png) | ![Mobile](document/screenshots/service-desk.png) |![Recruitment](document/screenshots/recruitment.png) |
 
 ---
 ## Modules
