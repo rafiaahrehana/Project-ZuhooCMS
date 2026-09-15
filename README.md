@@ -117,6 +117,8 @@ It is a **solo project**: I designed the database, built the backend, and wrote 
               └────────────┘  │ Payment gateways           │
                               └────────────────────────────┘
 
+```
+
 Each business module follows the same layered structure (`Controller → Service → ServiceImpl → Repository`, with DTOs and mappers), under `com.zuhoocms.modules.<module>`.
 
 ---
