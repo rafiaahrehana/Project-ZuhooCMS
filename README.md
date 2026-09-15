@@ -46,7 +46,7 @@ It is a **solo project**: I designed the database, built the backend, and wrote 
 | ![Dashboard](document/screenshots/dashboard.png) | ![Attendance](document/screenshots/attendance.png) | ![CRM](document/screenshots/crm.png) | ![IT-Asset](document/screenshots/itasset.png) |
 
 | Finance | Service Desk | Recruitment |
-|---|---|---|---|
+|---|---|---|
 | ![Finance](document/screenshots/finance.png) | ![Mobile](document/screenshots/service-desk.png) |![Recruitment](document/screenshots/recruitment.png) |
 
 ---
