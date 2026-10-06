@@ -9,12 +9,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * Company-scoped catalog of salary components (the spec's salary_component
- * table). Earnings, deductions and employer contributions each company can
- * attach to an employee's salary structure. A standard IT-company catalog is
- * seeded on first read; companies can add, rename or deactivate entries.
- */
+/** Company-scoped catalog of earnings, deductions and employer contributions attachable to a salary structure; a standard set is seeded on first read. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity

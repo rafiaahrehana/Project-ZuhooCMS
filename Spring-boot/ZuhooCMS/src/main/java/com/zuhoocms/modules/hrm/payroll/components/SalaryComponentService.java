@@ -34,8 +34,6 @@ public class SalaryComponentService {
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
 
-    // ── Catalog ────────────────────────────────────────────────
-
     /** Lists the catalog, seeding the standard IT-company set on first read. */
     @Transactional
     public List<SalaryComponent> listCatalog() {
@@ -71,9 +69,9 @@ public class SalaryComponentService {
 
     private SalaryComponent owned(Long id) {
         SalaryComponent c = componentRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Component not found"));
+                .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Component not found"));
         if (!c.getCompany().getId().equals(securityUtil.getCurrentCompanyId()))
-            throw new IllegalArgumentException("Component not found");
+            throw new com.zuhoocms.shared.exception.ResourceNotFoundException("Component not found");
         return c;
     }
 
@@ -112,8 +110,6 @@ public class SalaryComponentService {
         }
     }
 
-    // ── Templates ──────────────────────────────────────────────
-
     /** Lists templates, seeding a standard IT grade card on first read. */
     @Transactional
     public List<SalaryStructureTemplate> listTemplates() {
@@ -123,9 +119,7 @@ public class SalaryComponentService {
                 templateRepository.findByCompanyIdOrderByStructureNameAsc(companyId);
         if (!existing.isEmpty()) return existing;
 
-        // A typical Bangladeshi IT grade card: basic 50% of gross, HRA 40% of
-        // basic, fixed allowances scaled with the grade. Editable/deletable -
-        // this is a starting point, not policy.
+        // Seed grade card (basic 50% of gross, HRA 40% of basic) - a starting point, editable and deletable, not policy.
         Company company = companyRepository.getReferenceById(companyId);
         record Grade(String name, int gross, int medical, int transport, int meal, int internet, int mobile) {}
         List<Grade> grades = List.of(
@@ -162,9 +156,9 @@ public class SalaryComponentService {
             t.setCompany(companyRepository.getReferenceById(companyId));
         } else {
             t = templateRepository.findById(id)
-                    .orElseThrow(() -> new IllegalArgumentException("Template not found"));
+                    .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found"));
             if (!t.getCompany().getId().equals(companyId))
-                throw new IllegalArgumentException("Template not found");
+                throw new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found");
         }
         t.setStructureName(input.getStructureName());
         t.setDefaultGross(input.getDefaultGross());
@@ -183,28 +177,22 @@ public class SalaryComponentService {
     public void deleteTemplate(Long id) {
         authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_DELETE);
         SalaryStructureTemplate t = templateRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Template not found"));
+                .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found"));
         if (!t.getCompany().getId().equals(securityUtil.getCurrentCompanyId()))
-            throw new IllegalArgumentException("Template not found");
+            throw new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found");
         templateRepository.delete(t);
     }
 
     /**
-     * The spec's breakdown: basic = gross x basic%, HRA = basic x hra%, the
-     * fixed allowances as configured, and special allowance soaks up whatever
-     * of the gross remains (never negative).
-     *
-     * Internet and mobile are NOT subtracted from gross: the structure has no
-     * columns for them, so they attach as recurring extra components paid on
-     * top of gross - subtracting them here made the six structure fields sum
-     * to less than gross and the form flagged a mismatch.
+     * basic = gross x basic%, HRA = basic x hra%, fixed allowances as configured, special allowance absorbs the remainder (never negative).
+     * Internet and mobile are NOT subtracted from gross - they are extra components paid on top; subtracting them made the structure fields sum below gross and the form flagged a mismatch.
      */
     public Map<String, BigDecimal> breakdown(Long templateId, BigDecimal gross) {
         authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_VIEW);
         SalaryStructureTemplate t = templateRepository.findById(templateId)
-                .orElseThrow(() -> new IllegalArgumentException("Template not found"));
+                .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found"));
         if (!t.getCompany().getId().equals(securityUtil.getCurrentCompanyId()))
-            throw new IllegalArgumentException("Template not found");
+            throw new com.zuhoocms.shared.exception.ResourceNotFoundException("Template not found");
         BigDecimal g = nz(gross);
         BigDecimal basic = pct(g, t.getBasicPercentage());
         BigDecimal hra = pct(basic, t.getHraPercentage());
@@ -224,8 +212,6 @@ public class SalaryComponentService {
         out.put("specialAllowance", special);
         return out;
     }
-
-    // ── Per-structure extra components ─────────────────────────
 
     public List<StructureExtraComponent> listExtras(Long structureId) {
         authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_VIEW);
@@ -262,9 +248,9 @@ public class SalaryComponentService {
 
     private SalaryStructure ownedStructure(Long id) {
         SalaryStructure s = structureRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Salary structure not found"));
+                .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Salary structure not found"));
         if (!s.getCompany().getId().equals(securityUtil.getCurrentCompanyId()))
-            throw new IllegalArgumentException("Salary structure not found");
+            throw new com.zuhoocms.shared.exception.ResourceNotFoundException("Salary structure not found");
         return s;
     }
 

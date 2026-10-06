@@ -17,10 +17,11 @@ public interface WalletTransactionRepository extends JpaRepository<WalletTransac
     Page<WalletTransaction> findByWalletContextTypeAndWalletContextIdAndTypeOrderByTransactedAtDesc(
         String contextType, Long contextId, WalletTransactionType type, Pageable pageable);
 
-    /**
-     * Last transaction for a wallet — used to derive current running balance.
-     */
+    /** Last transaction for a wallet, used to derive the current running balance. */
     Optional<WalletTransaction> findTopByWalletIdOrderByTransactedAtDesc(Long walletId);
+
+    /** Idempotency probe for WalletService#creditOnce - has this exact reference already been booked? */
+    boolean existsByWalletIdAndTypeAndReference(Long walletId, WalletTransactionType type, String reference);
 
     @Query("SELECT SUM(t.amount) FROM WalletTransaction t WHERE t.wallet.contextType = :contextType AND t.wallet.contextId = :contextId AND t.type = :type AND t.transactedAt >= :from")
     Optional<BigDecimal> sumByWalletContextTypeAndWalletContextIdAndTypeAfter(String contextType, Long contextId, WalletTransactionType type, LocalDateTime from);

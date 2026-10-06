@@ -2,11 +2,13 @@ package com.zuhoocms.modules.hrm.recruitment.interview;
 
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.core.base.SoftDeletedProxies;
 import com.zuhoocms.enums.ApplicationStatus;
 import com.zuhoocms.modules.company.Company;
 import com.zuhoocms.modules.company.CompanyRepository;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
+import com.zuhoocms.modules.hrm.employee.EmployeeUserResolver;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplication;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRepository;
 import com.zuhoocms.security.SecurityUtil;
@@ -29,12 +31,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Interview scheduling + feedback for job applications.
- *
- * Application status rides along automatically: scheduling the first round
- * moves an early-stage application to INTERVIEW_SCHEDULED, and completing the
- * last outstanding round moves it to INTERVIEWED. Uses the APPLICATION_*
- * permission codes - interviews are part of working an application.
+ * Interview scheduling and feedback for job applications; scheduling the first round moves an early-stage application to INTERVIEW_SCHEDULED, completing the last outstanding round moves it to INTERVIEWED.
+ * Uses the APPLICATION_* permission codes, since interviews are part of working an application.
  */
 @Slf4j
 @RestController
@@ -51,8 +49,6 @@ public class InterviewController {
     private final CompanyRepository companyRepository;
     private final EmailService emailService;
     private final EmailBranding emailBranding;
-
-    // ── Read ──────────────────────────────────────────────────
 
     @GetMapping
     @Transactional(readOnly = true)
@@ -76,8 +72,6 @@ public class InterviewController {
         return ResponseEntity.ok(interviewRepository.findByJobApplicationIdOrderByScheduledAtAsc(applicationId)
                 .stream().map(InterviewResponse::from).toList());
     }
-
-    // ── Schedule / reschedule ─────────────────────────────────
 
     @PostMapping
     @Transactional
@@ -119,9 +113,7 @@ public class InterviewController {
             application.setStatus(ApplicationStatus.INTERVIEW_SCHEDULED);
         }
 
-        // Previously nothing told the candidate an interview had been booked -
-        // they only found out if someone called them, since candidates aren't
-        // platform users and get no in-app notification.
+        // Email the candidate: they aren't platform users and get no in-app notification, so nothing otherwise tells them an interview was booked.
         try {
             Company fullCompany = companyRepository.findById(companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Company not found"));
@@ -131,8 +123,14 @@ public class InterviewController {
                 + " | Mode: " + interview.getMode()
                 + (interview.getMeetingLink() != null && !interview.getMeetingLink().isBlank()
                     ? " | Link: " + interview.getMeetingLink() : "");
-            emailService.sendInterviewScheduledEmail(
-                application.getCandidate().getEmail(), application.getCandidate().getName(), details, branding);
+            // loadable(), not a null check: the candidate proxy is non-null and throws once the candidate is soft-deleted, and there is then no address to write to.
+            var candidate = SoftDeletedProxies.loadable(application.getCandidate());
+            if (candidate == null || candidate.getEmail() == null) {
+                log.warn("Interview scheduled email skipped - no candidate address on application {}", application.getId());
+            } else {
+                emailService.sendInterviewScheduledEmail(
+                    candidate.getEmail(), candidate.getName(), details, branding);
+            }
         } catch (Exception ex) {
             log.warn("Interview scheduled email failed (interview still booked): {}", ex.getMessage());
         }
@@ -159,8 +157,6 @@ public class InterviewController {
         return ResponseEntity.ok(InterviewResponse.from(interview));
     }
 
-    // ── Outcomes ──────────────────────────────────────────────
-
     @PatchMapping("/{id}/feedback")
     @Transactional
     public ResponseEntity<InterviewResponse> feedback(@PathVariable Long id, @RequestBody FeedbackRequest request) {
@@ -179,11 +175,8 @@ public class InterviewController {
         interview.setFeedbackAt(LocalDateTime.now());
         interview.setStatus(request.isNoShow() ? Interview.Status.NO_SHOW : Interview.Status.COMPLETED);
 
-        // Last outstanding round done -> the application has been interviewed.
-        // A no-show means the interview didn't actually happen, so it doesn't
-        // count as one - the recruiter decides what happens next (reschedule,
-        // reject, ...) rather than the system pretending it went ahead.
-        JobApplication application = interview.getJobApplication();
+        // Last outstanding round done -> the application has been interviewed; a no-show doesn't count, so the recruiter decides what happens next.
+        JobApplication application = applicationOf(interview);
         if (!request.isNoShow()
                 && application.getStatus() == ApplicationStatus.INTERVIEW_SCHEDULED
                 && !interviewRepository.existsByJobApplicationIdAndStatus(application.getId(), Interview.Status.SCHEDULED)) {
@@ -202,10 +195,8 @@ public class InterviewController {
         }
         interview.setStatus(Interview.Status.CANCELLED);
 
-        // If this was the last outstanding round, don't leave the application
-        // stuck at INTERVIEW_SCHEDULED with nothing actually scheduled - drop
-        // it back to SHORTLISTED so a fresh round can be booked.
-        JobApplication application = interview.getJobApplication();
+        // Drop back to SHORTLISTED when this was the last outstanding round, so the application isn't stuck at INTERVIEW_SCHEDULED with nothing scheduled.
+        JobApplication application = applicationOf(interview);
         if (application.getStatus() == ApplicationStatus.INTERVIEW_SCHEDULED
                 && !interviewRepository.existsByJobApplicationIdAndStatus(application.getId(), Interview.Status.SCHEDULED)) {
             application.setStatus(ApplicationStatus.SHORTLISTED);
@@ -213,7 +204,18 @@ public class InterviewController {
         return ResponseEntity.ok(InterviewResponse.from(interview));
     }
 
-    // ── Helpers ───────────────────────────────────────────────
+    /**
+     * The interview's application, via loadable() rather than a null check: the lazy proxy is non-null and throws
+     * EntityNotFoundException once the application is soft-deleted (BaseEntity's {@code @SQLRestriction}), which
+     * 500'd feedback and cancellation on an orphaned interview instead of saying what was wrong.
+     */
+    private JobApplication applicationOf(Interview interview) {
+        JobApplication application = SoftDeletedProxies.loadable(interview.getJobApplication());
+        if (application == null) {
+            throw new BadRequestException("The application behind this interview has been deleted");
+        }
+        return application;
+    }
 
     private Employee resolveInterviewer(Long interviewerId, Long companyId) {
         if (interviewerId == null) return null;
@@ -236,8 +238,6 @@ public class InterviewController {
         if (id == null) throw new BadRequestException("No company context");
         return id;
     }
-
-    // ── DTOs ──────────────────────────────────────────────────
 
     @Getter @Setter
     public static class InterviewRequest {
@@ -280,24 +280,30 @@ public class InterviewController {
         private Interview.Recommendation recommendation;
         private LocalDateTime feedbackAt;
 
+        /*
+         * Associations go through SoftDeletedProxies, not != null checks: a lazy proxy to a soft-deleted row is
+         * non-null and throws EntityNotFoundException as soon as it is read (BaseEntity's @SQLRestriction).
+         * Deleting a candidate leaves their interviews live, which 500'd this list and every detail view;
+         * applicantName falls back to the value denormalised on the application.
+         */
         static InterviewResponse from(Interview i) {
+            JobApplication a = SoftDeletedProxies.loadable(i.getJobApplication());
+            var candidate = a == null ? null : SoftDeletedProxies.loadable(a.getCandidate());
+            var posting = a == null ? null : SoftDeletedProxies.loadable(a.getJobPosting());
             InterviewResponse r = new InterviewResponse();
             r.id = i.getId();
-            r.jobApplicationId = i.getJobApplication().getId();
-            r.applicantName = i.getJobApplication().getCandidate() != null ? i.getJobApplication().getCandidate().getName() : null;
-            r.jobTitle = i.getJobApplication().getJobPosting() != null
-                    ? i.getJobApplication().getJobPosting().getTitle() : null;
-            r.applicationStatus = i.getJobApplication().getStatus() != null
-                    ? i.getJobApplication().getStatus().name() : null;
+            r.jobApplicationId = SoftDeletedProxies.id(i.getJobApplication());
+            r.applicantName = candidate != null && candidate.getName() != null
+                    ? candidate.getName() : a != null ? a.getApplicantName() : null;
+            r.jobTitle = posting != null ? posting.getTitle() : null;
+            r.applicationStatus = a != null && a.getStatus() != null ? a.getStatus().name() : null;
             r.round = i.getRound();
             r.scheduledAt = i.getScheduledAt();
             r.durationMinutes = i.getDurationMinutes();
             r.mode = i.getMode();
             r.meetingLink = i.getMeetingLink();
-            if (i.getInterviewer() != null) {
-                r.interviewerId = i.getInterviewer().getId();
-                r.interviewerName = i.getInterviewer().getFullName();
-            }
+            r.interviewerId = SoftDeletedProxies.id(i.getInterviewer());
+            r.interviewerName = EmployeeUserResolver.displayName(i.getInterviewer());
             r.status = i.getStatus();
             r.rating = i.getRating();
             r.strengths = i.getStrengths();

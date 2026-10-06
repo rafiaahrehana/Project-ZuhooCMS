@@ -10,8 +10,7 @@ public enum Role {
     // Manages platform configuration and global users.
     SYSTEM_ADMIN,
 
-    // Resolves tickets and supports tenant companies. Has no access to tenant
-    // private data.
+    // Resolves tickets and supports tenant companies; no access to tenant private data.
     SUPPORT_AGENT,
 
     // Manages the support team and oversees escalated tickets.

@@ -39,7 +39,6 @@ public class WebsiteSettings extends BaseEntity {
     private String faviconUrl;
     private String tagline;
 
-    // Theme / branding
     private String primaryColor;
     private String secondaryColor;
     private String gradient;
@@ -52,7 +51,6 @@ public class WebsiteSettings extends BaseEntity {
     private boolean animations;
     private Integer spacing;
 
-    // Hero
     private String heroHeading;
     private String heroSubheading;
     private String heroImageUrl;
@@ -63,7 +61,6 @@ public class WebsiteSettings extends BaseEntity {
     @Builder.Default
     private List<String> heroImages = new ArrayList<>();
 
-    // Content
     @Column(columnDefinition = "TEXT")
     private String aboutText;
     @Column(columnDefinition = "TEXT")
@@ -71,7 +68,6 @@ public class WebsiteSettings extends BaseEntity {
     @Column(columnDefinition = "TEXT")
     private String vision;
 
-    // Contact
     private String email;
     private String phone;
     @Column(columnDefinition = "TEXT")
@@ -92,9 +88,34 @@ public class WebsiteSettings extends BaseEntity {
 
     private String copyright;
 
-    // SEO
     private String seoTitle;
     private String seoDescription;
     private String seoKeywords;
     private String ogImage;
+
+    /** site.model.ts reads theme nested under {@code theme} and SEO under {@code seo}; the flat fields stay for existing consumers, and field access means JPA ignores these derived getters. */
+    public java.util.Map<String, Object> getTheme() {
+        java.util.Map<String, Object> t = new java.util.LinkedHashMap<>();
+        t.put("primary", primaryColor);
+        t.put("secondary", secondaryColor);
+        t.put("gradient", gradient);
+        t.put("font", font);
+        t.put("radius", radius);
+        t.put("buttonStyle", buttonStyle);
+        t.put("darkMode", darkMode);
+        t.put("navbarStyle", navbarStyle);
+        t.put("footerStyle", footerStyle);
+        t.put("animations", animations);
+        t.put("spacing", spacing);
+        return t;
+    }
+
+    public java.util.Map<String, Object> getSeo() {
+        java.util.Map<String, Object> s = new java.util.LinkedHashMap<>();
+        s.put("title", seoTitle);
+        s.put("description", seoDescription);
+        s.put("keywords", seoKeywords);
+        s.put("ogImage", ogImage);
+        return s;
+    }
 }

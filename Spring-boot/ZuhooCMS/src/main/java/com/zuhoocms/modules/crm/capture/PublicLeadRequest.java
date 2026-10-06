@@ -6,10 +6,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
-/**
- * What an anonymous visitor may submit. Every field is length-capped: this is
- * the one endpoint in the CRM that the whole internet can post to.
- */
+/** What an anonymous visitor may submit; every field is length-capped, since this is the one CRM endpoint the whole internet can post to. */
 @Getter
 @Setter
 public class PublicLeadRequest {
@@ -31,17 +28,11 @@ public class PublicLeadRequest {
     @Size(max = 2000)
     private String message;
 
-    /**
-     * Tenant-site captures pass the portal subdomain; the platform landing page
-     * sends nothing and the configured platform company receives the lead.
-     */
+    /** Tenant-site captures pass the portal subdomain; the platform landing page sends nothing and the configured platform company receives the lead. */
     @Size(max = 80)
     private String subdomain;
 
-    /**
-     * Honeypot. The form renders this input invisibly and humans leave it
-     * empty; bulk spam bots fill every field. Named to look real to a bot.
-     */
+    /** Honeypot: rendered invisibly and named to look real, so humans leave it empty and bulk spam bots fill it. */
     @Size(max = 200)
     private String website;
 }

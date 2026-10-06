@@ -23,6 +23,11 @@ import java.time.LocalDate;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Payroll extends BaseEntity {
 
+    // Optimistic lock: concurrent approve/pay/settle must fail fast, not overwrite; columnDefinition backfills existing rows under ddl-auto=update.
+    @Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
+    private Long version;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)
     private Employee employee;
@@ -37,7 +42,6 @@ public class Payroll extends BaseEntity {
     @Column(name = "pay_year", nullable = false)
     private int payYear;
 
-    // Earnings
     @Builder.Default
 
     @Column(precision = 12, scale = 2)
@@ -75,8 +79,7 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal bonus = BigDecimal.ZERO;
 
-    // Billable pay: approved timesheet billableHours for this period * the employee's
-    // billableRate, added to gross/net on top of the fixed salary components above.
+    // Billable pay: approved timesheet billableHours * employee billableRate, added to gross/net on top of the fixed components.
     @Builder.Default
     @Column(precision = 12, scale = 2)
     private BigDecimal billableHours = BigDecimal.ZERO;
@@ -89,17 +92,8 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal billablePay = BigDecimal.ZERO;
 
-    // Overtime, priced at run time and then frozen onto the record.
-    //
-    // The salary sheet computes overtime live from attendance every time it is
-    // opened, which is right for a preview but wrong for a payslip: the rate
-    // depends on the company's overtime settings, and if someone changes the
-    // multiplier in March a payslip issued in January would silently restate
-    // itself. Storing hours, the hourly rate that was applied, and the money
-    // means a payslip always reproduces what was actually paid.
-    //
-    // Nullable on purpose - ddl-auto=update cannot add a NOT NULL column to a
-    // table that already has rows.
+    // Overtime frozen at run time: the salary sheet recomputes it live, so a later multiplier change would restate an already-issued payslip.
+    // Nullable on purpose - ddl-auto=update cannot add a NOT NULL column to a table that already has rows.
     @Builder.Default
     @Column(precision = 12, scale = 2)
     private BigDecimal overtimeHours = BigDecimal.ZERO;
@@ -113,9 +107,7 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal overtimePay = BigDecimal.ZERO;
 
-    // Extra catalog components attached to the employee's salary structure
-    // (employee_salary_components): earnings and deductions summed at run
-    // time and frozen here, like overtime. Nullable - ddl-auto=update.
+    // employee_salary_components earnings/deductions summed at run time and frozen here, like overtime. Nullable - ddl-auto=update.
     @Builder.Default
     @Column(precision = 12, scale = 2)
     private BigDecimal otherEarnings = BigDecimal.ZERO;
@@ -124,7 +116,6 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal otherDeductions = BigDecimal.ZERO;
 
-    // Deductions
     @Builder.Default
 
     @Column(precision = 12, scale = 2)
@@ -144,12 +135,7 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal providentFundDeduction = BigDecimal.ZERO;
 
-    /**
-     * Auto-calculated from attendance: (gross / calendar days in month) * unapproved
-     * absent days for the period. Kept separate from the manual `deductions` field so
-     * HR can see it wasn't hand-typed. Approved leave never counts as absent - see
-     * AbsenteeMarkingService.
-     */
+    /** (gross / calendar days in month) * unapproved absent days; separate from manual `deductions`. Approved leave never counts as absent - see AbsenteeMarkingService. */
     @Builder.Default
     @Column(precision = 12, scale = 2)
     private BigDecimal attendanceDeduction = BigDecimal.ZERO;
@@ -158,17 +144,12 @@ public class Payroll extends BaseEntity {
     @Column(name = "absent_days")
     private Integer absentDays = 0;
 
-    // The batch this row belongs to. Nullable: rows created before runs
-    // existed, or ad-hoc single payrolls, have no run.
+    // Nullable: rows predating runs, and ad-hoc single payrolls, have no run.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "payroll_run_id")
     private com.zuhoocms.modules.hrm.payroll.run.PayrollRun run;
 
-    // Loan/advance installment due this period, frozen at DRAFT creation like
-    // otherEarnings/otherDeductions above. The loan's remainingBalance only
-    // moves when THIS payroll reaches PAID (see PayrollServiceImpl.markPaid) -
-    // a deleted DRAFT/APPROVED payroll never touched the balance, so nothing
-    // needs reversing. Nullable: most payrolls have no loan.
+    // Installment frozen at DRAFT creation; remainingBalance only moves at PAID (see PayrollServiceImpl.markPaid), so deleting a DRAFT needs no reversal. Nullable.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "loan_advance_id")
     private com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance loanAdvance;
@@ -176,7 +157,6 @@ public class Payroll extends BaseEntity {
     @Column(precision = 12, scale = 2)
     private BigDecimal loanDeductionAmount;
 
-    // GL / Finance integration fields
     private String glDebitAccount;
     private String glCreditAccount;
 
@@ -184,7 +164,6 @@ public class Payroll extends BaseEntity {
     @Column(length = 20)
     private PaymentMethod paymentMethod;
 
-    // Net
     @Builder.Default
 
     @Column(nullable = false, precision = 12, scale = 2)

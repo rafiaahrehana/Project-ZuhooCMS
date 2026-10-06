@@ -25,7 +25,7 @@ public class PackageSubscriptionResponse {
     private BigDecimal pricePaid;
     private Integer requestQuota;
     private int requestsUsed;
-    private int remainingRequests;   // computed
+    private int remainingRequests;
     private boolean autoRenew;
     private LocalDateTime activatedAt;
     private LocalDateTime cancelledAt;

@@ -17,11 +17,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/**
- * A qualified candidate kept for future openings - pooled from a closed
- * application (declined offer, good-but-no-vacancy) or added directly
- * (walk-ins, referrals, conference contacts).
- */
+/** A qualified candidate kept for future openings, pooled from a closed application or added directly (walk-ins, referrals, conference contacts). */
 @Entity
 @Table(name = "recruitment_talent_pool")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

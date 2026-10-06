@@ -21,7 +21,9 @@ public class PerformanceController {
     private final PerformanceService performanceService;
 
     @PostMapping
-    public ResponseEntity<PerformanceReviewResponse> create(@RequestBody PerformanceReviewRequest request) {
+    public ResponseEntity<PerformanceReviewResponse> create(
+            @org.springframework.validation.annotation.Validated({PerformanceReviewRequest.OnCreate.class, jakarta.validation.groups.Default.class})
+            @RequestBody PerformanceReviewRequest request) {
         return new ResponseEntity<>(performanceService.create(request), HttpStatus.CREATED);
     }
 
@@ -47,10 +49,7 @@ public class PerformanceController {
         return ResponseEntity.ok(performanceService.getById(id));
     }
 
-    /**
-     * Objective KPIs for an employee over a period. Computed live from
-     * attendance, leave, tasks, service requests and client reviews.
-     */
+    /** Objective KPIs for an employee over a period, computed live from attendance, leave, tasks, service requests and client reviews. */
     @GetMapping("/employee/{employeeId}/kpis")
     public ResponseEntity<PerformanceKpiResponse> kpis(
             @PathVariable Long employeeId,
@@ -65,9 +64,7 @@ public class PerformanceController {
         return ResponseEntity.ok(performanceService.advanceStage(id));
     }
 
-    // ── Attachments ───────────────────────────────────────────────
-    // The binary is uploaded first via POST /api/upload; these endpoints record
-    // and manage the resulting URL against a review.
+    // The binary is uploaded first via POST /api/upload; these endpoints only manage the resulting URL against a review.
 
     @GetMapping("/{id}/attachments")
     public ResponseEntity<List<PerformanceAttachmentDtos.AttachmentResponse>> listAttachments(
@@ -97,7 +94,7 @@ public class PerformanceController {
     @PatchMapping("/{id}")
     public ResponseEntity<PerformanceReviewResponse> update(
             @PathVariable Long id,
-            @RequestBody PerformanceReviewRequest request) {
+            @Valid @RequestBody PerformanceReviewRequest request) {
         return ResponseEntity.ok(performanceService.update(id, request));
     }
 

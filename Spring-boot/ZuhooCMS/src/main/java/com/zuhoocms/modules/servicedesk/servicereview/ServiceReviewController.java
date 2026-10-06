@@ -38,6 +38,8 @@ public class ServiceReviewController {
             PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
+    // Tenant roles only (platform staff have no company catalog); the service layer scopes both lookups to the caller's company.
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
     @GetMapping("/service/{hubServiceId}")
     public ResponseEntity<Page<ServiceReviewResponse>> listByService(
             @PathVariable Long hubServiceId,
@@ -48,6 +50,7 @@ public class ServiceReviewController {
             PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
     @GetMapping("/service/{hubServiceId}/average-rating")
     public ResponseEntity<Double> averageRatingByService(
             @PathVariable Long hubServiceId) {

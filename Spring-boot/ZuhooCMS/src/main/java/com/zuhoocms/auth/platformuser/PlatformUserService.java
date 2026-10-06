@@ -1,6 +1,8 @@
 package com.zuhoocms.auth.platformuser;
 
 import com.zuhoocms.auth.role.enums.Role;
+import com.zuhoocms.auth.token.TokenRepository;
+import com.zuhoocms.auth.token.TokenType;
 import com.zuhoocms.auth.user.User;
 import com.zuhoocms.auth.user.UserMapper;
 import com.zuhoocms.auth.user.UserRepository;
@@ -10,6 +12,7 @@ import com.zuhoocms.enums.AuditEntityType;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.audit.AuditService;
 import com.zuhoocms.shared.exception.BadRequestException;
+import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -29,9 +32,9 @@ public class PlatformUserService {
     private final PasswordEncoder passwordEncoder;
     private final AuditService auditService;
     private final SecurityUtil securityUtil;
+    private final TokenRepository tokenRepository;
 
-    // Same set of roles as User.isPlatformUser() - kept here since PlatformUserService
-    // is the only place that needs it as a query-able list rather than a boolean check.
+    // Same roles as User.isPlatformUser(), duplicated because this is the only place needing them as a queryable list rather than a boolean.
     private static final List<Role> PLATFORM_ROLES = List.of(
         Role.SUPER_ADMIN, Role.SYSTEM_ADMIN, Role.SUPPORT_AGENT,
         Role.SUPPORT_MANAGER, Role.MARKETING_MANAGER,
@@ -46,6 +49,8 @@ public class PlatformUserService {
         if (!PLATFORM_ROLES.contains(request.getRole())) {
             throw new BadRequestException("Invalid platform role selected");
         }
+
+        requireNotSystemAdminGrantingSuperAdmin(request.getRole());
 
         User user = new User();
         user.setFirstName(request.getFirstName());
@@ -89,6 +94,11 @@ public class PlatformUserService {
         }
 
         Role oldRole = user.getRole();
+
+        // Only checked when the role actually changes, so editing an existing SUPER_ADMIN's other fields isn't blocked as if it were a fresh grant.
+        if (oldRole != request.getRole()) {
+            requireNotSystemAdminGrantingSuperAdmin(request.getRole());
+        }
         boolean passwordReset = request.getPassword() != null && !request.getPassword().isBlank();
 
         user.setFirstName(request.getFirstName());
@@ -102,9 +112,7 @@ public class PlatformUserService {
 
         User saved = userRepository.save(user);
 
-        // These two are among the most sensitive actions an admin can take on
-        // another account - promoting someone to SUPER_ADMIN, or setting their
-        // password without them asking - and neither ever left a trace before.
+        // Promoting an account and setting someone else's password are the two most sensitive admin actions here, so both must leave an audit trace.
         User actor = securityUtil.getCurrentUser();
         if (oldRole != request.getRole()) {
             auditService.log(AuditEntityType.USER, saved.getId(), AuditAction.PERMISSION_CHANGE,
@@ -122,8 +130,21 @@ public class PlatformUserService {
         User user = getPlatformUserOrThrow(id);
         user.setActive(false);
         userRepository.save(user);
+        // isEnabled() blocks future authentication, but a live refresh token would still mint access tokens until presented, so revoke it eagerly.
+        tokenRepository.revokeAllByUserIdAndType(user.getId(), TokenType.REFRESH);
         auditService.log(AuditEntityType.USER, user.getId(), AuditAction.UPDATE,
                 "active", "inactive", securityUtil.getCurrentUser(), null, null);
+    }
+
+    // The controller only requires hasAnyRole('SUPER_ADMIN','SYSTEM_ADMIN'), so without this a SYSTEM_ADMIN could grant itself SUPER_ADMIN - privilege escalation.
+    private void requireNotSystemAdminGrantingSuperAdmin(Role targetRole) {
+        if (targetRole != Role.SUPER_ADMIN) {
+            return;
+        }
+        User actor = securityUtil.getCurrentUser();
+        if (actor == null || actor.getRole() != Role.SUPER_ADMIN) {
+            throw new ForbiddenException("Only a SUPER_ADMIN may grant the SUPER_ADMIN role");
+        }
     }
 
     private User getPlatformUserOrThrow(Long id) {

@@ -37,6 +37,11 @@ public class CheckMyCrmDealsTool implements AiTool {
     }
 
     @Override
+    public boolean returnsUntrustedContent() {
+        return true; // third-party text (see AiTool#returnsUntrustedContent)
+    }
+
+    @Override
     public boolean isWrite() {
         return false;
     }
@@ -54,7 +59,9 @@ public class CheckMyCrmDealsTool implements AiTool {
         }
 
         List<OpportunityResponse> deals = opportunityService
-            .listAll(null, null, employeeId, null, null, PageRequest.of(0, 10, Sort.by("expectedCloseDate").ascending()))
+            // openOnly stays null: "my deals" has always included closed ones, and narrowing it is a separate product decision.
+            .listAll(null, null, null, employeeId, null, null,
+                PageRequest.of(0, 10, Sort.by("expectedCloseDate").ascending()))
             .getContent();
 
         if (deals.isEmpty()) {

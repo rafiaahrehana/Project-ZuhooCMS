@@ -18,10 +18,6 @@ public interface AccountingPeriodService {
     /** Requires all 12 periods of the year to already be closed. Idempotent. */
     void closeFiscalYear(int fiscalYear);
 
-    /**
-     * True if `date` falls inside a period that's already CLOSED for this company.
-     * Used by GeneralLedgerServiceImpl.recordTransaction() to block backdated postings.
-     * A date with no period ever created for it is never considered closed.
-     */
+    /** True if `date` falls inside a CLOSED period; used by GeneralLedgerServiceImpl to block backdated postings. A date with no period created for it is never closed. */
     boolean isDateInClosedPeriod(Long companyId, LocalDate date);
 }

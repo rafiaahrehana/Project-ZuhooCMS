@@ -12,18 +12,19 @@ import com.zuhoocms.modules.crm.opportunity.OpportunityStage;
 import com.zuhoocms.shared.notification.CreateNotificationRequest;
 import com.zuhoocms.shared.notification.NotificationService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Wires up CrmActivity.followUpAt/followUpDone, which were previously persisted but
- * never read anywhere. Does not auto-mark followUpDone - the rep completes it manually
- * (e.g. from the Dashboard's Upcoming Follow-ups list), this only notifies once it's due.
+ * Notifies on due follow-ups only; followUpDone stays manual (see CrmActivityService.markCompleted).
+ * Queries are cross-company and paged, filtering on the column the loop stamps (followUpNotifiedAt / staleNotifiedAt), so each iteration re-reads page 0; ITERATION_LIMIT bounds it.
+ * Not multi-instance safe: two instances on this cron both scan and can both notify; the fix is ShedLock, which is not a dependency here.
  */
 @Component
 @RequiredArgsConstructor
@@ -33,24 +34,40 @@ public class CrmFollowUpScheduler {
     private final LeadRepository leadRepository;
     private final OpportunityRepository opportunityRepository;
     private final NotificationService notificationService;
+    private final TransactionTemplate transactionTemplate;
 
     private static final List<LeadStatus> LEAD_CLOSED_STATUSES = List.of(LeadStatus.DISQUALIFIED);
     private static final List<OpportunityStage> OPP_CLOSED_STAGES =
             List.of(OpportunityStage.WON, OpportunityStage.LOST);
 
+    /** Rows handled per transaction. */
+    private static final int BATCH_SIZE = 200;
+
+    /** Safety net: bounds the re-read loop at BATCH_SIZE * this many rows per run. */
+    private static final int ITERATION_LIMIT = 500;
+
     @Scheduled(cron = "0 */30 * * * *")
-    @Transactional
     public void notifyDueFollowUps() {
         LocalDateTime now = LocalDateTime.now();
-        // The notified-at filter is what makes this fire once per follow-up.
-        // Without it, every overdue item re-notified on every run - 48
-        // identical notifications a day until someone marked it done.
+        for (int i = 0; i < ITERATION_LIMIT; i++) {
+            // TransactionTemplate, not a self-invoked @Transactional method: that skips the proxy, so the stamping would never commit.
+            boolean more = Boolean.TRUE.equals(
+                    transactionTemplate.execute(status -> notifyDueFollowUpBatch(now)));
+            if (!more) {
+                return;
+            }
+        }
+    }
+
+    /** @return true if a full batch was handled, i.e. there may be more. */
+    private boolean notifyDueFollowUpBatch(LocalDateTime now) {
+        // The followUpNotifiedAt filter fires this once per follow-up (without it, 48 re-notifications a day) and drops handled rows out of page 0.
         List<CrmActivity> due = crmActivityRepository
-                .findByFollowUpAtLessThanEqualAndFollowUpDoneFalseAndFollowUpNotifiedAtIsNullAndDeletedFalse(now);
+                .findByFollowUpAtLessThanEqualAndFollowUpDoneFalseAndFollowUpNotifiedAtIsNullAndDeletedFalse(
+                        now, PageRequest.of(0, BATCH_SIZE));
 
         for (CrmActivity activity : due) {
-            // Stamped before the null-recipient skip, or an ownerless follow-up
-            // would be re-scanned forever.
+            // Stamped before the null-recipient skip, or an ownerless follow-up is re-scanned forever.
             activity.setFollowUpNotifiedAt(now);
 
             if (activity.getPerformedBy() == null) continue;
@@ -74,34 +91,55 @@ public class CrmFollowUpScheduler {
                     activity.getCompany().getId()
             ));
         }
+        return due.size() == BATCH_SIZE;
     }
 
-    // The "Stale" tab and dashboard widget both already query these exact
-    // conditions (LeadRepository.findStalLeads / OpportunityRepository
-    // .findStaleOpenOpportunities) - nothing ever proactively told the rep or
-    // owner a lead/deal had actually crossed into that state. Daily, not every
-    // 30 minutes: staleness is a slow-moving signal, unlike a follow-up's exact
-    // due timestamp.
+    // Daily, not every 30 minutes: staleness is a slow-moving signal, unlike a follow-up's exact due timestamp.
     @Scheduled(cron = "0 0 9 * * *")
-    @Transactional
     public void notifyStalePipeline() {
         LocalDate leadCutoff = LocalDate.now().minusDays(30);
-        for (Lead lead : leadRepository.findNewlyStaleLeads(leadCutoff, LEAD_CLOSED_STATUSES)) {
+        for (int i = 0; i < ITERATION_LIMIT; i++) {
+            if (!Boolean.TRUE.equals(transactionTemplate.execute(s -> notifyStaleLeadBatch(leadCutoff)))) break;
+        }
+
+        LocalDateTime oppCutoff = LocalDateTime.now().minusDays(14);
+        for (int i = 0; i < ITERATION_LIMIT; i++) {
+            if (!Boolean.TRUE.equals(transactionTemplate.execute(s -> notifyStaleOpportunityBatch(oppCutoff)))) break;
+        }
+    }
+
+    private boolean notifyStaleLeadBatch(LocalDate cutoff) {
+        // Also picks up never-contacted leads via createdAt: `lastContactDate < cutoff` is never true for null.
+        List<Lead> stale = leadRepository
+                .findNewlyStaleLeads(cutoff, cutoff.atStartOfDay(), LEAD_CLOSED_STATUSES,
+                        PageRequest.of(0, BATCH_SIZE))
+                .getContent();
+
+        for (Lead lead : stale) {
             lead.setStaleNotifiedAt(LocalDateTime.now());
             if (lead.getAssignedTo() == null || lead.getAssignedTo().getUser() == null) continue;
+            // "since <date>" reads as a lie when lastContactDate is null, which now reaches here.
+            String since = lead.getLastContactDate() != null
+                    ? "hasn't been contacted since " + lead.getLastContactDate()
+                    : "has never been contacted";
             notificationService.send(CreateNotificationRequest.of(
                     NotificationType.FOLLOW_UP_DUE,
                     "Lead has gone stale",
-                    lead.getContactName() + " hasn't been contacted since " + lead.getLastContactDate()
-                            + " - it may need a follow-up.",
+                    lead.getContactName() + " " + since + " - it may need a follow-up.",
                     "/crm/leads",
                     lead.getAssignedTo().getUser().getId(),
                     lead.getCompany().getId()
             ));
         }
+        return stale.size() == BATCH_SIZE;
+    }
 
-        LocalDateTime oppCutoff = LocalDateTime.now().minusDays(14);
-        for (Opportunity opportunity : opportunityRepository.findNewlyStaleOpportunities(OPP_CLOSED_STAGES, oppCutoff)) {
+    private boolean notifyStaleOpportunityBatch(LocalDateTime cutoff) {
+        List<Opportunity> stale = opportunityRepository
+                .findNewlyStaleOpportunities(OPP_CLOSED_STAGES, cutoff, PageRequest.of(0, BATCH_SIZE))
+                .getContent();
+
+        for (Opportunity opportunity : stale) {
             opportunity.setStaleNotifiedAt(LocalDateTime.now());
             if (opportunity.getOwner() == null || opportunity.getOwner().getUser() == null) continue;
             notificationService.send(CreateNotificationRequest.of(
@@ -113,5 +151,6 @@ public class CrmFollowUpScheduler {
                     opportunity.getCompany().getId()
             ));
         }
+        return stale.size() == BATCH_SIZE;
     }
 }

@@ -9,6 +9,9 @@ public interface OffboardingChecklistService {
 
     OffboardingChecklistResponse create(OffboardingChecklistRequest request);
 
+    /** Runs inside the termination transaction; no permission check of its own since termination required EMPLOYEE_DELETE, and assets/seats are NOT released automatically. */
+    void createForTermination(Long employeeId, Long companyId);
+
     OffboardingChecklistResponse getById(Long id);
 
     OffboardingChecklistResponse getByEmployee(Long employeeId);

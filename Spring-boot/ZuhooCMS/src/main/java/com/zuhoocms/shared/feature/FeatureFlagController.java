@@ -39,8 +39,7 @@ public class FeatureFlagController {
                 .orElseThrow(() -> new ResourceNotFoundException("Feature flag not found: " + key)));
     }
 
-    // These are platform-wide flags (including MAINTENANCE_MODE, which blocks all
-    // requests) - only platform admins should be able to flip them.
+    // Platform-wide flags, including MAINTENANCE_MODE which blocks all requests, so only platform admins may flip them.
     @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @PatchMapping("/{key}/toggle")
     @Transactional

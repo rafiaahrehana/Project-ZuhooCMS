@@ -11,11 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 
-/**
- * Gated on FINANCIAL_REPORT_VIEW rather than INVOICE_VIEW: this aggregates
- * revenue, spend and margin for the whole company, which is strictly more
- * revealing than any single entity list.
- */
+/** Gated on FINANCIAL_REPORT_VIEW rather than INVOICE_VIEW: company-wide revenue, spend and margin are more revealing than any single entity list. */
 @RestController
 @RequestMapping("/api/finance/dashboard")
 @RequiredArgsConstructor

@@ -17,7 +17,6 @@ public class BiometricDataResponse {
     private Long deviceId;
     private String deviceName;
     private String biometricType;
-    private String biometricTemplate;
     private String templateFormat;
     private LocalDateTime enrollmentDate;
     private String enrolledBy;

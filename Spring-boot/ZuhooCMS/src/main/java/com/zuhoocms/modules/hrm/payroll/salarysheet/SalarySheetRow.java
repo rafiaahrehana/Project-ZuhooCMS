@@ -16,7 +16,6 @@ public class SalarySheetRow {
     /** Designation, falling back to the free-text job title. */
     private String position;
 
-    // ── Earnings ─────────────────────────────────────────────
     private BigDecimal basic;
     private BigDecimal houseRent;
     private BigDecimal medical;
@@ -30,7 +29,6 @@ public class SalarySheetRow {
     /** Fixed components plus overtime — what the employee earned before deductions. */
     private BigDecimal grossEarnings;
 
-    // ── Deductions ───────────────────────────────────────────
     private int absentDays;
     private BigDecimal absentDeduction;
     private BigDecimal tax;
@@ -39,11 +37,7 @@ public class SalarySheetRow {
 
     private BigDecimal netPayable;
 
-    /**
-     * Set when the employee has no salary structure covering this month, in
-     * which case every figure above is zero. Shown on the row rather than the
-     * employee being dropped, so nobody silently disappears from the sheet.
-     */
+    /** Set when no salary structure covers this month (every figure above is then zero); the row stays so nobody disappears from the sheet. */
     private String note;
 
     // Payment state, from the period.s Payroll row when one exists.
@@ -52,19 +46,13 @@ public class SalarySheetRow {
     private String paymentMethod;
     private String department;
 
-    // Structure extra components (loan EMI, internet, ...), frozen the same
-    // way payroll freezes them.
+    // Structure extra components (loan EMI, internet, ...), frozen the same way payroll freezes them.
     private java.math.BigDecimal otherEarnings;
     private java.math.BigDecimal otherDeductions;
 
     /** Month bonus - only ever non-zero on PAYROLL-sourced rows. */
     private java.math.BigDecimal bonus;
 
-    /**
-     * PAYROLL when the row restates the period's actual payroll record
-     * (the real register - what was/will be paid), PROJECTED when payroll
-     * hasn't been generated and the row is a live estimate from the
-     * structure and attendance.
-     */
+    /** PAYROLL when the row restates the period's actual payroll record, PROJECTED when it is a live estimate from structure and attendance. */
     private String source;
 }

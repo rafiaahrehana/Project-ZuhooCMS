@@ -32,16 +32,14 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(request));
     }
 
-    // Sign in with a Google account. Public, like /login — the Firebase ID token in the body is
-    // what proves identity, so no session is needed to call it.
+    // Public like /login: the Firebase ID token in the body proves identity, so no session is needed.
     @PostMapping("/google")
     public ResponseEntity<GoogleSignInResponse> googleSignIn(
             @Valid @RequestBody GoogleAuthRequest request) {
         return ResponseEntity.ok(authService.googleSignIn(request));
     }
 
-    // Second step, only when /google reported registered=false: attach the Google account to a
-    // chosen company as a CLIENT and return a normal session.
+    // Second step, only when /google reported registered=false: attaches the account to a chosen company as a CLIENT.
     @PostMapping("/google/register")
     public ResponseEntity<LoginResponse> googleRegister(
             @Valid @RequestBody GoogleRegisterRequest request) {

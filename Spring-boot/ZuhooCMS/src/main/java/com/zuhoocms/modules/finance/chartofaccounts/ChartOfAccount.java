@@ -22,7 +22,14 @@ import java.math.BigDecimal;
 @Builder
 public class ChartOfAccount extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
+
+    /** Optimistic-lock guard on the running `balance`: GL posting already takes a PESSIMISTIC_WRITE lock (GeneralLedgerServiceImpl.recordBalancedTransaction), and this catches any other concurrent writer. */
+    @Version
+    @org.hibernate.annotations.ColumnDefault("0")
+    @Column(nullable = false)
+    @Builder.Default
+    private Long version = 0L;
 
     @Column(nullable = false)
     private String accountCode; // e.g., "1000", "5100"
@@ -33,30 +40,25 @@ public class ChartOfAccount extends BaseEntity {
     @Column(length = 50, nullable = false)
     private AccountType type; // ASSET, LIABILITY, REVENUE, EXPENSE, etc.
 
-    private String description; // Detailed explanation
+    private String description;
 
     @Builder.Default
-    private BigDecimal balance = BigDecimal.ZERO; // Current balance
+    private BigDecimal balance = BigDecimal.ZERO;
 
     @Builder.Default
     private boolean active = true;
 
     @Builder.Default
-    private boolean isHeaderAccount = false; // Parent account for grouping
+    private boolean isHeaderAccount = false;
 
-    // Marks this as a real bank/cash account, so Bank Reconciliation's account picker
-    // can show only accounts that make sense to reconcile against a bank statement -
-    // without this, any ASSET-type account (Fixed Assets, Accounts Receivable, an
-    // equipment account, etc.) looks identical to an actual bank account.
+    // Marks a real bank/cash account for Bank Reconciliation's picker: without it any ASSET-type account (Fixed Assets, AR, equipment) looks identical to a bank account.
     @Builder.Default
     private boolean isBankAccount = false;
 
-    // For sub-accounts
-    private Long parentAccountId; // If this is a sub-account
+    private Long parentAccountId;
 
-    // Configuration
     @Builder.Default
-    private boolean allowDirectPosting = true; // Can JE be posted directly?
+    private boolean allowDirectPosting = true;
 
     private String notes;
 

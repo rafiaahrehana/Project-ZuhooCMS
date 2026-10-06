@@ -3,10 +3,7 @@ package com.zuhoocms.shared.notification;
 import com.zuhoocms.enums.NotificationType;
 import lombok.Getter;
 
-/**
- * Internal DTO used by services to dispatch notifications.
- * Not exposed as an HTTP endpoint.
- */
+/** Internal dispatch DTO; not exposed as an HTTP endpoint. */
 @Getter
 public class CreateNotificationRequest {
     private final NotificationType type;
@@ -37,6 +34,6 @@ public class CreateNotificationRequest {
     public static CreateNotificationRequest forRequest(NotificationType type, String title, String message,
                                                         Long recipientId, Long companyId, Long serviceRequestId) {
         return new CreateNotificationRequest(type, title, message,
-                "/servicereview-requests/" + serviceRequestId, recipientId, companyId, serviceRequestId);
+                "/service-requests/" + serviceRequestId, recipientId, companyId, serviceRequestId);
     }
 }

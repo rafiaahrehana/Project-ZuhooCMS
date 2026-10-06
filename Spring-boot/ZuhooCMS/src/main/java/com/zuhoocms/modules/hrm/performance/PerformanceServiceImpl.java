@@ -58,8 +58,7 @@ public class PerformanceServiceImpl implements PerformanceService {
     private final AuthorizationService authorizationService;
     private final AiService aiService;
     private final AiTransactionBoundary aiTx;
-    // Sources for the objective KPI block. Read-only here - performance never
-    // writes to these modules.
+    // Sources for the objective KPI block, read-only: performance never writes to these modules.
     private final AttendanceRepository attendanceRepository;
     private final LeaveRequestRepository leaveRequestRepository;
     private final TaskRepository taskRepository;
@@ -75,7 +74,9 @@ public class PerformanceServiceImpl implements PerformanceService {
         Long companyId = requireCompanyId();
         Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + request.getEmployeeId()));
-        Employee reviewer = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
+        // Scoped: reviewedBy is stored on a review stamped with companyId, and the response exposes it, so a
+        // reviewer resolved from another tenant put a foreign employee on this company's review.
+        Employee reviewer = employeeRepository.findByUserIdAndCompanyId(securityUtil.getCurrentUser().getId(), companyId)
                 .orElseThrow(() -> new BadRequestException("Employee profile not found"));
 
         PerformanceReview review = PerformanceReview.builder()
@@ -93,8 +94,7 @@ public class PerformanceServiceImpl implements PerformanceService {
                 .scoreLeadership(request.getScoreLeadership())
                 .scoreProblemSolving(request.getScoreProblemSolving())
                 .scoreInnovation(request.getScoreInnovation())
-                // calculateOverall is varargs and skips nulls, so a review that
-                // leaves some competencies blank still averages correctly.
+                // calculateOverall skips nulls, so a review leaving some competencies blank still averages correctly.
                 .overallScore(calculateOverall(
                         request.getScoreWorkQuality(), request.getScoreProductivity(),
                         request.getScoreCommunication(), request.getScoreTeamwork(),
@@ -127,7 +127,7 @@ public class PerformanceServiceImpl implements PerformanceService {
                 emailService.sendPerformanceReviewEmail(employee.getUser().getEmail(), employee.getUser().getFirstName(), branding);
                 
             } catch (Exception ex) {
-                // Best-effort notification — a failed email must not roll back the review.
+                // Best-effort: a failed email must not roll back the review.
                 log.warn("Performance review email failed (review still saved): {}", ex.getMessage());
             }
         }
@@ -138,7 +138,24 @@ public class PerformanceServiceImpl implements PerformanceService {
     @Override
     @Transactional(readOnly = true)
     public PerformanceReviewResponse getById(Long id) {
-        return PerformanceMapper.toPerformanceReviewResponse(findInTenant(id));
+        PerformanceReview review = findInTenant(id);
+        boolean canViewOthers = authorizationService.hasPermission(PermissionCode.PERFORMANCE_VIEW);
+        // Without PERFORMANCE_VIEW the caller is the subject (findInTenant enforces that).
+        // An in-progress review is the reviewers' working draft, not yet the employee's record.
+        if (!canViewOthers && !review.isFinalised()) {
+            throw new ResourceNotFoundException("Performance review not found: " + id);
+        }
+        return toResponseForViewer(review, canViewOthers);
+    }
+
+    /** salaryIncrement and employmentStatusRecommendation (e.g. PIP / TERMINATE) are management recommendations: only PERFORMANCE_VIEW holders see them. */
+    private PerformanceReviewResponse toResponseForViewer(PerformanceReview review, boolean canViewOthers) {
+        PerformanceReviewResponse response = PerformanceMapper.toPerformanceReviewResponse(review);
+        if (!canViewOthers) {
+            response.setSalaryIncrement(null);
+            response.setEmploymentStatusRecommendation(null);
+        }
+        return response;
     }
 
     @Override
@@ -154,8 +171,11 @@ public class PerformanceServiceImpl implements PerformanceService {
     public Page<PerformanceReviewResponse> listForEmployee(Long employeeId, Pageable pageable) {
         // Without this an employee could list any colleague's reviews by id.
         guardOwnReviewAccess(employeeId);
-        return reviewRepository.findByCompanyIdAndEmployeeId(requireCompanyId(), employeeId, pageable)
-                .map(PerformanceMapper::toPerformanceReviewResponse);
+        boolean canViewOthers = authorizationService.hasPermission(PermissionCode.PERFORMANCE_VIEW);
+        Page<PerformanceReview> page = canViewOthers
+                ? reviewRepository.findByCompanyIdAndEmployeeId(requireCompanyId(), employeeId, pageable)
+                : reviewRepository.findByCompanyIdAndEmployeeIdAndFinalisedTrue(requireCompanyId(), employeeId, pageable);
+        return page.map(r -> toResponseForViewer(r, canViewOthers));
     }
 
     @Override
@@ -164,6 +184,18 @@ public class PerformanceServiceImpl implements PerformanceService {
         authorizationService.checkPermission(PermissionCode.PERFORMANCE_UPDATE);
         PerformanceReview review = findInTenant(id);
         if (review.isFinalised()) throw new BadRequestException("Cannot edit a finalised review");
+        // Scores and recommendations must not move once the review reaches HR/final approval: they are what is being approved.
+        PerformanceStage stage = review.getStage() != null ? review.getStage() : PerformanceStage.SELF_ASSESSMENT;
+        if (stage != PerformanceStage.SELF_ASSESSMENT && stage != PerformanceStage.MANAGER_REVIEW) {
+            throw new BadRequestException(
+                    "A review can only be edited during self-assessment or manager review (current stage: " + stage + ")");
+        }
+        if (request.getReviewPeriodStart() != null) review.setReviewPeriodStart(request.getReviewPeriodStart());
+        if (request.getReviewPeriodEnd() != null)   review.setReviewPeriodEnd(request.getReviewPeriodEnd());
+        if (review.getReviewPeriodStart() != null && review.getReviewPeriodEnd() != null
+                && review.getReviewPeriodEnd().isBefore(review.getReviewPeriodStart())) {
+            throw new BadRequestException("Review period end must be on or after the start");
+        }
 
         if (request.getScoreWorkQuality() != null)    review.setScoreWorkQuality(request.getScoreWorkQuality());
         if (request.getScoreProductivity() != null)   review.setScoreProductivity(request.getScoreProductivity());
@@ -208,17 +240,23 @@ public class PerformanceServiceImpl implements PerformanceService {
         authorizationService.checkPermission(PermissionCode.PERFORMANCE_UPDATE);
         PerformanceReview review = findInTenant(id);
         if (review.isFinalised()) throw new BadRequestException("Review is already finalised");
+        // finalise() is only the final sign-off; it used to jump to COMPLETED from any stage, skipping the approval chain.
+        if (review.getStage() != PerformanceStage.FINAL_APPROVAL) {
+            throw new BadRequestException("A review can only be finalised from the final approval stage (current stage: "
+                    + (review.getStage() != null ? review.getStage() : PerformanceStage.SELF_ASSESSMENT) + ")");
+        }
+        requireSeparateApprover(review, PerformanceStage.FINAL_APPROVAL);
+        var finalUser = securityUtil.getCurrentUser();
+        review.setFinalApprovalAt(LocalDateTime.now());
+        review.setFinalApprovalBy(currentUserName());
+        review.setFinalApprovalByUserId(finalUser != null ? finalUser.getId() : null);
         review.setFinalised(true);
         review.setStage(PerformanceStage.COMPLETED);
         notifyFinalised(review);
         return PerformanceMapper.toPerformanceReviewResponse(review);
     }
 
-    /**
-     * Signs off the current stage and moves to the next one, stamping who did it
-     * and when. Clearing the last stage sets `finalised`, so there is a single
-     * path to a final review rather than two that can disagree.
-     */
+    /** Signs off the current stage and moves to the next, stamping who and when; clearing the last stage sets `finalised`, so there is a single path to a final review. */
     @Override
     @Transactional
     public PerformanceReviewResponse advanceStage(Long id) {
@@ -234,11 +272,15 @@ public class PerformanceServiceImpl implements PerformanceService {
         PerformanceStage current = review.getStage() != null
             ? review.getStage() : PerformanceStage.SELF_ASSESSMENT;
 
+        requireSeparateApprover(review, current);
+        var actorUser = securityUtil.getCurrentUser();
+        Long actorId = actorUser != null ? actorUser.getId() : null;
+
         switch (current) {
-            case SELF_ASSESSMENT -> { review.setSelfAssessmentAt(now); review.setSelfAssessmentBy(actor); }
-            case MANAGER_REVIEW  -> { review.setManagerReviewAt(now);  review.setManagerReviewBy(actor); }
-            case HR_APPROVAL     -> { review.setHrApprovalAt(now);     review.setHrApprovalBy(actor); }
-            case FINAL_APPROVAL  -> { review.setFinalApprovalAt(now);  review.setFinalApprovalBy(actor); }
+            case SELF_ASSESSMENT -> { review.setSelfAssessmentAt(now); review.setSelfAssessmentBy(actor); review.setSelfAssessmentByUserId(actorId); }
+            case MANAGER_REVIEW  -> { review.setManagerReviewAt(now);  review.setManagerReviewBy(actor);  review.setManagerReviewByUserId(actorId); }
+            case HR_APPROVAL     -> { review.setHrApprovalAt(now);     review.setHrApprovalBy(actor);     review.setHrApprovalByUserId(actorId); }
+            case FINAL_APPROVAL  -> { review.setFinalApprovalAt(now);  review.setFinalApprovalBy(actor);  review.setFinalApprovalByUserId(actorId); }
             case COMPLETED       -> throw new BadRequestException("Review is already complete");
         }
 
@@ -255,21 +297,43 @@ public class PerformanceServiceImpl implements PerformanceService {
         return PerformanceMapper.toPerformanceReviewResponse(review);
     }
 
+    /**
+     * Separation of duties: the employee under review can never sign off the manager, HR or final stage of their own review.
+     * HR and final approval must come from someone other than whoever signed the preceding stage, except the company owner, so a one-approver company can still complete a review.
+     */
+    private void requireSeparateApprover(PerformanceReview review, PerformanceStage stage) {
+        if (stage == PerformanceStage.SELF_ASSESSMENT || stage == PerformanceStage.COMPLETED) return;
+        var user = securityUtil.getCurrentUser();
+        if (user == null) return;
+        Employee subject = review.getEmployee();
+        if (subject != null && subject.getUser() != null && user.getId().equals(subject.getUser().getId())) {
+            throw new ForbiddenException("You cannot approve your own performance review");
+        }
+        Long previousActor = switch (stage) {
+            case HR_APPROVAL -> review.getManagerReviewByUserId();
+            case FINAL_APPROVAL -> review.getHrApprovalByUserId();
+            default -> null;
+        };
+        if (previousActor != null && previousActor.equals(user.getId()) && !isCompanyOwner(review, user.getId())) {
+            throw new BadRequestException("The " + stage.name().replace('_', ' ').toLowerCase()
+                    + " must be signed by someone other than the previous approver");
+        }
+    }
+
+    private boolean isCompanyOwner(PerformanceReview review, Long userId) {
+        User owner = ownerOf(review.getCompany().getId());
+        return owner != null && owner.getId().equals(userId);
+    }
+
     private String currentUserName() {
         var user = securityUtil.getCurrentUser();
         return user != null ? user.getFullName() : "System";
     }
 
-    /**
-     * Previously advanceStage()/finalise() silently flipped state with nobody
-     * told - the next approver in the chain only found out by opening the
-     * queue themselves, and the employee never learned their review was done.
-     */
+    /** Notifies on stage changes: advanceStage()/finalise() used to flip state silently, so the next approver and the employee were never told. */
     private void notifyStageAdvance(PerformanceReview review, PerformanceStage next) {
         Employee employee = review.getEmployee();
-        // No dedicated "HR" recipient list exists yet, so HR/final approval
-        // notifies the company owner - the same fallback leave approvals use
-        // when an employee has no reporting manager.
+        // No dedicated HR recipient list exists yet, so HR/final approval notifies the company owner, the same fallback leave approvals use.
         User recipient = next == PerformanceStage.MANAGER_REVIEW && employee.getReportingManager() != null
                 ? employee.getReportingManager().getUser()
                 : ownerOf(review.getCompany().getId());
@@ -315,9 +379,8 @@ public class PerformanceServiceImpl implements PerformanceService {
     }
 
     @Override
-    // Reads + mapping run in aiTx.load(), which commits before the provider call
-    // so no DB connection is held across it - see AiTransactionBoundary. The lazy
-    // employee/user/designation associations must be read inside the callback.
+    // Reads and mapping run in aiTx.load(), which commits before the provider call so no DB connection is held across it - see AiTransactionBoundary.
+    // The lazy employee/user/designation associations must be read inside the callback.
     public PerformanceReviewResponse summarise(Long id) {
         authorizationService.checkPermission(PermissionCode.PERFORMANCE_VIEW);
 
@@ -353,15 +416,7 @@ public class PerformanceServiceImpl implements PerformanceService {
         return review;
     }
 
-    /**
-     * A performance review is private between the employee and whoever manages
-     * them. Tenant scoping alone is not enough: without this, any authenticated
-     * employee could read a colleague's scores, stated weaknesses and salary
-     * recommendation just by changing the id in the URL.
-     *
-     * Holding PERFORMANCE_VIEW means "may see other people's reviews" - managers,
-     * HR, owners. Everyone else is limited to their own.
-     */
+    /** Tenant scoping alone would let any employee read a colleague's review by changing the id in the URL; PERFORMANCE_VIEW means "may see other people's", everyone else only their own. */
     private void guardOwnReviewAccess(Long subjectEmployeeId) {
         if (authorizationService.hasPermission(PermissionCode.PERFORMANCE_VIEW)) {
             return;
@@ -378,18 +433,11 @@ public class PerformanceServiceImpl implements PerformanceService {
     }
 
 
-    /**
-     * Objective KPIs for a review period, aggregated live from the modules that
-     * own the underlying data. Deliberately not stored on the review: the same
-     * period should always aggregate the same way, and copying the numbers onto
-     * the review would freeze them at whatever the data happened to be that day.
-     */
+    /** Objective KPIs aggregated live from the modules that own the data; deliberately not stored on the review, which would freeze them at that day's data. */
     @Override
     @Transactional(readOnly = true)
     public PerformanceKpiResponse kpisForEmployee(Long employeeId, LocalDate from, LocalDate to) {
-        // Same rule as reviews: PERFORMANCE_VIEW means "may see other people's",
-        // and everyone can always see their own. A flat checkPermission() here
-        // would have locked employees out of their own attendance and task counts.
+        // Same rule as reviews: PERFORMANCE_VIEW for other people's, own always visible; a flat checkPermission() would lock employees out of their own counts.
         guardOwnReviewAccess(employeeId);
         Long companyId = requireCompanyId();
 
@@ -410,9 +458,7 @@ public class PerformanceServiceImpl implements PerformanceService {
         long absent = countAttendance(employeeId, AttendanceStatus.ABSENT, from, to);
         long onLeave = countAttendance(employeeId, AttendanceStatus.ON_LEAVE, from, to);
 
-        // LATE and WORK_FROM_HOME still mean the person worked, so they count as
-        // present. Weekends and holidays are excluded from the denominator - being
-        // off on a Friday should not dilute an attendance percentage.
+        // LATE and WORK_FROM_HOME count as present; weekends and holidays are excluded from the denominator so time off doesn't dilute the percentage.
         long attended = present + late + wfh + halfDay;
         long workingDays = attended + absent + onLeave;
         Double attendancePercent = workingDays == 0
@@ -451,8 +497,6 @@ public class PerformanceServiceImpl implements PerformanceService {
             .build();
     }
 
-    // ── Attachments ───────────────────────────────────────────────
-
     @Override
     @Transactional(readOnly = true)
     public List<PerformanceAttachmentDtos.AttachmentResponse> listAttachments(Long reviewId) {
@@ -475,7 +519,7 @@ public class PerformanceServiceImpl implements PerformanceService {
             .review(review)
             .company(companyRef(requireCompanyId()))
             .fileName(request.getFileName())
-            .fileUrl(request.getFileUrl())
+            .fileUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getFileUrl()))
             .fileType(request.getFileType())
             .fileSizeBytes(request.getFileSizeBytes())
             .label(request.getLabel())

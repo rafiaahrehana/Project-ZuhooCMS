@@ -9,14 +9,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * A supporting document attached to a performance review - appraisal forms,
- * certificates, client appreciation letters.
- *
- * Modelled on servicedesk's Document: the file itself is uploaded through the
- * shared POST /api/upload endpoint, which returns a URL. Only that URL and its
- * metadata are stored here, so no binary ever goes through this table.
- */
+/** A supporting document attached to a performance review; like servicedesk's Document, the file goes through POST /api/upload and only its URL and metadata are stored here. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity

@@ -10,10 +10,7 @@ import java.time.LocalDateTime;
 
 public class PerformanceAttachmentDtos {
 
-    /**
-     * The file is uploaded first via POST /api/upload, which returns a URL.
-     * This request only records that result against the review.
-     */
+    /** The file is uploaded first via POST /api/upload; this request only records the returned URL against the review. */
     @Data
     public static class AttachmentRequest {
         @NotBlank(message = "File name is required")

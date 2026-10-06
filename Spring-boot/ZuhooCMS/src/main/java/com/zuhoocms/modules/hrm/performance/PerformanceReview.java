@@ -47,10 +47,7 @@ public class PerformanceReview extends BaseEntity {
     private Integer scoreInnovation;
     private Double  overallScore;
 
-    // ── Review outcome ────────────────────────────────────────────
-    // Every column below is nullable on purpose: spring.jpa.hibernate.ddl-auto
-    // is `update`, and adding a NOT NULL column to a table that already holds
-    // rows makes the schema update fail at boot.
+    // Every column below is nullable on purpose: with ddl-auto=update, adding a NOT NULL column to a table that already holds rows fails the schema update at boot.
 
     /** Outstanding / Exceeds Expectations / Meets Expectations / Needs Improvement. */
     @Column(length = 40)
@@ -115,10 +112,7 @@ public class PerformanceReview extends BaseEntity {
     @Builder.Default
     private boolean finalised = false;
 
-    // ── Approval chain ────────────────────────────────────────────
-    // Actor names are stored as text rather than as user FKs on purpose: this
-    // is an audit trail, and it should still read correctly if the user is
-    // later renamed, deactivated or removed.
+    // Actor names are stored as text, not user FKs: this is an audit trail and must still read correctly if the user is renamed, deactivated or removed.
 
     @Builder.Default
     @Enumerated(EnumType.STRING)
@@ -137,9 +131,12 @@ public class PerformanceReview extends BaseEntity {
     private java.time.LocalDateTime finalApprovalAt;
     private String finalApprovalBy;
 
-    // Set once PerformanceReviewOverdueScheduler notifies the reviewer this
-    // review is overdue (reviewPeriodEnd has passed and it's still not
-    // finalised). A "review every 6 months" policy had nothing in the system
-    // enforcing or even flagging it - entirely tracked outside the app.
+    // Who signed each stage, by user id: the names above are display-only, these are what separation-of-duties checks compare. Nullable (ddl-auto=update).
+    private Long selfAssessmentByUserId;
+    private Long managerReviewByUserId;
+    private Long hrApprovalByUserId;
+    private Long finalApprovalByUserId;
+
+    // Set once PerformanceReviewOverdueScheduler notifies the reviewer the review is overdue (reviewPeriodEnd passed, still not finalised).
     private java.time.LocalDateTime overdueReminderSentAt;
 }

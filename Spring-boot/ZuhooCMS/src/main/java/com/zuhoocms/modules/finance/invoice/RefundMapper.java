@@ -47,6 +47,7 @@ public class RefundMapper {
                 .processedByName(entity.getProcessedBy() != null ? entity.getProcessedBy().getFirstName() + " " + entity.getProcessedBy().getLastName() : null)
                 .processedAt(entity.getProcessedAt())
                 .rejectionReason(entity.getRejectionReason())
+                .refundToWallet(Boolean.TRUE.equals(entity.getRefundToWallet()))
                 .build();
     }
 }

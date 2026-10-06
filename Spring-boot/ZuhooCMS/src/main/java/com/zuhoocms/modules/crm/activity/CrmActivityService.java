@@ -7,9 +7,7 @@ public interface CrmActivityService {
 
     CrmActivityResponse log(CrmActivityRequest request);
 
-    //Used by other CRM services (e.g. opportunities) to record
-    //system-generated timeline entries such as stage changes.
-
+    // Used by other CRM services to record system-generated timeline entries such as stage changes.
     void logSystemActivity(CrmActivityType type, String subject, String description,
                            Long clientId, Long opportunityId);
 

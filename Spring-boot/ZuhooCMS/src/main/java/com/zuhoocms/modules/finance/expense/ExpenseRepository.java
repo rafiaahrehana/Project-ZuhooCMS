@@ -19,13 +19,19 @@ public interface ExpenseRepository extends JpaRepository<Expense, Long> {
     Optional<Expense> findByCompanyIdAndExpenseNumber(Long companyId, String number);
 
     /**
-     * Used by ExpenseServiceImpl.generateExpenseNumber - MAX-based (not COUNT) to be
-     * safe against concurrent inserts and soft-deleted records skewing the sequence,
-     * and scoped per company (a global count() previously let expense numbers collide
-     * across different companies and skip/duplicate under concurrent submissions).
+     * Seed for the EXP- counter (see DocumentNumberService): the highest running number under this company/prefix, <b>soft-deleted rows included</b>.
+     * <p>Only a seed: MAX is not safe on its own, because two concurrent creators read the same maximum inside their own transactions and build the same number. The locked counter row, not this query, is what makes numbers unique.
+     * <p>Native, so BaseEntity's {@code @SQLRestriction} cannot hide a soft-deleted expense that the unique constraint still counts.
      */
-    @Query("SELECT MAX(e.expenseNumber) FROM FinanceExpense e WHERE e.companyId = :companyId AND e.expenseNumber LIKE CONCAT(:prefix, '%')")
-    Optional<String> findMaxExpenseNumberByCompanyAndPrefix(@Param("companyId") Long companyId, @Param("prefix") String prefix);
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(expense_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(expense_number FROM :start) AS BIGINT) END)
+        FROM expenses
+        WHERE company_id = :companyId AND expense_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxExpenseSequenceIncludingDeleted(@Param("companyId") Long companyId,
+                                                @Param("prefix") String prefix,
+                                                @Param("start") int start);
 
     Page<Expense> findByCompanyIdAndStatus(Long companyId, ExpenseStatus status, Pageable pageable);
 
@@ -38,9 +44,7 @@ public interface ExpenseRepository extends JpaRepository<Expense, Long> {
 
     Page<Expense> findByCompanyIdAndVendorName(Long companyId, String vendorName, Pageable pageable);
 
-    // Platform expenses (SaaS provider's own operating costs) are Expense rows with
-    // no owning company - `company_id = :companyId` never matches NULL rows in SQL,
-    // so these need their own IS NULL variants rather than reusing the tenant queries.
+    // Platform expenses have no owning company, and `company_id = :companyId` never matches NULL rows in SQL, so they need their own IS NULL variants.
     Optional<Expense> findByIdAndCompanyIdIsNull(Long id);
 
     Page<Expense> findByCompanyIdIsNull(Pageable pageable);
@@ -49,8 +53,15 @@ public interface ExpenseRepository extends JpaRepository<Expense, Long> {
 
     Page<Expense> findByCompanyIdIsNullAndVendorName(String vendorName, Pageable pageable);
 
-    @Query("SELECT MAX(e.expenseNumber) FROM FinanceExpense e WHERE e.companyId IS NULL AND e.expenseNumber LIKE CONCAT(:prefix, '%')")
-    Optional<String> findMaxExpenseNumberByPlatformAndPrefix(@Param("prefix") String prefix);
+    /** Platform variant of {@link #findMaxExpenseSequenceIncludingDeleted}: {@code company_id = :companyId} never matches NULL rows in SQL. */
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(expense_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(expense_number FROM :start) AS BIGINT) END)
+        FROM expenses
+        WHERE company_id IS NULL AND expense_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxPlatformExpenseSequenceIncludingDeleted(@Param("prefix") String prefix,
+                                                        @Param("start") int start);
 
     /** Actual spend in a category over a date window - used for budget-vs-actual. */
     @Query("SELECT COALESCE(SUM(e.amount), 0) FROM FinanceExpense e " +

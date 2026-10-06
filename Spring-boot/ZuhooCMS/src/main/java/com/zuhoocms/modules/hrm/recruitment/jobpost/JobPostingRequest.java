@@ -35,7 +35,8 @@ public class JobPostingRequest {
     @DecimalMin(value = "0.00")
     private BigDecimal salaryMax;
     private LocalDate deadline;
-    private boolean remote;
+    /** Boxed, so an update can tell "not mentioned" from "set to on-site". See JobPostingServiceImpl.update. */
+    private Boolean remote;
     private Long departmentId;
 
     @Size(max = 500)

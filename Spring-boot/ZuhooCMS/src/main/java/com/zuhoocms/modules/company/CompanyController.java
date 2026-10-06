@@ -2,6 +2,8 @@ package com.zuhoocms.modules.company;
 
 import com.zuhoocms.enums.CompanyStatus;
 import com.zuhoocms.shared.exception.UnauthorizedException;
+import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.security.SecurityUtil;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,7 @@ public class CompanyController {
 
     private final CompanyService companyService;
     private final SecurityUtil   securityUtil;
+    private final AuthorizationService authorizationService;
 
     @GetMapping("/public/{subdomain}")
     public ResponseEntity<CompanyPublicResponse> getPublic(@PathVariable String subdomain) {
@@ -30,7 +33,7 @@ public class CompanyController {
 
     /** Companies a prospective client can pick from on the public client registration page. */
     @GetMapping("/public/list")
-    public ResponseEntity<java.util.List<CompanyPublicResponse>> getPublicList() {
+    public ResponseEntity<java.util.List<CompanyPublicListItem>> getPublicList() {
         return ResponseEntity.ok(companyService.getPublicList());
     }
 
@@ -40,12 +43,31 @@ public class CompanyController {
         return ResponseEntity.ok(companyService.getPublicServices(subdomain));
     }
 
+    /**
+     * The read stays open to any member of the company - every screen needs the name, logo and branding - but the
+     * four bank fields are withheld without COMPANY_SETTINGS.
+     *
+     * They used to come back to anybody, including an employee holding no permissions at all, which sat oddly
+     * beside the PATCH below: that one escalates to COMPANY_SETTINGS for exactly these fields, with the reason in
+     * its own code - "or a branding-only user could redirect client payments". So the rule that stopped a
+     * branding-only user CHANGING where client payments go handed them the current account number for the asking.
+     *
+     * Redacted here rather than checked inside getById, because that method also serves the platform-only
+     * GET /companies/{id}, where staff are meant to see everything.
+     */
     @GetMapping("/me")
     public ResponseEntity<CompanyResponse> getMyCompany() {
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId == null)
             throw new UnauthorizedException("No company associated with this account");
-        return ResponseEntity.ok(companyService.getById(companyId));
+        CompanyResponse company = companyService.getById(companyId);
+        if (!authorizationService.hasPermission(PermissionCode.COMPANY_SETTINGS)) {
+            company.setBankName(null);
+            company.setBankAccountName(null);
+            company.setBankAccountNumber(null);
+            company.setBankBranch(null);
+        }
+        return ResponseEntity.ok(company);
     }
 
     @PatchMapping("/me")

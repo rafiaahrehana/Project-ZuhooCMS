@@ -23,11 +23,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
 
     long countByCompanyIdAndStatus(Long companyId, LeaveRequestStatus status);
 
-    /**
-     * Requests whose leave falls inside a window, by status - the HR dashboard's
-     * monthly leave summary. Counted on the leave dates rather than when the
-     * request was raised, so "this month" means leave taken this month.
-     */
+    /** Requests by status whose leave dates fall in a window, not when raised, so the dashboard's "this month" means leave taken this month. */
     long countByCompanyIdAndStatusAndStartDateLessThanEqualAndEndDateGreaterThanEqual(
         Long companyId, LeaveRequestStatus status,
         java.time.LocalDate to, java.time.LocalDate from);
@@ -38,10 +34,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
     Page<LeaveRequest> findByCompanyIdAndEmployeeId(
         Long companyId, Long employeeId, Pageable pageable);
 
-    /**
-     * Approved leave days an employee took inside a window — the leaves-taken KPI.
-     * COALESCE keeps the return 0 rather than null when there is no leave at all.
-     */
+    /** Approved leave days taken in a window; COALESCE returns 0 rather than null when there is no leave at all. */
     @Query("""
         SELECT COALESCE(SUM(lr.totalDays), 0) FROM LeaveRequest lr
         WHERE lr.company.id = :companyId
@@ -84,10 +77,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
         @Param("endDate") LocalDate endDate,
         @Param("excludedStatuses") java.util.List<LeaveRequestStatus> excludedStatuses);
 
-    /**
-     * Used by DailyAbsenteeScheduler to skip employees who are on approved leave
-     * for the day, rather than marking them ABSENT.
-     */
+    /** Used by DailyAbsenteeScheduler to skip employees on approved leave rather than marking them ABSENT. */
     @Query("""
         SELECT COUNT(lr) > 0 FROM LeaveRequest lr
         WHERE lr.employee.id = :employeeId
@@ -102,28 +92,33 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
         @Param("status") LeaveRequestStatus status);
 
     /**
-     * Used by the employee dashboard's monthly summary - approved leave requests
-     * that overlap a given date range (e.g. the current month), so per-day overlap
-     * can be clamped/counted in Java.
+     * Approved requests overlapping a date range, for the dashboard's monthly summary; per-day overlap is clamped in Java.
+     *
+     * <p>company_id is in the predicate rather than left to Hibernate's tenantFilter: the filter is only on the session
+     * of an authenticated tenant user, and these totals are also computed from payroll and report paths, so on the
+     * employee id alone another tenant's leave could be counted into this company's summary.
      */
     @Query("""
         SELECT lr FROM LeaveRequest lr
-        WHERE lr.employee.id = :employeeId
+        WHERE lr.company.id = :companyId
+          AND lr.employee.id = :employeeId
           AND lr.status = :status
           AND lr.startDate <= :rangeEnd
           AND lr.endDate >= :rangeStart
           AND lr.deleted = false
         """)
     List<LeaveRequest> findApprovedOverlapping(
+        @Param("companyId") Long companyId,
         @Param("employeeId") Long employeeId,
         @Param("status") LeaveRequestStatus status,
         @Param("rangeStart") LocalDate rangeStart,
         @Param("rangeEnd") LocalDate rangeEnd);
 
-    /** Approved requests of one type overlapping [from, to]. */
+    /** Approved requests of one type overlapping [from, to]; scoped on company_id for the same reason as the overload above. */
     @Query("""
         SELECT lr FROM LeaveRequest lr
-        WHERE lr.employee.id = :employeeId
+        WHERE lr.company.id = :companyId
+          AND lr.employee.id = :employeeId
           AND lr.status = com.zuhoocms.enums.LeaveRequestStatus.APPROVED
           AND lr.leaveType = :leaveType
           AND lr.startDate <= :to
@@ -131,6 +126,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
           AND lr.deleted = false
         """)
     java.util.List<LeaveRequest> findApprovedOverlapping(
+        @Param("companyId") Long companyId,
         @Param("employeeId") Long employeeId,
         @Param("leaveType") com.zuhoocms.enums.LeaveType leaveType,
         @Param("from") java.time.LocalDate from,

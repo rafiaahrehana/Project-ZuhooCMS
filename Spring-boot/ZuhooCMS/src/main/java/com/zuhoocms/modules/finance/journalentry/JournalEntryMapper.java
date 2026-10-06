@@ -14,8 +14,7 @@ public class JournalEntryMapper {
         if (entity.getLines() != null && !entity.getLines().isEmpty()) {
             lines = entity.getLines().stream().map(JournalEntryMapper::toLineResponse).collect(Collectors.toList());
         } else {
-            // Pre-multi-line entry: synthesize the two lines from the legacy columns so
-            // old and new entries render identically in the UI.
+            // Pre-multi-line entry: synthesize two lines from the legacy columns so old and new entries render identically.
             lines = List.of(
                     JournalEntryLineResponse.builder()
                             .accountId(entity.getDebitAccount() != null ? entity.getDebitAccount().getId() : null)
@@ -51,6 +50,7 @@ public class JournalEntryMapper {
                 .approvedBy(entity.getApprovedBy())
                 .approvedDate(entity.getApprovedDate())
                 .approved(entity.isApproved())
+                .selfApproved(entity.isSelfApproved())
                 .posted(entity.isPosted())
                 .postedDate(entity.getPostedDate())
                 .reversed(entity.isReversed())

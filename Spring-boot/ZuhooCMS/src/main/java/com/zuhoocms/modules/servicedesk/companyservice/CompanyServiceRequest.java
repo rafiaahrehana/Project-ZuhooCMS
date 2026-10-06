@@ -33,15 +33,22 @@ public class CompanyServiceRequest {
     private Long serviceTemplateId;
 
     private String currency;
-    private boolean featured;
-    private boolean remote;
-    private boolean onSite;
-    private boolean online;
+    /*
+     * All nine boxed, so an update can tell "not mentioned" from "set to false". As primitives they were assigned
+     * unconditionally while every other field on this request was null-guarded, so a partial edit silently reset
+     * them all - and three of these change how an order behaves: requiresDocuments stops asking a customer for
+     * paperwork, requiresQuotation turns a quoted service into an instant one, and autoApproval starts accepting
+     * orders nobody has looked at. See CompanyServiceServiceImpl.update.
+     */
+    private Boolean featured;
+    private Boolean remote;
+    private Boolean onSite;
+    private Boolean online;
     private Integer maximumOrders;
-    private boolean autoApproval;
-    private boolean requiresQuotation;
-    private boolean requiresDocuments;
-    private boolean supportsCustomWorkflow;
-    private boolean aiAssisted;
+    private Boolean autoApproval;
+    private Boolean requiresQuotation;
+    private Boolean requiresDocuments;
+    private Boolean supportsCustomWorkflow;
+    private Boolean aiAssisted;
     private com.zuhoocms.enums.ServiceVisibility visibility;
 }

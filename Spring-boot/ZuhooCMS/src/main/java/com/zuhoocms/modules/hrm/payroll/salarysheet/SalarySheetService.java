@@ -1,16 +1,11 @@
 package com.zuhoocms.modules.hrm.payroll.salarysheet;
 
-import com.zuhoocms.enums.SalaryBase;
-import com.zuhoocms.modules.hrm.attendance.attendance.AttendanceRepository;
-import com.zuhoocms.modules.hrm.attendance.attendance.AttendanceStatus;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
-import com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance;
-import com.zuhoocms.modules.hrm.payroll.loan.LoanAdvanceRepository;
+import com.zuhoocms.modules.hrm.payroll.PayrollCalculator;
+import com.zuhoocms.modules.hrm.payroll.PayrollPeriods;
 import com.zuhoocms.modules.hrm.payroll.settings.PayrollSettings;
 import com.zuhoocms.modules.hrm.payroll.settings.PayrollSettingsService;
-import com.zuhoocms.modules.hrm.salary.SalaryStructure;
-import com.zuhoocms.modules.hrm.salary.SalaryStructureRepository;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
@@ -19,58 +14,44 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Builds the company's salary sheet for a month.
- *
- * Live rather than stored: absent days and overtime hours are read from
- * attendance every time, so correcting a check-in is reflected immediately
- * instead of needing payroll re-run. Payroll generation is what freezes these
- * numbers; until then this is simply what the month currently looks like.
+ * Builds the company's salary sheet for a month, live rather than stored: absent days and overtime are read from attendance each time, so a corrected check-in shows immediately.
+ * Payroll generation is what freezes the numbers; projected rows are priced by PayrollCalculator so preview and real payroll cannot disagree.
  */
 @Service
 @RequiredArgsConstructor
 public class SalarySheetService {
 
     private final EmployeeRepository employeeRepository;
-    private final SalaryStructureRepository salaryStructureRepository;
-    private final AttendanceRepository attendanceRepository;
     private final PayrollSettingsService payrollSettingsService;
-    private final LoanAdvanceRepository loanAdvanceRepository;
     private final SecurityUtil securityUtil;
     private final com.zuhoocms.modules.hrm.payroll.PayrollRepository payrollRepository;
-    private final com.zuhoocms.modules.hrm.payroll.components.SalaryComponentService salaryComponentService;
-    private final com.zuhoocms.modules.hrm.leave.LeaveService leaveService;
+    private final PayrollCalculator calculator;
 
     @Transactional(readOnly = true)
     public SalarySheetResponse build(int payMonth, int payYear) {
-        if (payMonth < 1 || payMonth > 12) {
-            throw new BadRequestException("Pay month must be between 1 and 12.");
-        }
+        PayrollPeriods.validate(payMonth, payYear);
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId == null) {
             throw new BadRequestException("No company context for the current user");
         }
 
         PayrollSettings settings = payrollSettingsService.getOrCreate(companyId);
-        LocalDate start = LocalDate.of(payYear, payMonth, 1);
-        LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
         int divisor = payrollSettingsService.perDayDivisor(settings, payMonth, payYear);
 
         List<SalarySheetRow> rows = new ArrayList<>();
         for (Employee employee : employeeRepository.findByCompanyIdAndActiveTrue(companyId)) {
-            rows.add(buildRow(employee, settings, payMonth, payYear, start, end));
+            rows.add(buildRow(employee, companyId, payMonth, payYear));
         }
         rows.sort((a, b) -> a.getEmployeeName().compareToIgnoreCase(b.getEmployeeName()));
 
         return totalled(rows, payMonth, payYear, settings, divisor);
     }
 
-    private SalarySheetRow buildRow(Employee employee, PayrollSettings settings,
-                                    int payMonth, int payYear, LocalDate start, LocalDate end) {
+    private SalarySheetRow buildRow(Employee employee, Long companyId, int payMonth, int payYear) {
 
         SalarySheetRow.SalarySheetRowBuilder row = SalarySheetRow.builder()
                 .employeeId(employee.getId())
@@ -79,10 +60,7 @@ public class SalarySheetService {
                 .position(position(employee))
                 .department(employee.getDepartment() != null ? employee.getDepartment().getName() : null);
 
-        // Real-company rule: once payroll exists for the period, the sheet
-        // restates the payroll register (the actuals - frozen overtime,
-        // bonus, absence, components), NOT a fresh estimate. Before payroll
-        // is generated the sheet is a live projection from the structure.
+        // Once payroll exists for the period the sheet restates the frozen register, not a fresh estimate; before that it is a live projection from the structure.
         var payrollOpt = payrollRepository.findByEmployeeIdAndPayMonthAndPayYear(
                 employee.getId(), payMonth, payYear);
         if (payrollOpt.isPresent()) {
@@ -94,10 +72,6 @@ public class SalarySheetService {
                     .add(orZero(p.getMedicalAllowance())).add(orZero(p.getTransportAllowance()))
                     .add(orZero(p.getFoodAllowance())).add(orZero(p.getSpecialAllowance()))
                     .add(orZero(p.getBonus())).add(orZero(p.getOvertimePay())).add(earnExtras);
-            // netPayable (below) already subtracts loanDeductionAmount - this line
-            // didn't, so the official monthly salary register didn't reconcile
-            // (gross - totalDeductions != netPayable for anyone with an active
-            // loan) and the loan line was invisible on it entirely.
             BigDecimal totalDed = orZero(p.getAttendanceDeduction()).add(orZero(p.getTaxDeduction()))
                     .add(orZero(p.getProvidentFundDeduction())).add(orZero(p.getLoanDeductionAmount())).add(dedExtras);
             return row
@@ -121,97 +95,43 @@ public class SalarySheetService {
         }
         row.source("PROJECTED").bonus(BigDecimal.ZERO);
 
-        SalaryStructure structure = salaryStructureRepository
-                .findActiveForEmployeeOnDate(employee.getId(), start)
-                .orElse(null);
-
-        int absentDays = (int) attendanceRepository.countByEmployeeIdAndStatusAndAttendanceDateBetween(
-                employee.getId(), AttendanceStatus.ABSENT, start, end)
-                // Same rule as payroll: approved UNPAID leave deducts like absence.
-                + leaveService.unpaidLeaveDays(employee.getId(), payMonth, payYear);
-
-        if (structure == null) {
-            // Listed with zeroes and a note rather than omitted - an employee
-            // missing from a salary sheet is a problem you want to see.
+        if (calculator.activeStructure(employee.getId(), payMonth, payYear).isEmpty()) {
+            // Listed with zeroes and a note rather than omitted - a missing employee is a problem you want to see.
             return row
                     .basic(BigDecimal.ZERO).houseRent(BigDecimal.ZERO).medical(BigDecimal.ZERO)
                     .transport(BigDecimal.ZERO).food(BigDecimal.ZERO).special(BigDecimal.ZERO)
                     .overtimeHours(BigDecimal.ZERO).overtimePayment(BigDecimal.ZERO)
                     .otherEarnings(BigDecimal.ZERO).otherDeductions(BigDecimal.ZERO)
                     .grossEarnings(BigDecimal.ZERO)
-                    .absentDays(absentDays).absentDeduction(BigDecimal.ZERO)
+                    .absentDays(calculator.absentDays(employee.getId(), companyId, payMonth, payYear))
+                    .absentDeduction(BigDecimal.ZERO)
                     .tax(BigDecimal.ZERO).providentFund(BigDecimal.ZERO)
                     .totalDeductions(BigDecimal.ZERO).netPayable(BigDecimal.ZERO)
                     .note("No salary structure effective for this month")
                     .build();
         }
 
-        BigDecimal basic = orZero(structure.getBasicSalary());
-        BigDecimal houseRent = orZero(structure.getHouseRent());
-        BigDecimal medical = orZero(structure.getMedicalAllowance());
-        BigDecimal transport = orZero(structure.getTransportAllowance());
-        BigDecimal food = orZero(structure.getFoodAllowance());
-        BigDecimal special = orZero(structure.getSpecialAllowance());
-        BigDecimal fixedGross = basic.add(houseRent).add(medical).add(transport).add(food).add(special);
+        // Non-strict: a projection shows a negative net instead of failing the whole sheet.
+        PayrollCalculator.Result r = calculator.calculate(employee, companyId, payMonth, payYear,
+                PayrollCalculator.ManualInputs.none(), null, false);
 
-        // ── Overtime ─────────────────────────────────────────
-        BigDecimal overtimeHours = BigDecimal.ZERO;
-        BigDecimal overtimePayment = BigDecimal.ZERO;
-        if (settings.isOvertimeEnabled()) {
-            overtimeHours = orZero(attendanceRepository.sumOvertimeHours(employee.getId(), start, end));
-            if (overtimeHours.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal otBase = settings.getOvertimeBase() == SalaryBase.GROSS ? fixedGross : basic;
-                BigDecimal perDay = payrollSettingsService.perDayRate(settings, otBase, payMonth, payYear);
-                BigDecimal hoursPerDay = orZero(settings.getStandardHoursPerDay());
-                if (hoursPerDay.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal hourly = perDay.divide(hoursPerDay, 4, RoundingMode.HALF_UP)
-                            .multiply(orZero(settings.getOvertimeMultiplier()));
-                    overtimePayment = hourly.multiply(overtimeHours).setScale(2, RoundingMode.HALF_UP);
-                }
-            }
-        }
-
-        // ── Absence ──────────────────────────────────────────
-        BigDecimal absenceBase = settings.getAbsenceDeductionBase() == SalaryBase.BASIC ? basic : fixedGross;
-        BigDecimal absentDeduction = BigDecimal.ZERO;
-        if (absentDays > 0 && absenceBase.compareTo(BigDecimal.ZERO) > 0) {
-            absentDeduction = payrollSettingsService.perDayRate(settings, absenceBase, payMonth, payYear)
-                    .multiply(BigDecimal.valueOf(absentDays))
-                    .setScale(2, RoundingMode.HALF_UP);
-        }
-
-        BigDecimal tax = orZero(structure.getTaxDeduction());
-        BigDecimal providentFund = orZero(structure.getProvidentFund());
-
-        // Structure extra components, same sums payroll freezes.
-        BigDecimal otherEarnings = salaryComponentService.sumExtras(structure.getId(),
-                com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.EARNING);
-        BigDecimal otherDeductions = salaryComponentService.sumExtras(structure.getId(),
-                com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.DEDUCTION);
-
-        // Same active-loan lookup PayrollServiceImpl.calculateLoanDue() uses when
-        // actually generating payroll - without it, this "projected" preview
-        // disagreed with the real Payroll row by exactly the loan installment,
-        // contradicting its own documented promise that preview and actual never
-        // disagree.
-        BigDecimal loanDue = loanAdvanceRepository
-                .findFirstByEmployeeIdAndStatus(employee.getId(), LoanAdvance.Status.ACTIVE)
-                .map(loan -> loan.getMonthlyInstallment().min(loan.getRemainingBalance()))
-                .orElse(BigDecimal.ZERO);
-
-        BigDecimal grossEarnings = fixedGross.add(overtimePayment).add(otherEarnings);
-        BigDecimal totalDeductions = absentDeduction.add(tax).add(providentFund).add(otherDeductions).add(loanDue);
+        // Same column mapping as the PAYROLL branch: billable pay rides in other earnings, manual deductions/insurance in other deductions.
+        BigDecimal earnExtras = r.otherEarnings().add(r.billablePay());
+        BigDecimal dedExtras = r.otherDeductions().add(r.deductions()).add(r.insurance());
+        BigDecimal totalDeductions = r.attendanceDeduction().add(r.tax()).add(r.providentFund())
+                .add(r.loanDeduction()).add(dedExtras);
 
         return row
-                .basic(basic).houseRent(houseRent).medical(medical)
-                .transport(transport).food(food).special(special)
-                .overtimeHours(overtimeHours).overtimePayment(overtimePayment)
-                .otherEarnings(otherEarnings).otherDeductions(otherDeductions)
-                .grossEarnings(grossEarnings)
-                .absentDays(absentDays).absentDeduction(absentDeduction)
-                .tax(tax).providentFund(providentFund)
+                .basic(r.basic()).houseRent(r.rent()).medical(r.medical())
+                .transport(r.transport()).food(r.food()).special(r.special())
+                .bonus(r.bonus())
+                .overtimeHours(r.overtimeHours()).overtimePayment(r.overtimePay())
+                .otherEarnings(earnExtras).otherDeductions(dedExtras)
+                .grossEarnings(r.gross())
+                .absentDays(r.absentDays()).absentDeduction(r.attendanceDeduction())
+                .tax(r.tax()).providentFund(r.providentFund())
                 .totalDeductions(totalDeductions)
-                .netPayable(grossEarnings.subtract(totalDeductions).setScale(2, RoundingMode.HALF_UP))
+                .netPayable(r.net().setScale(2, RoundingMode.HALF_UP))
                 .build();
     }
 

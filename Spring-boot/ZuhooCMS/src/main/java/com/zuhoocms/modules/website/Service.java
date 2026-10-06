@@ -6,7 +6,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -32,12 +31,12 @@ import java.util.List;
 public class Service extends BaseEntity {
     @Column(name = "company_id", nullable = false)
     private Long companyId;
-    @Column(unique = true)
+    // Unique per company, not globally: (company_id, slug) index created by WebsiteSlugIndexMigration.
     private String slug;
     private String title;
     @Column(length = 500)
     private String summary;
-    @Lob
+    // No @Lob: on PostgreSQL it maps a String to a large-object oid and reading a TEXT value fails with "Bad value for type long".
     @Column(columnDefinition = "TEXT")
     private String description;
     private String icon;
@@ -45,7 +44,7 @@ public class Service extends BaseEntity {
     private String categoryName;
     private String startingPrice;
     private String estimatedTime;
-    @Lob
+    // No @Lob: on PostgreSQL it maps a String to a large-object oid and reading a TEXT value fails with "Bad value for type long".
     @Column(columnDefinition = "TEXT")
     private String requirements;
 

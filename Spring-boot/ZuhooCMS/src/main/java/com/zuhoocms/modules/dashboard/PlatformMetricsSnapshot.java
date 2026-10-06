@@ -5,12 +5,7 @@ import lombok.*;
 
 import java.time.LocalDate;
 
-/**
- * One row per calendar day - captured by PlatformMetricsScheduler so the platform
- * dashboard's KPI sparklines (Total/Active/Trial/Suspended companies) have real
- * history to plot instead of a single point. Upserted (see repository) so re-running
- * the snapshot for today never creates a duplicate row.
- */
+/** One row per calendar day from PlatformMetricsScheduler, feeding the platform KPI sparklines; upserted (see repository) so a re-run never duplicates today. */
 @Entity
 @Table(name = "platform_metrics_snapshots",
        indexes = @Index(name = "idx_pms_snapshot_date", columnList = "snapshotDate", unique = true))

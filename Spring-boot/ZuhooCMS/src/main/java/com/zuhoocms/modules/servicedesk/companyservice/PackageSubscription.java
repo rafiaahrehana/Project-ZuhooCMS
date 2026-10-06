@@ -15,17 +15,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-/**
- * PackageSubscription represents a single client's active subscription
- * to a ServicePackage for a specific billing period.
- *
- * One client can have multiple historical subscriptions to the same package
- * (previous cycles), but only ONE may be ACTIVE at a time per package.
- * This is enforced in ServicePackageServiceImpl.subscribe().
- *
- * requestsUsed is incremented every time the client raises a ServiceRequest
- * under this subscription (via ServiceRequestServiceImpl.create()).
- */
+/** A client's subscription to a ServicePackage for one billing period; past cycles are kept, but only one may be ACTIVE per package (enforced in ServicePackageServiceImpl.subscribe()). */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
@@ -67,59 +57,48 @@ public class PackageSubscription extends BaseEntity {
     /** Calculated from startDate + billingCycle. NULL for indefinite ONE_TIME packages. */
     private LocalDate endDate;
 
-    /** Date the next billing charge is due. */
     private LocalDate nextBillingDate;
 
-    /**
-     * Price locked at the time of subscription — immune to future package price changes.
-     */
+    /** Price locked at subscription time, immune to later package price changes. */
     @Column(precision = 12, scale = 2, nullable = false)
     private BigDecimal pricePaid;
 
-    /**
-     * Request quota copied from package at subscription time.
-     * NULL = unlimited.
-     */
+    /** Copied from the package at subscription time; NULL = unlimited. */
     private Integer requestQuota;
 
-    /**
-     * How many service requests have been raised under this subscription
-     * in the current billing period.
-     */
+    /** Requests raised under this subscription in the current billing period. */
     @Builder.Default
     @Column(nullable = false)
     private int requestsUsed = 0;
 
-    /** Whether this subscription renews automatically at period end. */
     @Builder.Default
     private boolean autoRenew = true;
 
-    /** Timestamp when the subscription was activated (payment confirmed). */
+    /** Set when payment is confirmed. */
     private LocalDateTime activatedAt;
 
-    /** Timestamp when the subscription was cancelled or suspended. */
+    /** Set on cancellation or suspension. */
     private LocalDateTime cancelledAt;
 
     @Column(columnDefinition = "TEXT")
     private String cancellationReason;
 
-    // ── Computed helpers ──────────────────────────────────────────
+    /** Renewal-billing idempotency: the period start already invoiced, and that invoice's id, so a period is never invoiced twice. */
+    private LocalDate lastRenewalInvoicedPeriodStart;
 
-    /** True if this subscription is currently usable. */
+    private Long lastRenewalInvoiceId;
+
     public boolean isUsable() {
         return status == SubscriptionStatus.ACTIVE
             && (endDate == null || !LocalDate.now().isAfter(endDate));
     }
 
-    /**
-     * True if the client can still raise a service request under this subscription.
-     * NULL quota = unlimited.
-     */
+    /** NULL quota = unlimited. */
     public boolean hasRemainingQuota() {
         return requestQuota == null || requestsUsed < requestQuota;
     }
 
-    /** Remaining requests this period. Returns Integer.MAX_VALUE for unlimited. */
+    /** Returns Integer.MAX_VALUE for an unlimited quota. */
     public int getRemainingRequests() {
         if (requestQuota == null) return Integer.MAX_VALUE;
         return Math.max(0, requestQuota - requestsUsed);

@@ -8,9 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-// AllArgsConstructor access is package-private: a public one is picked up by Jackson as
-// a deserialization creator, which fails on any missing primitive field ("Cannot map
-// null into type int/boolean") instead of defaulting it to 0/false via no-args+setters.
+// AllArgsConstructor is package-private: a public one becomes Jackson's creator and fails with "Cannot map null into type int/boolean" on any missing primitive field.
 @Data
 @Builder
 @NoArgsConstructor

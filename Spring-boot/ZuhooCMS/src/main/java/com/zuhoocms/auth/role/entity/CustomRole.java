@@ -35,11 +35,7 @@ public class CustomRole extends BaseEntity {
     @Column(nullable = false)
     private Boolean systemRole = false;
 
-    /**
-     * Inverse relationship: Users assigned to this custom role
-     * Cascade DELETE is NOT set - users should have customRole set to NULL when role is deleted
-     * Use SET_NULL in User.customRole mapping to handle this
-     */
+    /** No cascade DELETE: deleting the role must null out User.customRole instead, done in CustomRoleServiceImpl since JPA has no SET_NULL. */
     @OneToMany(mappedBy = "customRole", fetch = FetchType.LAZY)
     private List<User> users;
 

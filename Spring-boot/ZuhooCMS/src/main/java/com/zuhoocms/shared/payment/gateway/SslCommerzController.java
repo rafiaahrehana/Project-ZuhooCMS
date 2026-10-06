@@ -1,6 +1,8 @@
 package com.zuhoocms.shared.payment.gateway;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -20,19 +22,16 @@ public class SslCommerzController {
     @Value("${app.frontend-url}")
     private String frontendUrl;
 
-    /** Authenticated: starts a checkout, returns the gateway URL to redirect to. */
+    /** Starts a checkout for company staff and clients; the per-purpose ownership checks in the service still apply. */
     @PostMapping("/initiate")
-    public ResponseEntity<Map<String, String>> initiate(@RequestBody InitiateGatewayPaymentRequest request) {
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
+    public ResponseEntity<Map<String, String>> initiate(@Valid @RequestBody InitiateGatewayPaymentRequest request) {
         String url = sslCommerzService.initiate(
             request.getPurpose(), request.getTargetId(), request.getAmount());
         return ResponseEntity.ok(Map.of("gatewayUrl", url));
     }
 
-    /*
-     * The endpoints below are called by SSLCommerz's servers/browser redirect -
-     * they are public (whitelisted in SecurityConfig) and redirect the payer
-     * back to the frontend result page.
-     */
+    /* The endpoints below are called by SSLCommerz itself: public (whitelisted in SecurityConfig) and redirect the payer to the frontend result page. */
 
     @PostMapping("/callback/success")
     public ResponseEntity<Void> success(@RequestParam Map<String, String> params) {

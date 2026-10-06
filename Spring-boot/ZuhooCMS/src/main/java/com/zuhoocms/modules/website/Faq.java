@@ -3,7 +3,6 @@ package com.zuhoocms.modules.website;
 import com.zuhoocms.core.base.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -28,7 +27,7 @@ public class Faq extends BaseEntity {
     private Long companyId;
     @Column(length = 500)
     private String question;
-    @Lob
+    // No @Lob: on PostgreSQL it maps a String to a large-object oid and reading a TEXT value fails with "Bad value for type long".
     @Column(columnDefinition = "TEXT")
     private String answer;
     private String category;

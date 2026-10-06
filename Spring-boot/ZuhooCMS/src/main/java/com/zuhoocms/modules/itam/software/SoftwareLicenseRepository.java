@@ -32,16 +32,29 @@ public interface SoftwareLicenseRepository extends JpaRepository<SoftwareLicense
     @Query("SELECT s FROM SoftwareLicense s WHERE s.companyId = :companyId AND s.licenseExpiryDate BETWEEN :start AND :end")
     List<SoftwareLicense> findExpiringBetweenDates(@Param("companyId") Long companyId, @Param("start") LocalDate start, @Param("end") LocalDate end);
 
-    @Query("SELECT s FROM SoftwareLicense s WHERE s.companyId = :companyId AND s.licenseExpiryDate < :date AND s.licenseStatus != 'EXPIRED'")
+    /** Expiry passed OR status EXPIRED, so licences the scheduler already transitioned still show up. */
+    @Query("SELECT s FROM SoftwareLicense s WHERE s.companyId = :companyId " +
+           "AND (s.licenseExpiryDate < :date OR s.licenseStatus = com.zuhoocms.modules.itam.software.LicenseStatus.EXPIRED) " +
+           "ORDER BY s.licenseExpiryDate ASC NULLS LAST, s.id ASC")
     List<SoftwareLicense> findExpiredLicenses(@Param("companyId") Long companyId, @Param("date") LocalDate date);
+
+    /** Auto-renewing licences past expiry, renewed instead of marked EXPIRED; returns [id, companyId] only so each is reloaded under its row lock. */
+    @Query("""
+        SELECT s.id, s.companyId FROM SoftwareLicense s
+        WHERE s.autoRenew = true
+          AND s.renewalType IS NOT NULL
+          AND s.renewalType <> com.zuhoocms.modules.itam.software.LicenseRenewalType.PERPETUAL
+          AND s.licenseStatus IN :activeStatuses
+          AND s.licenseExpiryDate < :today
+          AND s.deleted = false
+        """)
+    List<Object[]> findAutoRenewDue(
+        @Param("activeStatuses") List<LicenseStatus> activeStatuses,
+        @Param("today") LocalDate today);
 
     long countByCompanyIdAndLicenseStatus(Long companyId, LicenseStatus status);
 
-    /**
-     * Licenses about to cross into the "expiring soon" window that haven't been
-     * flagged yet - queried BEFORE the bulk update below so we know exactly which
-     * ones just transitioned, to notify their company once (not every day).
-     */
+    /** Queried BEFORE the bulk update below so only the licences that just entered the window are notified, once rather than daily. */
     @Query("""
         SELECT s FROM SoftwareLicense s
         WHERE s.licenseStatus = :active
@@ -66,10 +79,7 @@ public interface SoftwareLicenseRepository extends JpaRepository<SoftwareLicense
         @Param("today") LocalDate today,
         @Param("cutoff") LocalDate cutoff);
 
-    /**
-     * Licenses whose expiry date has passed but are not yet marked EXPIRED -
-     * queried BEFORE the bulk update below for the same one-time-notify reason.
-     */
+    /** Past expiry but not yet EXPIRED; queried BEFORE the bulk update below for the same one-time-notify reason. */
     @Query("""
         SELECT s FROM SoftwareLicense s
         WHERE s.licenseStatus IN :activeStatuses

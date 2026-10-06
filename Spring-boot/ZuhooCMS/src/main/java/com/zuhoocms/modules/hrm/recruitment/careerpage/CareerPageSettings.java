@@ -10,12 +10,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/**
- * Per-company configuration of the PUBLIC careers page. The slug forms the
- * public URL (/careers/{slug}) and must be globally unique - it identifies the
- * tenant to unauthenticated visitors, so it is the only tenant key the public
- * endpoints accept.
- */
+/** Per-company configuration of the PUBLIC careers page; the slug forms /careers/{slug}, must be globally unique, and is the only tenant key the public endpoints accept. */
 @Entity
 @Table(name = "career_page_settings")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -36,8 +31,8 @@ public class CareerPageSettings extends BaseEntity {
     @Column(length = 9)
     private String brandColor;
 
-    /** Off = the public page 404s without touching the postings. */
+    /** Off = the public page 404s without touching the postings. New pages start unpublished. */
     @Builder.Default
     @Column(nullable = false)
-    private boolean published = true;
+    private boolean published = false;
 }

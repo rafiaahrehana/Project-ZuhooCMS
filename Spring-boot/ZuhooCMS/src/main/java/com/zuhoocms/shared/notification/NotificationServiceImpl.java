@@ -1,82 +1,41 @@
 package com.zuhoocms.shared.notification;
 
-import com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequest;
-import com.zuhoocms.auth.user.User;
-import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
-import com.zuhoocms.auth.user.UserRepository;
 import com.zuhoocms.security.SecurityUtil;
-import com.zuhoocms.shared.notification.device.FcmPushService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
 /**
- * Notification dispatch service.
- *
- * Persistence-first model:
- *   1. Persist the Notification to the DB — guarantees delivery even
- *      if the WebSocket connection is not active.
- *   2. Push via WebSocket to /user/{userId}/queue/notifications.
- *   3. On WebSocket reconnect, Angular polls GET /api/notifications?unreadOnly=true
- *      to catch any notifications missed during disconnection.
- *
- * All send() calls are @Async — they never block the calling thread.
- *
- * Deduplication: sendForServiceRequest() checks for an existing notification
- * of the same type + requestId + recipient before persisting, preventing
- * repeated SLA breach or assignment notifications.
+ * Persistence-first: the Notification is stored before the WebSocket push, so it survives an inactive connection and the client catches up via GET /api/notifications?unreadOnly=true.
+ * Sends never block the caller: scheduled after commit (AfterCommit) and run by NotificationDeliveryWorker, a separate bean so the @Async proxy applies.
+ * sendForServiceRequest() dedupes only an identical notification (recipient + request + type + title + message) from the last few minutes, so genuine repeat events still get through.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class NotificationServiceImpl implements NotificationService {
 
-    private final NotificationRepository  notificationRepository;
-    private final UserRepository          userRepository;
-    private final SimpMessagingTemplate   messagingTemplate;
-    private final SecurityUtil            securityUtil;
-    private final FcmPushService          fcmPushService;
+    private final NotificationRepository     notificationRepository;
+    private final NotificationDeliveryWorker deliveryWorker;
+    private final SecurityUtil               securityUtil;
 
     @Override
-    @Async
-    @Transactional
     public void send(CreateNotificationRequest request) {
-        User recipient = userRepository.findById(request.getRecipientId())
-            .orElseThrow(() -> new ResourceNotFoundException(
-                "Recipient not found: " + request.getRecipientId()));
-
-        Notification notification = buildNotification(request, recipient);
-        notificationRepository.save(notification);
-        pushWebSocket(notification, recipient.getId());
-        pushMobile(notification, recipient.getId());
+        Long companyId = resolveCompanyId(request);
+        AfterCommit.run(() -> deliveryWorker.deliver(request, companyId, false));
     }
 
     @Override
-    @Async
-    @Transactional
     public void sendForServiceRequest(CreateNotificationRequest request) {
-        if (request.getServiceRequestId() != null
-                && notificationRepository.existsByRecipientIdAndServiceRequestIdAndType(
-                    request.getRecipientId(), request.getServiceRequestId(), request.getType())) {
-            return;
-        }
-        User recipient = userRepository.findById(request.getRecipientId())
-            .orElseThrow(() -> new ResourceNotFoundException(
-                "Recipient not found: " + request.getRecipientId()));
-
-        Notification notification = buildNotification(request, recipient);
-        notificationRepository.save(notification);
-        pushWebSocket(notification, recipient.getId());
-        pushMobile(notification, recipient.getId());
+        Long companyId = resolveCompanyId(request);
+        AfterCommit.run(() -> deliveryWorker.deliver(request, companyId, true));
     }
 
     @Override
@@ -101,11 +60,10 @@ public class NotificationServiceImpl implements NotificationService {
     @Transactional
     public void markAsRead(Long notificationId) {
         Long userId = securityUtil.getCurrentUser().getId();
+        // Someone else's notification is reported exactly like a missing one, so ids can't be probed.
         Notification n = notificationRepository.findById(notificationId)
+            .filter(found -> found.getRecipient() != null && userId.equals(found.getRecipient().getId()))
             .orElseThrow(() -> new ResourceNotFoundException("Notification not found: " + notificationId));
-        if (!n.getRecipient().getId().equals(userId)) {
-            throw new BadRequestException("You can only mark your own notifications as read");
-        }
         if (!n.isRead()) {
             n.setRead(true);
             n.setReadAt(LocalDateTime.now());
@@ -119,49 +77,15 @@ public class NotificationServiceImpl implements NotificationService {
         notificationRepository.markAllReadForUser(userId, LocalDateTime.now());
     }
 
-    // ── Private helpers ───────────────────────────────────────────
-
-    private Notification buildNotification(CreateNotificationRequest request, User recipient) {
-        ServiceRequest sr = null;
-        if (request.getServiceRequestId() != null) {
-            sr = new ServiceRequest();
-            sr.setId(request.getServiceRequestId());
+    /** Explicit company on the request wins; otherwise fall back to the calling tenant (null for schedulers). */
+    private Long resolveCompanyId(CreateNotificationRequest request) {
+        if (request.getCompanyId() != null) {
+            return request.getCompanyId();
         }
-        return Notification.builder()
-            .type(request.getType())
-            .title(request.getTitle())
-            .message(request.getMessage())
-            .actionUrl(request.getActionUrl())
-            .recipient(recipient)
-            .companyId(request.getCompanyId())
-            .serviceRequest(sr)
-            .build();
-    }
-
-    private void pushWebSocket(Notification n, Long userId) {
         try {
-            messagingTemplate.convertAndSendToUser(
-                userId.toString(),
-                "/queue/notifications",
-                NotificationMapper.toResponse(n)
-            );
+            return securityUtil.getCurrentCompanyId();
         } catch (Exception e) {
-            // WebSocket push failure is non-critical — client will poll on reconnect
-            log.debug("WebSocket push failed for user {}: {}", userId, e.getMessage());
-        }
-    }
-
-    /**
-     * The WebSocket push above only reaches a client that is currently connected, which on a
-     * phone means the app is open. FCM is what reaches it when the app is backgrounded or
-     * killed. Same best-effort treatment: the row is already persisted, so a failure here costs
-     * a notification's immediacy, never its delivery.
-     */
-    private void pushMobile(Notification n, Long userId) {
-        try {
-            fcmPushService.push(n, userId);
-        } catch (Exception e) {
-            log.debug("Push notification failed for user {}: {}", userId, e.getMessage());
+            return null;
         }
     }
 }

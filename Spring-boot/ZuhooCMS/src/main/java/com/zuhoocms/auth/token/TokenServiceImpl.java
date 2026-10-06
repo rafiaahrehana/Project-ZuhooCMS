@@ -21,9 +21,6 @@ public class TokenServiceImpl implements TokenService {
     @Value("${jwt.refresh-expiration-ms:604800000}")
     private long refreshExpirationMs;
 
-    /**
-     * Create and persist a refresh token for a platformuser
-     */
     @Override
     public String createRefreshToken(User user) {
         revokeAllRefreshTokens(user);
@@ -40,9 +37,6 @@ public class TokenServiceImpl implements TokenService {
         return token.getToken();
     }
 
-    /**
-     * Validate a refresh token and return associated platformuser if valid
-     */
     @Override
     public User validateRefreshToken(String tokenValue) {
         return tokenRepository.findByTokenAndType(tokenValue, TokenType.REFRESH)
@@ -51,9 +45,6 @@ public class TokenServiceImpl implements TokenService {
                 .orElseThrow(() -> new BadRequestException("Invalid or expired refresh token"));
     }
 
-    /**
-     * Revoke a specific token
-     */
     @Override
     public void revokeRefreshToken(String tokenValue) {
         tokenRepository.findByTokenAndType(tokenValue, TokenType.REFRESH)
@@ -63,25 +54,16 @@ public class TokenServiceImpl implements TokenService {
                 });
     }
 
-    /**
-     * Revoke all refresh tokens for a platformuser (typically on logout)
-     */
     @Override
     public void revokeAllRefreshTokens(User user) {
         tokenRepository.revokeAllByUserIdAndType(user.getId(), TokenType.REFRESH);
     }
 
-    /**
-     * Clean up expired tokens (typically run as scheduled task)
-     */
     @Override
     public void deleteExpiredTokens() {
         tokenRepository.deleteExpiredBefore(LocalDateTime.now());
     }
 
-    /**
-     * Generate a unique token value
-     */
     private String generateTokenValue() {
         return java.util.UUID.randomUUID().toString();
     }

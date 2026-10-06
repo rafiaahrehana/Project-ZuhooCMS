@@ -6,12 +6,7 @@ import lombok.*;
 
 import java.util.List;
 
-/**
- * A node in a country's administrative hierarchy (Division/District/Upazila/Police
- * Station for BD, State/County/City/Precinct for US, etc). Every node belongs to a
- * {@link Country} via {@link #country} and, except for LEVEL1 nodes, has a
- * {@link #parent} one level up within this same table.
- */
+/** A node in a country's administrative hierarchy (Division/District/Upazila for BD, State/County/City for US); every node has a {@link #country} and, except LEVEL1, a {@link #parent} in this same table. */
 @Entity
 @Table(name = "location")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

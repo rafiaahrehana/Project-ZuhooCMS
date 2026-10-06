@@ -28,30 +28,30 @@ public class EmployeeBiometricData extends BaseEntity {
     private String templateFormat; // ISO19794, WSQ, JPEG for different formats
 
     private LocalDateTime enrollmentDate;
-    private String enrolledBy; // Admin/HR who enrolled
+    private String enrolledBy;
 
     @Builder.Default
-    private int enrollmentAttempts = 0; // How many attempts to get good template
+    private int enrollmentAttempts = 0;
 
     @Builder.Default
     private double enrollmentQualityScore = 0.0; // 0-100
 
     @Builder.Default
-    private boolean enrolled = true; // Enrollment status
+    private boolean enrolled = true;
 
     @Builder.Default
-    private boolean active = true; // Can be deactivated
+    private boolean active = true;
 
     private LocalDateTime lastVerifiedTime;
 
     @Builder.Default
-    private int successfulMatches = 0; // Successful verification count
+    private int successfulMatches = 0;
 
     @Builder.Default
-    private int failedMatches = 0; // Failed verification attempts
+    private int failedMatches = 0;
 
     private String notes;
-    private String securityNotes; // Enrollment security remarks
+    private String securityNotes;
 
     public void recordSuccessfulMatch() {
         this.successfulMatches++;

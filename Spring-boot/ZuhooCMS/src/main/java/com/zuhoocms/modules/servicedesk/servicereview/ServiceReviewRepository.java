@@ -8,29 +8,24 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
 
-/**
- * BUG-FIX SUMMARY
- * ───────────────
- * TENANT ISOLATION BUG — Two new scoped queries added:
- *
- * 1. findByCompanyId(companyId, pageable) — ServiceReviewServiceImpl.listAll() called
- *    findAll(pageable) which returns reviews from ALL tenants. Company A admin could
- *    see Company B's reviews. Replaced with companyId-scoped version.
- *
- * 2. findByIdAndCompanyId(id, companyId) — ServiceReviewServiceImpl.getById() called
- *    findById(id) with no tenant check. Any authenticated platformuser knowing an ID could
- *    read another tenant's review. Replaced with tenant-scoped lookup.
- *
- * Existing findByHubServiceId, findAverageRatingByServiceId are intentionally public-facing
- * (published reviews for a service) and don't need company scoping per the controller.
- */
+/** findByHubServiceId and findAverageRatingByServiceId are intentionally unscoped: they serve the public per-service view of published reviews. */
 public interface ServiceReviewRepository extends JpaRepository<ServiceReview, Long> {
 
-    Page<ServiceReview> findByCompanyId(Long companyId, Pageable pageable); // added
+    Page<ServiceReview> findByCompanyId(Long companyId, Pageable pageable);
 
-    Optional<ServiceReview> findByIdAndCompanyId(Long id, Long companyId);  // added
+    Optional<ServiceReview> findByIdAndCompanyId(Long id, Long companyId);
 
     Page<ServiceReview> findByHubServiceId(Long hubServiceId, Pageable pageable);
+
+    /** Tenant-scoped reviews of one service (the unscoped variant let any tenant walk service ids). */
+    Page<ServiceReview> findByCompanyIdAndHubServiceId(Long companyId, Long hubServiceId, Pageable pageable);
+
+    @Query("SELECT AVG(r.rating) FROM ServiceReview r " +
+            "WHERE r.company.id = :companyId " +
+            "AND r.hubService.id = :serviceId " +
+            "AND r.published = true AND r.deleted = false")
+    Optional<Double> findAverageRatingByCompanyIdAndServiceId(@Param("companyId") Long companyId,
+                                                              @Param("serviceId") Long serviceId);
 
     Optional<ServiceReview> findByServiceRequestIdAndClientId(Long serviceRequestId, Long clientId);
 
@@ -44,11 +39,7 @@ public interface ServiceReviewRepository extends JpaRepository<ServiceReview, Lo
             "AND r.published = true AND r.deleted = false")
     Optional<Double> findAverageRatingByCompanyId(@Param("companyId") Long companyId);
 
-    /**
-     * Average client rating of the work a given staff member delivered in a window.
-     * Feeds the customer-satisfaction KPI on a performance review. Unpublished
-     * reviews are excluded, matching the two queries above.
-     */
+    /** Average client rating for one staff member in a window (the performance-review CSAT KPI); unpublished reviews excluded, as above. */
     @Query("""
         SELECT AVG(r.rating) FROM ServiceReview r
         WHERE r.company.id = :companyId

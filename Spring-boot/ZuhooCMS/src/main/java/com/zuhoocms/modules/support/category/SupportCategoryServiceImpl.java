@@ -18,6 +18,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SupportCategoryServiceImpl implements SupportCategoryService {
 
+    private static final int MAX_NAME_LENGTH = 200;
+
     private final SupportCategoryRepository categoryRepository;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
@@ -25,15 +27,17 @@ public class SupportCategoryServiceImpl implements SupportCategoryService {
     @Override
     @Transactional
     public SupportCategoryResponse create(SupportCategoryRequest request) {
-        if (categoryRepository.findByCategoryName(request.getCategoryName()).isPresent()) {
-            throw new BadRequestException("Category name already exists: " + request.getCategoryName());
+        String name = requireName(request);
+        if (categoryRepository.existsByCategoryNameIgnoreCase(name)) {
+            throw new BadRequestException("Category name already exists: " + name);
         }
+        categoryRepository.releaseNameFromDeleted(name);
 
         SupportCategory category = SupportCategory.builder()
-                .categoryName(request.getCategoryName())
+                .categoryName(name)
                 .description(request.getDescription())
                 .icon(request.getIcon())
-                .active(true)
+                .active(request.isActive())
                 .build();
 
         category = categoryRepository.save(category);
@@ -79,14 +83,16 @@ public class SupportCategoryServiceImpl implements SupportCategoryService {
     public SupportCategoryResponse update(Long id, SupportCategoryRequest request) {
         SupportCategory category = categoryRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
+        String name = requireName(request);
 
-        if (!category.getCategoryName().equals(request.getCategoryName())) {
-            if (categoryRepository.findByCategoryName(request.getCategoryName()).isPresent()) {
-                throw new BadRequestException("Category name already exists");
+        if (!category.getCategoryName().equals(name)) {
+            if (categoryRepository.existsByCategoryNameIgnoreCaseAndIdNot(name, id)) {
+                throw new BadRequestException("Category name already exists: " + name);
             }
+            categoryRepository.releaseNameFromDeleted(name);
         }
 
-        category.setCategoryName(request.getCategoryName());
+        category.setCategoryName(name);
         category.setDescription(request.getDescription());
         category.setIcon(request.getIcon());
 
@@ -103,19 +109,35 @@ public class SupportCategoryServiceImpl implements SupportCategoryService {
         categoryRepository.save(category);
     }
 
+    /** Soft delete that also frees the name: category_name is UNIQUE, so a deleted row keeping it blocks ever recreating that category. */
     @Override
     @Transactional
     public SupportCategoryResponse delete(Long id) {
         SupportCategory category = categoryRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
+        SupportCategoryResponse response = SupportCategoryMapper.toResponse(category);
+        category.setCategoryName(truncate(category.getCategoryName()) + "#deleted-" + category.getId());
         category.softDelete();
         categoryRepository.save(category);
-        return SupportCategoryMapper.toResponse(category);
+        return response;
     }
 
-    // Categories are a shared platform-wide taxonomy - SUPPORT_AGENT/SUPPORT_MANAGER
-    // (platform staff with no CustomRole) triage tickets across every company and must
-    // not be blocked here; their existing role-based @PreAuthorize already gates access.
+    private static String requireName(SupportCategoryRequest request) {
+        String name = request.getEffectiveName();
+        if (name == null || name.isBlank()) {
+            throw new BadRequestException("Category name is required");
+        }
+        if (name.length() > MAX_NAME_LENGTH) {
+            throw new BadRequestException("Category name must be at most " + MAX_NAME_LENGTH + " characters");
+        }
+        return name;
+    }
+
+    private static String truncate(String value) {
+        return value.length() > MAX_NAME_LENGTH ? value.substring(0, MAX_NAME_LENGTH) : value;
+    }
+
+    // Categories are a platform-wide taxonomy: platform staff have no CustomRole and are gated by @PreAuthorize, so only the tenant caller is checked here.
     private void checkTenantPermission() {
         User current = securityUtil.getCurrentUser();
         if (current != null && !current.isPlatformUser()) {

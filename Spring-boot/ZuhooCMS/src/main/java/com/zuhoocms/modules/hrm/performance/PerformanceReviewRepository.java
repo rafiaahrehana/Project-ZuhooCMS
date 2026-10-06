@@ -18,8 +18,11 @@ public interface PerformanceReviewRepository extends JpaRepository<PerformanceRe
     Page<PerformanceReview> findByCompanyIdAndEmployeeId(
         Long companyId, Long employeeId, Pageable pageable);
 
-    // Cross-company (runs outside an HTTP request context - scheduler), matching
-    // the convention used by LicenseExpiryScheduler.
+    /** An employee's own view: only reviews that have completed the approval chain. */
+    Page<PerformanceReview> findByCompanyIdAndEmployeeIdAndFinalisedTrue(
+        Long companyId, Long employeeId, Pageable pageable);
+
+    // Cross-company: runs outside an HTTP request context (scheduler), as in LicenseExpiryScheduler.
     @Query("""
         SELECT r FROM PerformanceReview r
          WHERE r.finalised = false AND r.deleted = false

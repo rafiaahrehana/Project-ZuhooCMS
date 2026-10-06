@@ -21,7 +21,7 @@ import com.zuhoocms.enums.InvoiceStatus;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class ClientInvoice extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @Column(name = "invoice_number", nullable = false)
     private String invoiceNumber; // INV-2024-001
@@ -40,8 +40,7 @@ public class ClientInvoice extends BaseEntity {
     @Builder.Default
     private BigDecimal subtotal = BigDecimal.ZERO;
 
-    // If set, taxAmount is (re)computed from subtotal on every calculateTotals() call.
-    // Left null to keep the older "manually typed tax amount" behavior.
+    // If set, taxAmount is recomputed from subtotal on every calculateTotals(); null keeps the manually typed tax amount.
     private BigDecimal taxRatePercent;
     @Builder.Default
     private BigDecimal taxAmount = BigDecimal.ZERO;
@@ -53,9 +52,7 @@ public class ClientInvoice extends BaseEntity {
     @Column(length = 10)
     private String currency = "BDT";
 
-    // How many units of the company's base currency one unit of `currency` is worth
-    // at issue time. 1 for base-currency invoices. GL postings multiply by this so the
-    // ledger stays single-currency in base - see ClientInvoiceServiceImpl#toBase.
+    // Base-currency units per unit of `currency` at issue time (1 for base-currency invoices); GL postings multiply by this to stay single-currency - see ClientInvoiceServiceImpl#toBase.
     @Builder.Default
     @Column(precision = 15, scale = 6)
     private BigDecimal exchangeRate = BigDecimal.ONE;
@@ -66,8 +63,7 @@ public class ClientInvoice extends BaseEntity {
     @Builder.Default
     private BigDecimal paidAmount = BigDecimal.ZERO;
 
-    // Cumulative amount written off via credit notes - reduces the balance owed
-    // without reversing revenue/cash the way a full refund does.
+    // Cumulative amount written off via credit notes: reduces the balance owed without reversing revenue/cash the way a refund does.
     @Builder.Default
     private BigDecimal creditedAmount = BigDecimal.ZERO;
 
@@ -92,6 +88,22 @@ public class ClientInvoice extends BaseEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "service_request_id")
     private ServiceRequest serviceRequest;
+
+    /**
+     * True once the issue-time revenue posting (Dr AR / Cr Revenue [+ Cr Tax]) has reached the GL; without it a re-sent invoice booked its revenue twice.
+     * Nullable with a DB default so ddl-auto can add it to a populated table; pre-column invoices count as posted by their non-DRAFT status (see ClientInvoiceServiceImpl#isRevenuePosted).
+     */
+    @org.hibernate.annotations.ColumnDefault("false")
+    @Column(name = "revenue_posted")
+    private Boolean revenuePosted;
+
+    // Concurrent recordPaymentForCompany() calls both read the same outstanding balance and each added their payment on top, together overpaying the invoice.
+    // @Version puts the version in the UPDATE's WHERE clause, so the second committer fails with an optimistic-lock conflict (see GlobalExceptionHandler) instead of overpaying.
+    // columnDefinition backfills a default for existing rows, since ddl-auto=update alters this table in place rather than through a scripted migration.
+    @jakarta.persistence.Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
+    @Builder.Default
+    private Long version = 0L;
 
     public void calculateTotals() {
         if (items != null) {

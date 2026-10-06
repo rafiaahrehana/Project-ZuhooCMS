@@ -19,7 +19,14 @@ import java.time.LocalDateTime;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Expense extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
+
+    /** Optimistic-lock guard on the approve -> pay state machine: concurrent requests both pass the status guard and post their GL transaction twice, so the version check fails the second writer. */
+    @Version
+    @org.hibernate.annotations.ColumnDefault("0")
+    @Column(nullable = false)
+    @Builder.Default
+    private Long version = 0L;
 
     @Column(name = "expense_number", nullable = false)
     private String expenseNumber; // EXP-2024-001
@@ -36,13 +43,11 @@ public class Expense extends BaseEntity {
     private String description;
     private BigDecimal amount;
 
-    private String vendorName; //to whom payment
+    private String vendorName;
 
     private String category; // TRAVEL, MEALS, OFFICE_SUPPLIES, LICENSING, etc.
 
-    // The COA expense account this posts to when paid. Optional - falls back to the
-    // generic Operating Expenses account, so the category label alone no longer
-    // decides (or rather, fails to decide) where the money lands in the P&L.
+    // The COA expense account this posts to when paid; optional, falling back to generic Operating Expenses rather than letting the category label decide where it lands in the P&L.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "expense_account_id")
     private com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccount expenseAccount;
@@ -56,6 +61,11 @@ public class Expense extends BaseEntity {
     private ExpenseStatus status = ExpenseStatus.PENDING;
 
     private LocalDateTime submittedAt;
+
+    // Who keyed the expense in, which can differ from submittedBy when it is raised on a colleague's behalf; maker-checker bars the creator too, not just the named claimant. Nullable for pre-existing rows.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "created_by_user_id")
+    private User createdBy;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "approved_by_id")

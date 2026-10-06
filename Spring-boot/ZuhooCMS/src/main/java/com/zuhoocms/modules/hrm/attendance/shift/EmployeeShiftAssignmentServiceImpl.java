@@ -4,7 +4,9 @@ import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.auth.user.User;
 import com.zuhoocms.security.SecurityUtil;
+import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -35,10 +37,20 @@ public class EmployeeShiftAssignmentServiceImpl implements EmployeeShiftAssignme
         Shift shift = shiftRepository.findByIdAndCompanyId(request.getShiftId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Shift not found"));
 
-        // End any existing active assignments
+        LocalDate startDate = request.getAssignmentStartDate() != null
+                ? request.getAssignmentStartDate() : LocalDate.now();
+
+        // End the existing assignment the day before the new one starts, so past dates still resolve to the shift then in force.
         assignmentRepository.findByCompanyIdAndEmployeeIdAndActive(companyId, request.getEmployeeId())
                 .ifPresent(existing -> {
                     existing.setActive(false);
+                    LocalDate endDate = startDate.minusDays(1);
+                    if (existing.getAssignmentStartDate() != null && endDate.isBefore(existing.getAssignmentStartDate())) {
+                        endDate = existing.getAssignmentStartDate();
+                    }
+                    if (existing.getAssignmentEndDate() == null || endDate.isBefore(existing.getAssignmentEndDate())) {
+                        existing.setAssignmentEndDate(endDate);
+                    }
                     assignmentRepository.save(existing);
                 });
 
@@ -46,8 +58,7 @@ public class EmployeeShiftAssignmentServiceImpl implements EmployeeShiftAssignme
                 .companyId(companyId)
                 .employee(employee)
                 .shift(shift)
-                .assignmentStartDate(request.getAssignmentStartDate() != null ?
-                        request.getAssignmentStartDate() : LocalDate.now())
+                .assignmentStartDate(startDate)
                 .assignmentEndDate(request.getAssignmentEndDate())
                 .active(true)
                 .reason(request.getReason())
@@ -62,6 +73,7 @@ public class EmployeeShiftAssignmentServiceImpl implements EmployeeShiftAssignme
     @Override
     @Transactional(readOnly = true)
     public EmployeeShiftAssignmentResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.SHIFT_ASSIGNMENT_VIEW);
         Long companyId = securityUtil.getCurrentCompanyId();
         EmployeeShiftAssignment assignment = assignmentRepository.findByIdAndCompanyId(id, companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Assignment not found"));
@@ -80,6 +92,15 @@ public class EmployeeShiftAssignmentServiceImpl implements EmployeeShiftAssignme
     @Override
     @Transactional(readOnly = true)
     public EmployeeShiftAssignmentResponse getByEmployee(Long employeeId) {
+        if (!authorizationService.hasPermission(PermissionCode.SHIFT_ASSIGNMENT_VIEW)) {
+            User currentUser = securityUtil.getCurrentUser();
+            Employee self = currentUser != null
+                    ? employeeRepository.findByUserId(currentUser.getId()).orElse(null)
+                    : null;
+            if (self == null || employeeId == null || !self.getId().equals(employeeId)) {
+                throw new ForbiddenException("Access denied: you can only view your own shift assignment");
+            }
+        }
         Long companyId = securityUtil.getCurrentCompanyId();
         EmployeeShiftAssignment assignment = assignmentRepository
                 .findByCompanyIdAndEmployeeIdAndActive(companyId, employeeId)
@@ -90,6 +111,7 @@ public class EmployeeShiftAssignmentServiceImpl implements EmployeeShiftAssignme
     @Override
     @Transactional(readOnly = true)
     public Page<EmployeeShiftAssignmentResponse> getByShift(Long shiftId, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.SHIFT_ASSIGNMENT_VIEW);
         Long companyId = securityUtil.getCurrentCompanyId();
         return assignmentRepository.findByCompanyIdAndShiftIdAndActiveTrue(companyId, shiftId, pageable)
                 .map(EmployeeShiftAssignmentMapper::toResponse);

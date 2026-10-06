@@ -17,8 +17,11 @@ public interface BudgetRepository extends JpaRepository<Budget, Long> {
 
     boolean existsByCompanyIdAndCategoryIgnoreCaseAndFiscalYear(Long companyId, String category, int fiscalYear);
 
-    /** Every distinct category a budget has ever been set for, across all fiscal years - used to
-     * suggest matching category names when logging an expense, so free-text entry doesn't drift. */
+    /** Duplicate check for updates, ignoring the budget being edited so re-saving it unchanged isn't a clash with itself. */
+    boolean existsByCompanyIdAndCategoryIgnoreCaseAndFiscalYearAndIdNot(
+            Long companyId, String category, int fiscalYear, Long id);
+
+    /** Every distinct budgeted category across all fiscal years, used to suggest matching names when logging an expense so free-text entry doesn't drift. */
     @Query("SELECT DISTINCT b.category FROM Budget b WHERE b.companyId = :companyId AND b.deleted = false ORDER BY b.category")
     List<String> findDistinctCategoriesByCompanyId(@Param("companyId") Long companyId);
 }

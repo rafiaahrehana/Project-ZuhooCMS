@@ -16,13 +16,16 @@ public interface CreditNoteRepository extends JpaRepository<CreditNote, Long> {
 
     Optional<CreditNote> findByIdAndCompanyId(Long id, Long companyId);
 
-    /**
-     * Used for per-company sequential credit note number generation.
-     * Returns the highest credit note number for a given company and year prefix.
-     */
-    @Query("SELECT MAX(cn.creditNoteNumber) FROM CreditNote cn WHERE cn.companyId = :companyId AND cn.creditNoteNumber LIKE :prefix%")
-    Optional<String> findMaxCreditNoteNumberByCompanyAndPrefix(
+    /** Seed for the CN- counter: the highest number under this company/prefix including soft-deleted rows - native, so @SQLRestriction cannot hide one the unique constraint still counts. */
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(credit_note_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(credit_note_number FROM :start) AS BIGINT) END)
+        FROM credit_notes
+        WHERE company_id = :companyId AND credit_note_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxCreditNoteSequenceIncludingDeleted(
         @Param("companyId") Long companyId,
-        @Param("prefix") String prefix
+        @Param("prefix") String prefix,
+        @Param("start") int start
     );
 }

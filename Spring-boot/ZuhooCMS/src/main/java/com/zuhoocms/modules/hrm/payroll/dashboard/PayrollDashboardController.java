@@ -28,11 +28,7 @@ import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * The payroll module's landing view: this month's cost, who's been paid,
- * where the run stands, and a six-month net-payroll trend. Read-only
- * aggregation over data other endpoints own.
- */
+/** The payroll landing view: this month's cost, who's been paid, run status and a six-month trend - read-only aggregation over data other endpoints own. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/hr/payroll-dashboard")
@@ -51,6 +47,8 @@ public class PayrollDashboardController {
             @RequestParam(required = false) Integer month,
             @RequestParam(required = false) Integer year) {
         authorizationService.checkPermission(PermissionCode.PAYROLL_VIEW);
+        if (month != null) com.zuhoocms.modules.hrm.payroll.PayrollPeriods.validateMonth(month);
+        if (year != null) com.zuhoocms.modules.hrm.payroll.PayrollPeriods.validateYear(year);
         Long companyId = requireCompanyId();
         YearMonth period = (month != null && year != null)
             ? YearMonth.of(year, month) : YearMonth.now();
@@ -87,8 +85,7 @@ public class PayrollDashboardController {
         // Convention: salaries pay on the last day of the period.
         view.nextPayDate = period.atEndOfMonth();
 
-        // Six months ending at the selected period - PAID money only, so the
-        // trend shows what actually left the company.
+        // Six months ending at the selected period, PAID only, so the trend shows money that actually left.
         List<TrendPoint> trend = new ArrayList<>();
         for (int i = 5; i >= 0; i--) {
             YearMonth m = period.minusMonths(i);

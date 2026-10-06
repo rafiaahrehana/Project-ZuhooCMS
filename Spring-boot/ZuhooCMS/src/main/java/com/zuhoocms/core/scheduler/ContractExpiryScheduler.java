@@ -14,14 +14,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * Employee.contractEndDate is captured on hire/edit but, unlike probationEndDate
- * (which drives an HR dashboard reminder), passing it triggered nothing - no
- * status change, no alert - so payroll kept paying a contractor past their own
- * end date with nothing warning anyone. This only reminds; ending the
- * employment (deactivating, stopping pay) stays an explicit HR action via the
- * existing terminate/resign flow, same as every other status change in HR.
- */
+/** Reminds on a passing Employee.contractEndDate, which otherwise triggered nothing while payroll kept paying; ending the employment stays an explicit HR terminate/resign action. */
 @Component
 @RequiredArgsConstructor
 public class ContractExpiryScheduler {

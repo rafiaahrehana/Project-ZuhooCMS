@@ -46,7 +46,6 @@ public class Asset extends BaseEntity {
     private LocalDate assignedAt;
     private LocalDate returnedAt;
 
-    // IT Hardware Specific Fields (Nullable)
     private String ipAddress;
     private String macAddress;
     private String processorModel;
@@ -54,14 +53,10 @@ public class Asset extends BaseEntity {
     private String storageSize;
     private String operatingSystem;
 
-    // Disposal / Lifecycle
     private LocalDate disposalDate;
     private String disposalReason;
 
-    // Warranty-expiry scheduler bookkeeping: set once each alert has been sent
-    // so WarrantyExpiryScheduler notifies exactly once per state, not daily.
-    // Null again would mean "never alerted" - there's no reset path today, same
-    // as SoftwareLicense's expiry status doesn't reset without a new expiry date.
+    // Set once each alert is sent so WarrantyExpiryScheduler notifies once per state, not daily; null means "never alerted" and there is no reset path, as with SoftwareLicense expiry.
     private LocalDate warrantyExpiringSoonAlertedAt;
     private LocalDate warrantyExpiredAlertedAt;
 }

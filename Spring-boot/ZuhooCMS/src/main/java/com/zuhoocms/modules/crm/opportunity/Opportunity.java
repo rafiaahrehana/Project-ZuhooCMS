@@ -49,7 +49,7 @@ public class Opportunity extends BaseEntity {
     @Column(precision = 14, scale = 2)
     private BigDecimal amount;
 
-    // 0 - 100, defaults from stage, can be overridden per deal
+    // 0 - 100, defaults from stage, overridable per deal
     @Column(nullable = false)
     @Builder.Default
     private Integer probability = OpportunityStage.QUALIFICATION.getDefaultProbability();
@@ -65,8 +65,7 @@ public class Opportunity extends BaseEntity {
     @Column(length = 255)
     private String lostReason;
 
-    // The aggregatable why. lostReason above stays as the free-text detail;
-    // nullable because rows closed before the picklist existed have only text.
+    // The aggregatable why, with lostReason above as free-text detail; nullable because rows closed before the picklist existed have only text.
     @Enumerated(EnumType.STRING)
     @Column(length = 40)
     private com.zuhoocms.enums.LostReason lostReasonCode;
@@ -74,28 +73,22 @@ public class Opportunity extends BaseEntity {
     private LocalDateTime lastActivityAt;
     private LocalDateTime stageChangedAt;
 
-    // Set once CrmFollowUpScheduler notifies the owner this opportunity has gone
-    // stale; reset to null whenever new activity is logged, so the next
-    // staleness period notifies again instead of staying permanently silent.
+    // Set when CrmFollowUpScheduler notifies the owner, reset to null on new activity, so the next staleness period notifies again.
     private LocalDateTime staleNotifiedAt;
 
-    // The account this deal belongs to. Null until the deal is Won and a Client is
-    // created/linked - an Opportunity can now exist for a prospect that isn't a Client yet.
+    // The account this deal belongs to; null until the deal is Won and a Client is created or linked.
     @ManyToOne(fetch = FetchType.LAZY, optional = true)
     @JoinColumn(name = "client_id", nullable = true)
     private Client client;
 
-    // Primary contact person on the deal
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "contact_id")
     private ClientContact contact;
 
-    // Lead this opportunity originated from (if any)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "source_lead_id")
     private Lead sourceLead;
 
-    // Sales owner
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "owner_id")
     private Employee owner;

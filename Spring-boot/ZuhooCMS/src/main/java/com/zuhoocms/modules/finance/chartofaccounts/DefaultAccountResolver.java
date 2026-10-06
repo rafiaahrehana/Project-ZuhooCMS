@@ -7,12 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
-/**
- * Finds (or auto-creates) the standard Chart of Accounts entries that invoice/payment/
- * expense GL posting needs. Companies aren't seeded with a default chart of accounts,
- * so these are created on first use with fixed, well-known codes rather than requiring
- * manual setup before any transaction can post.
- */
+/** Finds or auto-creates the standard Chart of Accounts entries GL posting needs: companies are not seeded with a chart, so these appear on first use under fixed codes. */
 @Component
 @RequiredArgsConstructor
 public class DefaultAccountResolver {
@@ -60,8 +55,7 @@ public class DefaultAccountResolver {
 
     public ChartOfAccount cash(Long companyId) {
         ChartOfAccount account = resolve(companyId, CASH_CODE, CASH_NAME, AccountType.ASSET);
-        // Ensure the system cash account is always flagged as reconcilable against a bank
-        // statement, even if it existed before isBankAccount was introduced.
+        // Keep the system cash account flagged reconcilable even if it predates isBankAccount.
         if (!account.isBankAccount()) {
             account.setBankAccount(true);
             account = coaRepository.save(account);
@@ -122,33 +116,55 @@ public class DefaultAccountResolver {
     }
 
     /**
-     * If the company already has an account at this code (e.g. manually created before
-     * ever posting a transaction), reuse it - but only if its type matches what GL
-     * posting expects. A code reused with a mismatched type would silently misclassify
-     * every debit/credit posted against it (wrong side of the balance sheet, wrong sign
-     * in Trial Balance) with no error anywhere, so a mismatch fails loudly here instead.
+     * Reuses an existing account at this code, but only if its type matches: a mismatched type silently misclassifies every posting against it, so it fails loudly here.
+     * <p>Race: two first-time posters both saw "no account at code 1000" and one hit the (company_id, account_code) unique constraint, rolling back its whole business transaction - creation goes through INSERT ... ON CONFLICT DO NOTHING plus a re-read.
+     * <p>Soft-deleted code: the unique constraint covers soft-deleted rows, so a deleted "1000 Cash and Bank" made every later posting fail on a duplicate key; such a row is revived instead.
      */
     @Transactional
     public ChartOfAccount resolve(Long companyId, String code, String name, AccountType type) {
-        return coaRepository.findByCompanyIdAndAccountCode(companyId, code)
-                .map(existing -> {
-                    if (existing.getType() != type) {
-                        throw new BadRequestException(
-                                "Chart of Accounts code " + code + " already exists as \"" + existing.getAccountName()
-                                        + "\" (" + existing.getType() + "), but " + name + " requires " + type
-                                        + " - rename or recode the existing account before posting can continue.");
-                    }
-                    return existing;
-                })
-                .orElseGet(() -> coaRepository.save(ChartOfAccount.builder()
-                        .companyId(companyId)
-                        .accountCode(code)
-                        .accountName(name)
-                        .type(type)
-                        .balance(BigDecimal.ZERO)
-                        .active(true)
-                        .allowDirectPosting(true)
-                        .description("Auto-created default account")
-                        .build()));
+        ChartOfAccount existing = coaRepository.findByCompanyIdAndAccountCode(companyId, code).orElse(null);
+        if (existing != null) {
+            return requireMatchingType(existing, code, name, type);
+        }
+
+        // Nothing live at this code, but a soft-deleted row may still be holding it.
+        ChartOfAccount deleted = coaRepository.findByCompanyIdAndAccountCodeIncludingDeleted(companyId, code)
+                .orElse(null);
+        if (deleted != null) {
+            return reviveSoftDeleted(deleted, name, type);
+        }
+
+        // ON CONFLICT DO NOTHING: either we create it, or a concurrent caller already did.
+        coaRepository.insertIfAbsent(companyId, code, name, type.name());
+        ChartOfAccount created = coaRepository.findByCompanyIdAndAccountCode(companyId, code)
+                .orElseThrow(() -> new BadRequestException(
+                        "Could not resolve or create the default Chart of Accounts entry " + code + " (" + name + ")"));
+        return requireMatchingType(created, code, name, type);
+    }
+
+    private ChartOfAccount requireMatchingType(ChartOfAccount account, String code, String name, AccountType type) {
+        if (account.getType() != type) {
+            throw new BadRequestException(
+                    "Chart of Accounts code " + code + " already exists as \"" + account.getAccountName()
+                            + "\" (" + account.getType() + "), but " + name + " requires " + type
+                            + " - rename or recode the existing account before posting can continue.");
+        }
+        return account;
+    }
+
+    /** Revives a soft-deleted default account under its same id so historic GL rows still resolve; the balance is left alone because zeroing it would desync it from the ledger rows pointing here. */
+    private ChartOfAccount reviveSoftDeleted(ChartOfAccount account, String name, AccountType type) {
+        account.setDeleted(false);
+        account.setDeletedAt(null);
+        account.setAccountName(name);
+        account.setType(type);
+        account.setActive(true);
+        account.setHeaderAccount(false);
+        account.setAllowDirectPosting(true);
+        if (account.getBalance() == null) {
+            account.setBalance(BigDecimal.ZERO);
+        }
+        account.setDescription("Auto-created default account (restored)");
+        return coaRepository.save(account);
     }
 }

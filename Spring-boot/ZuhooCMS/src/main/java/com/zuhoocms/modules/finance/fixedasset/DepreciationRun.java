@@ -7,10 +7,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * One executed monthly depreciation run - its existence is the idempotency guard
- * (a month can only be run once per company).
- */
+/** One executed monthly depreciation run; its existence is the idempotency guard, so a month runs only once per company. */
 @Entity
 @Table(name = "depreciation_runs",
     uniqueConstraints = @UniqueConstraint(columnNames = {"company_id", "run_year", "run_month"}))

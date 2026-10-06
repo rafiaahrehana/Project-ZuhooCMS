@@ -3,6 +3,7 @@ package com.zuhoocms.modules.hrm.attendance.timesheet;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -14,7 +15,20 @@ public interface TimesheetRepository extends JpaRepository<Timesheet, Long> {
 
     Optional<Timesheet> findByIdAndCompanyId(Long id, Long companyId);
 
-    Optional<Timesheet> findByEmployeeIdAndWorkDate(Long employeeId, LocalDate workDate);
+    Optional<Timesheet> findByCompanyIdAndEmployeeIdAndWorkDate(Long companyId, Long employeeId, LocalDate workDate);
+
+    /**
+     * Un-deletes a soft-deleted row so log() can reuse it instead of hitting the unique constraint.
+     *
+     * <p>company_id is in the predicate because this is a NATIVE update: Hibernate's tenantFilter applies to HQL and
+     * Criteria only, so on employee_id alone this statement could reach across tenants entirely unfiltered.
+     */
+    @Modifying
+    @Query(nativeQuery = true, value = "update timesheets set deleted = false, deleted_at = null "
+        + "where company_id = :companyId and employee_id = :employeeId and work_date = :workDate and deleted = true")
+    int reviveDeleted(@Param("companyId") Long companyId,
+                      @Param("employeeId") Long employeeId,
+                      @Param("workDate") LocalDate workDate);
 
     Page<Timesheet> findByCompanyIdAndEmployeeId(Long companyId, Long employeeId, Pageable pageable);
 

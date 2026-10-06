@@ -26,6 +26,9 @@ public class CrmActivityRequest {
 
     private Boolean completed;
 
+    /** When to be reminded about this activity; without it no endpoint wrote followUpAt, though CrmFollowUpScheduler and the "Upcoming follow-ups" widget both read it. */
+    private LocalDateTime followUpAt;
+
     // At least one of clientId / opportunityId is required
     private Long clientId;
 

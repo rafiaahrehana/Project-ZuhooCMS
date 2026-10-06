@@ -26,11 +26,7 @@ public interface ClientService {
 
       ClientResponse update(Long id, UpdateClientRequest request);
 
-    /**
-     * Creates (or links) a CLIENT-role login for this client and emails a
-     * one-time set-password link. No password is ever chosen by staff, so none
-     * has to be communicated out of band.
-     */
+    /** Creates or links a CLIENT-role login and emails a one-time set-password link, so staff never choose a password that must be communicated out of band. */
     ClientResponse inviteToPortal(Long id);
 
     void delete(Long id);

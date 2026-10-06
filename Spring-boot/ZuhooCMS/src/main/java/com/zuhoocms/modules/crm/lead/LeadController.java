@@ -24,10 +24,7 @@ public class LeadController {
     private final LeadPdfService leadPdfService;
     private final LeadCsvImportService leadCsvImportService;
 
-    /**
-     * Bulk import from a CSV file. Permission is checked in the service;
-     * the response reports what was created and every skipped line with why.
-     */
+    /** Bulk CSV import; permission is checked in the service, and the response reports what was created and every skipped line with why. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @org.springframework.web.bind.annotation.PostMapping("/import")
     public org.springframework.http.ResponseEntity<LeadCsvImportService.ImportResult> importCsv(
@@ -53,7 +50,7 @@ public class LeadController {
     @PatchMapping("/{id}")
     public ResponseEntity<LeadResponse> update(
             @PathVariable Long id,
-            @Valid @RequestBody LeadRequest request) {
+            @Valid @RequestBody LeadUpdateRequest request) {
         return ResponseEntity.ok(leadService.updateLead(id, request));
     }
 
@@ -72,8 +69,9 @@ public class LeadController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "createdAt") String sortBy,
             @RequestParam(defaultValue = "DESC") String sortDirection) {
-        Sort.Direction direction = Sort.Direction.fromString(sortDirection);
-        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
+        // Whitelisted: sortBy handed to Sort.by threw PropertyReferenceException as a 500, and 500-vs-400 told a caller which fields exist (?sortBy=password was a probe).
+        Pageable pageable = com.zuhoocms.modules.crm.support.CrmSortWhitelist.pageable(
+                page, size, com.zuhoocms.modules.crm.support.CrmSortWhitelist.LEAD, sortBy, sortDirection);
         return ResponseEntity.ok(leadService.listLeads(status, pageable));
     }
 
@@ -172,16 +170,12 @@ public class LeadController {
         return ResponseEntity.ok(leadService.findStalLeads(pageable));
     }
 
-    // ==================== Lead Conversion ====================
-
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PatchMapping("/{id}/convert-to-opportunity")
     public ResponseEntity<com.zuhoocms.modules.crm.opportunity.OpportunityResponse> convertToOpportunity(
             @PathVariable Long id, @Valid @RequestBody ConvertToOpportunityRequest request) {
         return ResponseEntity.ok(leadService.convertToOpportunity(id, request));
     }
-
-    // ==================== Activity Timeline ====================
 
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PostMapping("/{leadId}/activities")
@@ -209,8 +203,6 @@ public class LeadController {
         leadService.deleteActivity(leadId, activityId);
         return ResponseEntity.noContent().build();
     }
-
-    // ==================== Dashboard Endpoints ====================
 
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @GetMapping("/stats/by-status/{status}")

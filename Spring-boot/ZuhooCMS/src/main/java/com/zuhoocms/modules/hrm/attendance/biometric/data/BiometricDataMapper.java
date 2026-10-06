@@ -14,7 +14,6 @@ public class BiometricDataMapper {
                 .deviceId(entity.getDevice() != null ? entity.getDevice().getId() : null)
                 .deviceName(entity.getDevice() != null ? entity.getDevice().getDeviceName() : null)
                 .biometricType(entity.getBiometricType())
-                .biometricTemplate(entity.getBiometricTemplate())
                 .templateFormat(entity.getTemplateFormat())
                 .enrollmentDate(entity.getEnrollmentDate())
                 .enrolledBy(entity.getEnrolledBy())

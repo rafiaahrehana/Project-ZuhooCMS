@@ -1,8 +1,6 @@
 package com.zuhoocms.enums;
 
 /**
- * Lifecycle state of a registered company.
- *
  * PENDING_VERIFICATION — registered, owner email not yet verified
  * TRIAL               — email verified, within 14-day trial window
  * ACTIVE              — paid subscription, fully operational

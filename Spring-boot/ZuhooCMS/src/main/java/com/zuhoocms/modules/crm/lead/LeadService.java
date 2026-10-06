@@ -8,7 +8,6 @@ import org.springframework.data.domain.Pageable;
 
 public interface LeadService {
 
-    // ==================== CRUD ====================
     LeadResponse createLead(LeadRequest request);
 
     LeadResponse getLeadById(Long id);
@@ -17,11 +16,11 @@ public interface LeadService {
 
     Page<LeadResponse> listMyLeads(Pageable pageable);
 
-    LeadResponse updateLead(Long id, LeadRequest request);
+    // LeadUpdateRequest, not LeadRequest: PATCH must not carry creation-only constraints (see LeadUpdateRequest).
+    LeadResponse updateLead(Long id, LeadUpdateRequest request);
 
     void deleteLead(Long id);
 
-    // ==================== Search & Filter ====================
     Page<LeadResponse> searchLeads(String keyword, Pageable pageable);
 
     Page<LeadResponse> filterLeads(LeadFilterRequest filter, Pageable pageable);
@@ -38,19 +37,15 @@ public interface LeadService {
 
     Page<LeadResponse> findStalLeads(Pageable pageable);
 
-    // ==================== Conversion ====================
-    // Converts a Qualified Lead into an Opportunity. No Client is created here -
-    // that happens when the Opportunity reaches Won (see OpportunityService.changeStage).
+    // No Client is created here: that happens when the Opportunity reaches Won (see OpportunityService.changeStage).
     com.zuhoocms.modules.crm.opportunity.OpportunityResponse convertToOpportunity(Long id, ConvertToOpportunityRequest request);
 
-    // ==================== Activity Timeline ====================
     com.zuhoocms.modules.crm.activity.CrmActivityResponse addActivity(Long leadId, com.zuhoocms.modules.crm.activity.CrmActivityRequest request);
 
     Page<com.zuhoocms.modules.crm.activity.CrmActivityResponse> getActivities(Long leadId, Pageable pageable);
 
     void deleteActivity(Long leadId, Long activityId);
 
-    // ==================== Dashboard & Reporting ====================
     long countLeadsByStatus(LeadStatus status);
 
     long countActiveLeads();

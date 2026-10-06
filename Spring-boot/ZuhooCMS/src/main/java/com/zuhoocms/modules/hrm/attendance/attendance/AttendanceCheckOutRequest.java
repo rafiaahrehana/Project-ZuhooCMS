@@ -14,11 +14,17 @@ public class AttendanceCheckOutRequest {
 
     private AttendanceMethod method;
 
-    private Long deviceId;       // If biometric device used for check-out
+    private Long deviceId;
 
-    private String latitude;     // If GPS-based check-out
+    private String latitude;
     private String longitude;
     private String location;
 
-    private String earlyDepartureReason;  // Optional reason if leaving before shift end
+    private String earlyDepartureReason;
+
+    /**
+     * The check-out selfie, as one of this app's own uploaded-file URLs. Never required, unlike the check-in
+     * selfie: somebody already inside for the day must not be locked out because a camera failed.
+     */
+    private String selfieUrl;
 }

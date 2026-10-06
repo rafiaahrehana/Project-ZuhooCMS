@@ -20,13 +20,13 @@ public class SalaryStructureController {
     private final SalaryStructureService salaryStructureService;
 
     @PostMapping
-    public ResponseEntity<SalaryStructureResponse> create(@RequestBody SalaryStructureRequest request) {
+    public ResponseEntity<SalaryStructureResponse> create(@jakarta.validation.Valid @RequestBody SalaryStructureRequest request) {
         return new ResponseEntity<>(salaryStructureService.create(request), HttpStatus.CREATED);
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<SalaryStructureResponse> update(
-            @PathVariable Long id, @RequestBody SalaryStructureRequest request) {
+            @PathVariable Long id, @jakarta.validation.Valid @RequestBody SalaryStructureRequest request) {
         return ResponseEntity.ok(salaryStructureService.update(id, request));
     }
 

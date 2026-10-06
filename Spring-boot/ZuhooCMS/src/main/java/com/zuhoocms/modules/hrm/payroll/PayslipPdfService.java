@@ -17,14 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Renders a payslip as a PDF, laid out the way a payslip conventionally is:
- * earnings on the left, deductions on the right, and the net as the one figure
- * that stands out.
- *
- * Built on the same openhtmltopdf pipeline as InvoicePdfService so there is one
- * way documents are produced in this codebase rather than two.
- */
+/** Renders a payslip PDF (earnings left, deductions right, net highlighted) on the same openhtmltopdf pipeline as InvoicePdfService. */
 @Service
 @lombok.RequiredArgsConstructor
 public class PayslipPdfService {
@@ -71,9 +64,7 @@ public class PayslipPdfService {
 
         String companyAddress = company != null ? CompanyMapper.formatAddress(company.getLocationDetail()) : null;
 
-        // Earnings. Every standard line prints even at 0.00 - a payslip is a
-        // statement of the full pay policy, and a missing row reads as an
-        // omission rather than a zero.
+        // Every standard line prints even at 0.00: a missing row reads as an omission rather than a zero.
         List<String[]> earnings = new ArrayList<>();
         addLine(earnings, "Basic Salary", p.getBasicSalary(), currency);
         addLine(earnings, "House Rent", p.getHouseRent(), currency);
@@ -89,8 +80,7 @@ public class PayslipPdfService {
             }
             earnings.add(new String[]{label, money(p.getBillablePay(), currency)});
         }
-        // Overtime shows its own working: an employee's first question about an
-        // overtime line is always how many hours and at what rate.
+        // Overtime shows its own working - hours and rate - since that is the first question asked about the line.
         {
             String label = "Overtime";
             if (isPositive(p.getOvertimePay()) && isPositive(p.getOvertimeHours())) {
@@ -121,11 +111,10 @@ public class PayslipPdfService {
         }
         appendComponentLines(deductions, p, currency, false);
 
-        BigDecimal grossTotal = sum(earnings.size(), p);
+        BigDecimal grossTotal = totalEarnings(p);
         BigDecimal deductionTotal = totalDeductions(p);
 
-        // The two columns are rendered as one table so the rows stay aligned
-        // regardless of which side has more entries.
+        // Both columns render as one table so rows stay aligned when one side has more entries.
         int rowCount = Math.max(earnings.size(), deductions.size());
         StringBuilder body = new StringBuilder();
         for (int i = 0; i < rowCount; i++) {
@@ -255,13 +244,7 @@ public class PayslipPdfService {
         return v != null && v.compareTo(BigDecimal.ZERO) > 0;
     }
 
-    /**
-     * Itemizes the frozen component earnings/deductions BY NAME (Internet
-     * Allowance, Loan Deduction...) when the structure's current extra
-     * components still sum to what this payroll froze. If the structure
-     * changed since, restating today's names against an old payroll would
-     * lie - so it falls back to one honest lump line.
-     */
+    /** Itemizes frozen components by name only while the structure still sums to the frozen total; otherwise falls back to one lump line rather than restating today's names on an old payroll. */
     private void appendComponentLines(java.util.List<String[]> target, Payroll p,
                                       String currency, boolean earningsSide) {
         var type = earningsSide
@@ -297,7 +280,7 @@ public class PayslipPdfService {
     }
 
     /** Gross is recomputed from the components rather than stored, so it always ties to the lines printed above it. */
-    private BigDecimal sum(int ignored, Payroll p) {
+    private BigDecimal totalEarnings(Payroll p) {
         return nz(p.getBasicSalary()).add(nz(p.getHouseRent())).add(nz(p.getMedicalAllowance()))
                 .add(nz(p.getTransportAllowance())).add(nz(p.getFoodAllowance()))
                 .add(nz(p.getSpecialAllowance())).add(nz(p.getBonus()))

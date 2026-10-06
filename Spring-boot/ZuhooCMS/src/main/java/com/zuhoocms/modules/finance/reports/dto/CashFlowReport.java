@@ -9,11 +9,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * Direct-method cash flow for a period: where cash actually moved, grouped by
- * source (customer payments, expenses, payroll, other ledger activity), tying the
- * Cash account's opening balance to its closing balance for the period.
- */
+/** Direct-method cash flow for a period, grouped by source, tying the Cash account's opening balance to its closing balance. */
 @Data
 @Builder
 @NoArgsConstructor

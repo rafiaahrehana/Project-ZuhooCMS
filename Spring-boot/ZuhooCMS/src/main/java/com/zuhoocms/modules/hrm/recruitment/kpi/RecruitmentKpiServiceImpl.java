@@ -2,11 +2,12 @@ package com.zuhoocms.modules.hrm.recruitment.kpi;
 
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.core.base.SoftDeletedProxies;
 import com.zuhoocms.enums.ApplicationSource;
 import com.zuhoocms.enums.ApplicationStatus;
 import com.zuhoocms.enums.AtsParseStatus;
 import com.zuhoocms.enums.JobPostingStatus;
-import com.zuhoocms.modules.hrm.recruitment.candidate.CandidateRepository;
+import com.zuhoocms.modules.hrm.employee.EmployeeUserResolver;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplication;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRepository;
 import com.zuhoocms.modules.hrm.recruitment.jobpost.JobPosting;
@@ -32,32 +33,14 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Aggregates entirely in Java over one fetch each of applications/postings/
- * offers - matches HrDashboardServiceImpl's live-aggregation approach, and
- * at this app's scale (dozens to low hundreds of applications per company)
- * is simpler and cheaper than N per-breakdown queries or native SQL, which
- * this codebase doesn't use anywhere.
+ * Aggregates entirely in Java over one fetch each of applications/postings/offers, as HrDashboardServiceImpl does: simpler and cheaper than N per-breakdown queries at this app's scale.
  *
- * "Reached stage X" is inferred from an application's CURRENT status via
- * PIPELINE_ORDER, not from a stage-history audit trail (none exists) - a
- * candidate rejected after interview 2 still only shows as REJECTED today,
- * so REJECTED/WITHDRAWN are excluded from "reached" counts rather than
- * guessed at.
+ * "Reached stage X" is inferred from the CURRENT status via PIPELINE_ORDER, since no stage-history audit trail exists; REJECTED/WITHDRAWN are excluded from "reached" counts rather than guessed at.
  *
- * Date filtering (from/to, both optional): defines the "applied in this
- * period" window on JobApplication.createdAt. Every derived figure -
- * candidates, funnel, source breakdown, job/recruiter tables, top
- * candidates, offer acceptance - is recomputed from that filtered set, so
- * the whole report stays internally consistent (an offer only counts if the
- * application it belongs to fell in the window). openPositions and
- * hiresThisMonth are deliberately NOT filtered - they're "right now" pulse
- * figures, not period activity, same distinction a live dashboard vs a
- * dated report would draw.
+ * Date filtering (from/to, optional) defines an "applied in this period" window on JobApplication.createdAt, and every derived figure is recomputed from that filtered set so the report stays internally consistent.
+ * openPositions and hiresThisMonth are deliberately NOT filtered - they are "right now" pulse figures, not period activity.
  *
- * minScore (optional) only narrows the Top Evaluated Candidates list, not
- * the rest of the report - most applications are never scored at all, so
- * treating an unset score as "excluded" everywhere else would silently drop
- * most of the pipeline out of the funnel/job/recruiter figures.
+ * minScore only narrows the Top Evaluated Candidates list: most applications are never scored, so excluding unset scores elsewhere would drop most of the pipeline out of the other figures.
  */
 @Service
 @RequiredArgsConstructor
@@ -65,7 +48,6 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
 
     private final JobApplicationRepository applicationRepository;
     private final JobPostingRepository jobPostingRepository;
-    private final CandidateRepository candidateRepository;
     private final JobOfferRepository jobOfferRepository;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
@@ -91,32 +73,43 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
         authorizationService.checkPermission(PermissionCode.RECRUITMENT_REPORT_VIEW);
         Long companyId = requireCompanyId();
 
-        List<JobApplication> allApplications = applicationRepository.findByCompanyId(companyId);
-        List<JobPosting> postings = jobPostingRepository.findByCompanyId(companyId);
-        List<JobOffer> allOffers = jobOfferRepository.findByCompanyId(companyId);
+        // Fetch-joined: the associations the report reads would each cost one query per row as plain lazy loads.
+        List<JobApplication> allApplications = applicationRepository.findAllForKpis(companyId);
+        List<JobPosting> postings = jobPostingRepository.findAllForKpis(companyId);
+        List<JobOffer> allOffers = jobOfferRepository.findAllForKpis(companyId);
+        Set<Long> interviewedIds = new java.util.HashSet<>(applicationRepository.findInterviewedApplicationIds(companyId));
+        // Candidate FKs off the column, NOT off the fetched association: findAllForKpis left-join-fetches the
+        // candidate and @SQLRestriction("deleted = false") nulls it for a soft-deleted candidate, which made the
+        // distinct-candidate count blind to the very applications it was counting.
+        Map<Long, Long> candidateIdByApplication = candidateIdsByApplication(companyId);
 
         List<JobApplication> applications = filterByAppliedDate(allApplications, from, to);
         Set<Long> inRangeApplicationIds = applications.stream().map(JobApplication::getId).collect(Collectors.toSet());
         List<JobOffer> offers = allOffers.stream()
-            .filter(o -> o.getJobApplication() != null && inRangeApplicationIds.contains(o.getJobApplication().getId()))
+            .filter(o -> SoftDeletedProxies.id(o.getJobApplication()) != null
+                && inRangeApplicationIds.contains(SoftDeletedProxies.id(o.getJobApplication())))
             .toList();
 
         List<JobApplication> hired = applications.stream()
             .filter(a -> a.getStatus() == ApplicationStatus.HIRED && a.getConvertedAt() != null)
             .toList();
-        // "This month" hires are a live pulse figure and stay real-time even
-        // when a from/to filter narrows everything else - it uses allApplications,
-        // not the filtered set, on purpose.
+        // "This month" hires are a live pulse figure, so this uses allApplications rather than the from/to-filtered set on purpose.
         List<JobApplication> allHired = allApplications.stream()
             .filter(a -> a.getStatus() == ApplicationStatus.HIRED && a.getConvertedAt() != null)
             .toList();
-        long reachedInterview = applications.stream().filter(this::reachedInterview).count();
+        // "Interviewed" = at/after the interview stage OR has a completed interview on record; the status-only rule dropped everyone rejected after interview, overstating the interview-to-hire rate.
+        long reachedInterview = applications.stream()
+            .filter(a -> reachedInterview(a) || interviewedIds.contains(a.getId()))
+            .count();
         YearMonth thisMonth = YearMonth.now();
 
         return RecruitmentKpiResponse.builder()
             .openPositions(postings.stream().filter(p -> p.getStatus() == JobPostingStatus.OPEN).count())
+            // Distinct people behind the applications in range, deleted candidate records included: their applications
+            // still happened and must still be counted. Applications with no candidate row at all (careers-page
+            // submissions predating the Candidate backfill) have no person to count and are skipped, as before.
             .totalCandidates(applications.stream()
-                .map(a -> a.getCandidate() != null ? a.getCandidate().getId() : null)
+                .map(a -> candidateIdByApplication.get(a.getId()))
                 .filter(java.util.Objects::nonNull).distinct().count())
             .totalApplications(applications.size())
             .hiresThisMonth(allHired.stream().filter(a -> YearMonth.from(a.getConvertedAt()).equals(thisMonth)).count())
@@ -133,6 +126,14 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
             .recruiterKpis(recruiterKpis(postings, applications, offers))
             .topCandidates(topCandidates(applications, minScore))
             .build();
+    }
+
+    private Map<Long, Long> candidateIdsByApplication(Long companyId) {
+        Map<Long, Long> byApplication = new java.util.HashMap<>();
+        for (Object[] row : applicationRepository.findCandidateIdsByApplication(companyId)) {
+            if (row[1] != null) byApplication.put((Long) row[0], (Long) row[1]);
+        }
+        return byApplication;
     }
 
     private List<JobApplication> filterByAppliedDate(List<JobApplication> apps, LocalDate from, LocalDate to) {
@@ -156,10 +157,11 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
     }
 
     private long inOfferSubPipeline(List<JobApplication> apps) {
-        return apps.stream().filter(a -> {
-            Integer order = PIPELINE_ORDER.get(a.getStatus());
-            return order != null && order >= 6 && order <= 7;
-        }).count();
+        return inStage(apps, RecruitmentPipelineStages.OFFER);
+    }
+
+    private long inStage(List<JobApplication> apps, String stage) {
+        return apps.stream().filter(a -> stage.equals(RecruitmentPipelineStages.stageOf(a.getStatus()))).count();
     }
 
     private Double rate(long numerator, long denominator) {
@@ -180,7 +182,7 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
     private Double avgTimeToFillDays(List<JobApplication> hired) {
         List<Long> days = new ArrayList<>();
         for (JobApplication a : hired) {
-            JobPosting posting = a.getJobPosting();
+            JobPosting posting = SoftDeletedProxies.loadable(a.getJobPosting());
             if (posting == null || posting.getCreatedAt() == null || a.getConvertedAt() == null) continue;
             days.add(ChronoUnit.DAYS.between(posting.getCreatedAt().toLocalDate(), a.getConvertedAt().toLocalDate()));
         }
@@ -204,15 +206,10 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
     }
 
     private List<RecruitmentKpiResponse.FunnelStage> funnel(List<JobApplication> applications) {
-        long applied = count(applications, ApplicationStatus.APPLIED);
-        long screening = count(applications, ApplicationStatus.SCREENING) + count(applications, ApplicationStatus.SHORTLISTED);
-        long interview = count(applications, ApplicationStatus.INTERVIEW_SCHEDULED)
-            + count(applications, ApplicationStatus.INTERVIEWED) + count(applications, ApplicationStatus.SELECTED);
-        long offer = inOfferSubPipeline(applications);
-        long hired = count(applications, ApplicationStatus.HIRED);
-        return List.of(
-            stage("Applied", applied), stage("Screening", screening), stage("Interview", interview),
-            stage("Offer", offer), stage("Hired", hired));
+        // Same grouping as the HR dashboard pipeline - see RecruitmentPipelineStages.
+        return RecruitmentPipelineStages.STAGES.stream()
+            .map(name -> stage(name, inStage(applications, name)))
+            .toList();
     }
 
     private RecruitmentKpiResponse.FunnelStage stage(String name, long count) {
@@ -232,17 +229,23 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
                 .count(e.getValue())
                 .percent(total == 0 ? 0 : Math.round(e.getValue() * 1000.0 / total) / 10.0)
                 .build())
-            .sorted((a, b) -> Long.compare(b.getCount(), a.getCount()))
+            // Count descending, then source name: without the tiebreak equally-sized sources swap places
+            // between reports and the chart legend reorders itself for no reason.
+            .sorted(java.util.Comparator
+                .comparingLong(RecruitmentKpiResponse.SourceSlice::getCount).reversed()
+                .thenComparing(RecruitmentKpiResponse.SourceSlice::getSource,
+                    java.util.Comparator.nullsLast(String::compareTo)))
             .toList();
     }
 
     private List<RecruitmentKpiResponse.JobKpi> jobKpis(List<JobPosting> postings, List<JobApplication> applications, List<JobOffer> offers) {
+        // Grouped on the FK read off the proxy, never on getJobPosting().getId(): a proxy to a soft-deleted posting throws when touched.
         Map<Long, List<JobApplication>> appsByPosting = applications.stream()
-            .filter(a -> a.getJobPosting() != null)
-            .collect(Collectors.groupingBy(a -> a.getJobPosting().getId()));
+            .filter(a -> SoftDeletedProxies.id(a.getJobPosting()) != null)
+            .collect(Collectors.groupingBy(a -> SoftDeletedProxies.id(a.getJobPosting())));
         Map<Long, List<JobOffer>> offersByPosting = offers.stream()
-            .filter(o -> o.getJobApplication() != null && o.getJobApplication().getJobPosting() != null)
-            .collect(Collectors.groupingBy(o -> o.getJobApplication().getJobPosting().getId()));
+            .filter(o -> offerPostingId(o) != null)
+            .collect(Collectors.groupingBy(RecruitmentKpiServiceImpl::offerPostingId));
 
         List<RecruitmentKpiResponse.JobKpi> result = new ArrayList<>();
         for (JobPosting posting : postings) {
@@ -257,8 +260,7 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
                 .status(posting.getStatus().name())
                 .applications(apps.size())
                 .shortlisted(count(apps, ApplicationStatus.SHORTLISTED))
-                .interviews(count(apps, ApplicationStatus.INTERVIEW_SCHEDULED) + count(apps, ApplicationStatus.INTERVIEWED)
-                    + count(apps, ApplicationStatus.SELECTED))
+                .interviews(inStage(apps, RecruitmentPipelineStages.INTERVIEW))
                 .offers(inOfferSubPipeline(apps))
                 .hired(hired.size())
                 .timeToFillDays(avgTimeToFillDays(hired))
@@ -271,33 +273,32 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
 
     private List<RecruitmentKpiResponse.RecruiterKpi> recruiterKpis(List<JobPosting> postings, List<JobApplication> applications, List<JobOffer> offers) {
         Map<Long, List<JobPosting>> postingsByRecruiter = postings.stream()
-            .filter(p -> p.getAssignedRecruiter() != null)
-            .collect(Collectors.groupingBy(p -> p.getAssignedRecruiter().getId()));
+            .filter(p -> SoftDeletedProxies.id(p.getAssignedRecruiter()) != null)
+            .collect(Collectors.groupingBy(p -> SoftDeletedProxies.id(p.getAssignedRecruiter())));
 
         List<RecruitmentKpiResponse.RecruiterKpi> result = new ArrayList<>();
         for (Map.Entry<Long, List<JobPosting>> entry : postingsByRecruiter.entrySet()) {
             List<JobPosting> recruiterPostings = entry.getValue();
             java.util.Set<Long> postingIds = recruiterPostings.stream().map(JobPosting::getId).collect(Collectors.toSet());
             List<JobApplication> apps = applications.stream()
-                .filter(a -> a.getJobPosting() != null && postingIds.contains(a.getJobPosting().getId()))
+                .filter(a -> postingIds.contains(SoftDeletedProxies.id(a.getJobPosting())))
                 .toList();
             List<JobOffer> recruiterOffers = offers.stream()
-                .filter(o -> o.getJobApplication() != null && o.getJobApplication().getJobPosting() != null
-                    && postingIds.contains(o.getJobApplication().getJobPosting().getId()))
+                .filter(o -> postingIds.contains(offerPostingId(o)))
                 .toList();
             List<JobApplication> hired = apps.stream()
                 .filter(a -> a.getStatus() == ApplicationStatus.HIRED && a.getConvertedAt() != null)
                 .toList();
-            com.zuhoocms.modules.hrm.employee.Employee recruiter = recruiterPostings.get(0).getAssignedRecruiter();
+            // displayName(), not recruiter.getUser().getFullName(): both the employee and their login are soft-deleted on termination, and either proxy throws when touched.
+            String recruiterName = EmployeeUserResolver.displayName(recruiterPostings.get(0).getAssignedRecruiter());
 
             result.add(RecruitmentKpiResponse.RecruiterKpi.builder()
                 .recruiterId(entry.getKey())
-                .recruiterName(recruiter.getUser() != null ? recruiter.getUser().getFullName() : null)
+                .recruiterName(recruiterName)
                 .jobsManaged(recruiterPostings.size())
                 .applications(apps.size())
                 .shortlisted(count(apps, ApplicationStatus.SHORTLISTED))
-                .interviews(count(apps, ApplicationStatus.INTERVIEW_SCHEDULED) + count(apps, ApplicationStatus.INTERVIEWED)
-                    + count(apps, ApplicationStatus.SELECTED))
+                .interviews(inStage(apps, RecruitmentPipelineStages.INTERVIEW))
                 .offers(inOfferSubPipeline(apps))
                 .hires(hired.size())
                 .avgTimeToHireDays(avgDays(hired, JobApplication::getCreatedAt, JobApplication::getConvertedAt))
@@ -305,30 +306,57 @@ public class RecruitmentKpiServiceImpl implements RecruitmentKpiService {
                 .avgAtsMatchScore(avgAtsMatchScore(apps))
                 .build());
         }
-        result.sort((a, b) -> Long.compare(b.getHires(), a.getHires()));
+        // Hires descending, then recruiter name - the same tiebreak sourceBreakdown() got, and for the same reason:
+        // without it recruiters on equal hire counts swapped places between two requests and the leaderboard flickered.
+        result.sort(java.util.Comparator
+            .comparingLong(RecruitmentKpiResponse.RecruiterKpi::getHires).reversed()
+            .thenComparing(RecruitmentKpiResponse.RecruiterKpi::getRecruiterName,
+                java.util.Comparator.nullsLast(String::compareTo))
+            // Two recruiters can share a display name; the id makes the order total, so it cannot depend on the
+            // HashMap iteration order the rows were built in.
+            .thenComparing(RecruitmentKpiResponse.RecruiterKpi::getRecruiterId,
+                java.util.Comparator.nullsLast(Long::compareTo)));
         return result;
     }
 
     private static final int TOP_CANDIDATES_LIMIT = 10;
-    // A minScore threshold already bounds the result set meaningfully - a
-    // recruiter asking "who's above 90?" wants everyone above 90, not just
-    // the first 10 of them.
+    // A minScore threshold already bounds the result set: "who's above 90?" wants everyone above 90, not just the first 10.
     private static final int TOP_CANDIDATES_LIMIT_WITH_MIN_SCORE = 50;
 
+    /*
+     * Named from the candidate where it is readable, else from applicantName on the application row: findAllForKpis
+     * left-join-fetches the candidate, and BaseEntity's @SQLRestriction("deleted = false") turns that into a null
+     * association once the candidate is soft-deleted, which silently dropped the row out of this list.
+     * Applications with no candidate at all and no recorded name are still skipped, as before.
+     */
     private List<RecruitmentKpiResponse.TopCandidate> topCandidates(List<JobApplication> applications, Double minScore) {
         int limit = minScore != null ? TOP_CANDIDATES_LIMIT_WITH_MIN_SCORE : TOP_CANDIDATES_LIMIT;
         return applications.stream()
-            .filter(a -> a.getOverallScore() != null && a.getCandidate() != null)
+            .filter(a -> a.getOverallScore() != null && candidateName(a) != null)
             .filter(a -> minScore == null || a.getOverallScore() >= minScore)
             .sorted((a, b) -> Double.compare(b.getOverallScore(), a.getOverallScore()))
             .limit(limit)
-            .map(a -> RecruitmentKpiResponse.TopCandidate.builder()
-                .applicationId(a.getId())
-                .candidateName(a.getCandidate().getName())
-                .jobTitle(a.getJobPosting() != null ? a.getJobPosting().getTitle() : null)
-                .overallScore(a.getOverallScore())
-                .build())
+            .map(a -> {
+                JobPosting posting = SoftDeletedProxies.loadable(a.getJobPosting());
+                return RecruitmentKpiResponse.TopCandidate.builder()
+                    .applicationId(a.getId())
+                    .candidateName(candidateName(a))
+                    .jobTitle(posting != null ? posting.getTitle() : null)
+                    .overallScore(a.getOverallScore())
+                    .build();
+            })
             .toList();
+    }
+
+    /** Posting id behind an offer, read off the FKs so neither a soft-deleted application nor a soft-deleted posting throws. */
+    private static Long offerPostingId(JobOffer o) {
+        JobApplication a = SoftDeletedProxies.loadable(o.getJobApplication());
+        return a == null ? null : SoftDeletedProxies.id(a.getJobPosting());
+    }
+
+    private static String candidateName(JobApplication a) {
+        var candidate = SoftDeletedProxies.loadable(a.getCandidate());
+        return candidate != null && candidate.getName() != null ? candidate.getName() : a.getApplicantName();
     }
 
     private Long requireCompanyId() {

@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -15,6 +16,8 @@ import java.util.List;
 @RequestMapping("/api/v1/company/offboarding/checklist")
 @RequiredArgsConstructor
 public class OffboardingController {
+
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final OffboardingChecklistService checklistService;
 
@@ -42,7 +45,9 @@ public class OffboardingController {
     public ResponseEntity<Page<OffboardingChecklistResponse>> getAllChecklists(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(checklistService.getAll(PageRequest.of(page, size)));
+        return ResponseEntity.ok(checklistService.getAll(PageRequest.of(
+                Math.max(page, 0), Math.max(1, Math.min(size, MAX_PAGE_SIZE)),
+                Sort.by("createdAt").descending().and(Sort.by("id").descending()))));
     }
 
     @GetMapping("/pending")

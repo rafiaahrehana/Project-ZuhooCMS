@@ -24,11 +24,7 @@ public enum AccountType {
     public String getCodeRange() { return codeRange; }
     public String getDescription() { return description; }
 
-    /**
-     * Single source of truth for debit/credit-normal classification - previously
-     * duplicated independently in ChartOfAccount, GeneralLedgerServiceImpl, and
-     * FinancialReportServiceImpl, risking silent drift between them.
-     */
+    /** Single source of truth for debit/credit-normal classification, which was duplicated in ChartOfAccount, GeneralLedgerServiceImpl and FinancialReportServiceImpl and could silently drift. */
     public boolean isCreditNormal() {
         return this == LIABILITY || this == CONTRA_ASSET || this == EQUITY || this == REVENUE;
     }

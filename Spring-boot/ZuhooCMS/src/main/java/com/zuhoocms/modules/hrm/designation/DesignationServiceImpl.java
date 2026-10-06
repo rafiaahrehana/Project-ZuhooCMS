@@ -59,9 +59,7 @@ public class DesignationServiceImpl implements DesignationService {
     @Override
     @Transactional(readOnly = true)
     public Page<DesignationResponse> listAll(Pageable pageable) {
-        // Deliberately NOT gated by DESIGNATION_VIEW: same reasoning as
-        // DepartmentServiceImpl.listAll() - this endpoint doubles as a cross-module
-        // picker. Frontend sidebar/route gating only, until the endpoint is split.
+        // Deliberately NOT gated by DESIGNATION_VIEW: doubles as a cross-module picker, same reasoning as DepartmentServiceImpl.listAll().
         return designationRepository.findByCompanyId(requireCompanyId(), pageable)
             .map(DesignationMapper::toDesignationResponse);
     }
@@ -114,9 +112,7 @@ public class DesignationServiceImpl implements DesignationService {
     public void delete(Long id) {
         authorizationService.checkPermission(PermissionCode.DESIGNATION_DELETE);
         Designation designation = findInTenant(id);
-        // Department already guards this (delete():139-147); Designation and Shift
-        // didn't - deleting one still referenced by employees silently disappeared
-        // it from every screen and report showing that employee's designation.
+        // Block deleting a designation still referenced by employees: it silently vanished from every screen showing that employee's designation.
         long assignedEmployees = employeeRepository.countByDesignationId(id);
         if (assignedEmployees > 0) {
             throw new BadRequestException(

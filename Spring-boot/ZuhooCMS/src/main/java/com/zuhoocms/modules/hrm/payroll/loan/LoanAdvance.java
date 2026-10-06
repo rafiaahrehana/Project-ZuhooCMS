@@ -11,6 +11,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -23,18 +24,18 @@ import org.hibernate.annotations.ParamDef;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-/**
- * An employee loan or salary advance recovered automatically through payroll.
- * remainingBalance only moves when a payroll actually reaches PAID
- * (PayrollServiceImpl.markPaid) - a DRAFT/APPROVED payroll referencing this
- * loan can still be deleted without needing to reverse anything.
- */
+/** Loan/advance recovered through payroll; remainingBalance moves only at PAID (PayrollServiceImpl.markPaid), so a DRAFT/APPROVED payroll can be deleted without reversal. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
 @Table(name = "hrm_loan_advances")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class LoanAdvance extends BaseEntity {
+
+    // Optimistic lock: concurrent approve/pay/settle must fail fast, not overwrite; columnDefinition backfills existing rows under ddl-auto=update.
+    @Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
+    private Long version;
 
     public enum Type { LOAN, ADVANCE }
     public enum Status { ACTIVE, CLOSED, CANCELLED }

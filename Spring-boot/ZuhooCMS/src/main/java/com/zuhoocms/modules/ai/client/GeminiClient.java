@@ -3,7 +3,6 @@ package com.zuhoocms.modules.ai.client;
 import com.zuhoocms.modules.ai.exception.AiProviderException;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
@@ -20,33 +19,23 @@ import java.util.Map;
 public class GeminiClient implements AiHttpClient {
 
     private static final String BASE_URL =
-        "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s";
+        "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent";
 
     @Qualifier("aiRestTemplate")
     private final RestTemplate aiRestTemplate;
 
-    @Setter
-    private String apiKey;
-
     @Override
-    public String call(String prompt, String model, double temperature, int maxTokens) {
-        // Gemini 2.5 "thinking" models spend reasoning tokens from the SAME
-        // maxOutputTokens budget - left on (the default), thinking regularly
-        // eats 1-2k tokens and the visible answer gets cut off mid-sentence.
-        // These are single-shot business prompts, not math puzzles: turn
-        // thinking off. Models that reject thinkingConfig (1.5 family, 2.5
-        // Pro which can't disable it) get one retry without it.
+    public String call(String apiKey, String prompt, String model, double temperature, int maxTokens) {
+        // Gemini 2.5 thinking spends reasoning tokens from the same maxOutputTokens budget, cutting the visible answer off mid-sentence, so disable it.
+        // Models that reject thinkingConfig (1.5 family, 2.5 Pro) get one retry without it.
         try {
-            return doCall(prompt, model, temperature, maxTokens, true);
+            return doCall(apiKey, prompt, model, temperature, maxTokens, true);
         } catch (HttpClientErrorException e) {
-            // Google's rejection is a generic "Request contains an invalid
-            // argument." with no field name, so ANY 400 on a thinking-disabled
-            // request gets one retry without thinkingConfig before failing.
+            // Google's rejection is a generic "Request contains an invalid argument." with no field name, so any 400 gets one retry without thinkingConfig.
             if (e.getStatusCode().value() == 400) {
                 try {
-                    // Thinking stays on for this retry, so its reasoning tokens
-                    // share the budget - give the answer room to survive them.
-                    return doCall(prompt, model, temperature, Math.max(maxTokens, 8192), false);
+                    // Thinking is on for this retry, so raise the budget to leave the answer room alongside its reasoning tokens.
+                    return doCall(apiKey, prompt, model, temperature, Math.max(maxTokens, 8192), false);
                 } catch (HttpClientErrorException retryFailure) {
                     throw new AiProviderException("Gemini API call failed: " + retryFailure.getMessage(), isRetryable(retryFailure));
                 }
@@ -55,8 +44,8 @@ public class GeminiClient implements AiHttpClient {
         }
     }
 
-    private String doCall(String prompt, String model, double temperature, int maxTokens, boolean disableThinking) {
-        String url = String.format(BASE_URL, model, apiKey);
+    private String doCall(String apiKey, String prompt, String model, double temperature, int maxTokens, boolean disableThinking) {
+        String url = String.format(BASE_URL, model);
 
         Map<String, Object> generationConfig = new java.util.HashMap<>();
         generationConfig.put("temperature", temperature);
@@ -71,7 +60,7 @@ public class GeminiClient implements AiHttpClient {
         );
 
         try {
-            Map<?, ?> response = aiRestTemplate.postForObject(url, body, Map.class);
+            Map<?, ?> response = post(url, apiKey, body);
             return extractText(response);
         } catch (AiProviderException | HttpClientErrorException e) {
             throw e;
@@ -81,12 +70,7 @@ public class GeminiClient implements AiHttpClient {
     }
 
 
-    /**
-     * Gemini 2.x models split a single answer across MULTIPLE parts (and
-     * thinking models may prepend thought parts flagged "thought": true).
-     * Taking parts[0] alone silently truncated every response longer than one
-     * part - concatenate all non-thought text parts instead.
-     */
+    /** Gemini 2.x splits one answer across multiple parts (thought parts flagged "thought": true): parts[0] alone silently truncated longer responses. */
     private String extractText(Map<?, ?> response) {
         try {
             List<?> candidates = (List<?>) response.get("candidates");
@@ -113,18 +97,24 @@ public class GeminiClient implements AiHttpClient {
         }
     }
 
+    /** The key travels in the x-goog-api-key header, never the URL: a query-string key leaks into exception messages, proxy and access logs. */
+    private Map<?, ?> post(String url, String apiKey, Map<String, Object> body) {
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        headers.set("x-goog-api-key", apiKey);
+        return aiRestTemplate.exchange(url, org.springframework.http.HttpMethod.POST,
+            new org.springframework.http.HttpEntity<>(body, headers), Map.class).getBody();
+    }
+
     // Retry on timeouts/connection errors/5xx/429 - not on other 4xx (bad request, auth failure, etc).
     private boolean isRetryable(Exception e) {
-        if (e instanceof HttpClientErrorException client) {
-            return client.getStatusCode().value() == 429;
-        }
-        return true;
+        return AiRetryPolicy.isRetryable(e);
     }
 
     @Override
-    public AiToolCallOrText callWithTools(String prompt, String model, double temperature, int maxTokens,
+    public AiToolCallOrText callWithTools(String apiKey, String prompt, String model, double temperature, int maxTokens,
                                            List<AiTool> tools, List<AiToolExchange> priorExchanges) {
-        String url = String.format(BASE_URL, model, apiKey);
+        String url = String.format(BASE_URL, model);
 
         List<Object> contents = new ArrayList<>();
         contents.add(Map.of("role", "user", "parts", List.of(Map.of("text", prompt))));
@@ -148,16 +138,14 @@ public class GeminiClient implements AiHttpClient {
 
         Map<String, Object> body = new java.util.HashMap<>();
         body.put("contents", contents);
-        // Once a tool has already been called this turn, ask for a final
-        // text answer rather than risking a second tool call the v1 loop
-        // doesn't support chaining.
+        // After a tool has run this turn, omit the declarations: the v1 loop cannot chain a second tool call.
         if (priorExchanges.isEmpty()) {
             body.put("tools", List.of(Map.of("functionDeclarations", declarations)));
         }
         body.put("generationConfig", Map.of("temperature", temperature, "maxOutputTokens", maxTokens));
 
         try {
-            Map<?, ?> response = aiRestTemplate.postForObject(url, body, Map.class);
+            Map<?, ?> response = post(url, apiKey, body);
             return extractToolCallOrText(response);
         } catch (AiProviderException e) {
             throw e;

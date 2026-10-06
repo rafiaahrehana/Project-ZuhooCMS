@@ -1,7 +1,9 @@
 package com.zuhoocms.modules.ai.tool.impl;
 
+import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
+import com.zuhoocms.modules.ai.tool.AiToolValidator;
 import com.zuhoocms.modules.finance.expense.ExpenseRequest;
 import com.zuhoocms.modules.finance.expense.ExpenseResponse;
 import com.zuhoocms.modules.finance.expense.ExpenseService;
@@ -18,6 +20,7 @@ import java.util.Map;
 public class SubmitExpenseTool implements AiTool {
 
     private final ExpenseService expenseService;
+    private final AiToolValidator validator;
 
     @Override
     public String name() {
@@ -42,6 +45,12 @@ public class SubmitExpenseTool implements AiTool {
             ),
             "required", java.util.List.of("description", "amount")
         );
+    }
+
+    // The same permission ExpenseServiceImpl.create checks; without it the tool is not offered to the model and is refused if named.
+    @Override
+    public PermissionCode requiredPermission() {
+        return PermissionCode.EXPENSE_CREATE;
     }
 
     @Override
@@ -73,6 +82,10 @@ public class SubmitExpenseTool implements AiTool {
         if (args.get("category") != null) request.setCategory(args.get("category").toString());
 
         try {
+            String invalid = validator.problems(request);
+            if (invalid != null) {
+                return AiToolResult.failure("That doesn't look right - " + invalid + ".");
+            }
             ExpenseResponse response = expenseService.create(request);
             return AiToolResult.ok(
                 "Submitted an expense claim for " + request.getAmount() + " (\"" + request.getDescription()

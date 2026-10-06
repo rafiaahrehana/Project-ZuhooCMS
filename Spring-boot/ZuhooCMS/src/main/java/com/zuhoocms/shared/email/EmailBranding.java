@@ -13,11 +13,29 @@ public class EmailBranding {
 
     private final WebsiteSettingsRepository websiteSettingsRepository;
 
-    @Value("${app.frontend-url}")
-    private String frontendUrl;
+    private final String frontendUrl;
 
-    public EmailBranding(WebsiteSettingsRepository websiteSettingsRepository) {
+    public EmailBranding(WebsiteSettingsRepository websiteSettingsRepository,
+                         @Value("${app.frontend-url}") String frontendUrl) {
         this.websiteSettingsRepository = websiteSettingsRepository;
+        this.frontendUrl = primaryFrontendUrl(frontendUrl);
+    }
+
+    /** app.frontend-url doubles as the CORS allow-list, so it may be a comma-separated list with wildcards; mail links need one concrete origin, the first entry without a wildcard. */
+    public static String primaryFrontendUrl(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        for (String entry : raw.split(",")) {
+            String candidate = entry.trim();
+            if (!candidate.isEmpty() && !candidate.contains("*")) {
+                while (candidate.endsWith("/")) {
+                    candidate = candidate.substring(0, candidate.length() - 1);
+                }
+                return candidate;
+            }
+        }
+        return "";
     }
 
     public Data getPlatformBranding() {

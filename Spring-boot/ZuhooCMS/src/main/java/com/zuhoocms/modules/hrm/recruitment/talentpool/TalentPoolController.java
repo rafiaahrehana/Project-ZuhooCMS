@@ -2,6 +2,7 @@ package com.zuhoocms.modules.hrm.recruitment.talentpool;
 
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.core.base.SoftDeletedProxies;
 import com.zuhoocms.modules.company.Company;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplication;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRepository;
@@ -72,19 +73,22 @@ public class TalentPoolController {
         Long companyId = requireCompanyId();
         JobApplication application = applicationRepository.findByIdAndCompanyId(applicationId, companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Application not found: " + applicationId));
-        // Claimed to check this but didn't - an active mid-pipeline candidate
-        // could be pooled and tracked in two places at once. OFFER_REJECTED is
-        // included alongside REJECTED/WITHDRAWN - a candidate who declined an
-        // offer is exactly who this feature is for, and since the offer
-        // sub-pipeline split off from the generic REJECTED status, this check
-        // has to name it explicitly or that path is silently unreachable.
+        // Only closed applications can be pooled, so an active mid-pipeline candidate isn't tracked in two places at once.
+        // OFFER_REJECTED must be named explicitly alongside REJECTED/WITHDRAWN: the offer sub-pipeline split off from the generic REJECTED status, and a candidate who declined an offer is exactly who this is for.
         if (application.getStatus() != com.zuhoocms.enums.ApplicationStatus.REJECTED
                 && application.getStatus() != com.zuhoocms.enums.ApplicationStatus.WITHDRAWN
                 && application.getStatus() != com.zuhoocms.enums.ApplicationStatus.OFFER_REJECTED) {
             throw new BadRequestException(
                     "Only a rejected, withdrawn, or declined-offer application can be added to the talent pool");
         }
-        com.zuhoocms.modules.hrm.recruitment.candidate.Candidate person = application.getCandidate();
+        // loadable(), not a null check: the proxy is non-null and throws once the candidate is soft-deleted, and
+        // pooling needs their email to dedupe, so there is nothing to carry across.
+        com.zuhoocms.modules.hrm.recruitment.candidate.Candidate person =
+                SoftDeletedProxies.loadable(application.getCandidate());
+        if (person == null || person.getEmail() == null) {
+            throw new BadRequestException(
+                    "This application's candidate record has been deleted and cannot be added to the talent pool");
+        }
         if (poolRepository.existsByCompanyIdAndEmailIgnoreCase(companyId, person.getEmail())) {
             throw new BadRequestException("This candidate is already in the talent pool");
         }
@@ -99,7 +103,7 @@ public class TalentPoolController {
                 .phone(person.getPhone())
                 .resumeUrl(person.getResumeUrl())
                 .linkedInUrl(person.getLinkedInUrl())
-                .desiredRole(application.getJobPosting() != null ? application.getJobPosting().getTitle() : null)
+                .desiredRole(desiredRole(application))
                 .reason(request != null && request.getReason() != null ? request.getReason() : TalentPoolCandidate.Reason.FUTURE_FIT)
                 .notes(request != null ? request.getNotes() : null)
                 .sourceApplication(application)
@@ -121,11 +125,10 @@ public class TalentPoolController {
     @Transactional
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         authorizationService.checkPermission(PermissionCode.APPLICATION_UPDATE);
-        poolRepository.delete(requireCandidate(id));
+        // Soft delete, like every other BaseEntity - a hard delete lost the record and its history.
+        requireCandidate(id).softDelete();
         return ResponseEntity.noContent().build();
     }
-
-    // ── Helpers ───────────────────────────────────────────────
 
     private void validate(CandidateRequest request) {
         if (request.getName() == null || request.getName().isBlank()) {
@@ -139,17 +142,38 @@ public class TalentPoolController {
         }
     }
 
+    /**
+     * Shared by create and update, and every optional field is null-skipped.
+     *
+     * Six of these were assigned unconditionally with only {@code reason} guarded, so an update carrying just the
+     * name and e-mail it validates silently erased the candidate's phone, resume link, LinkedIn, desired role,
+     * skills, rating and notes. That is data loss rather than a no-op, and the response showed the nulls.
+     *
+     * Null-skipping is also correct on a create: the entity starts empty, so skipping a null leaves exactly the
+     * null that assigning it would have written. The resume is guarded on the request value rather than inside
+     * requireOwn, because that helper treats a null url as "clear the column" - right for an explicit clear,
+     * wrong for an absent key.
+     */
     private void apply(TalentPoolCandidate candidate, CandidateRequest request) {
         candidate.setName(request.getName().trim());
         candidate.setEmail(request.getEmail().trim());
-        candidate.setPhone(request.getPhone());
-        candidate.setResumeUrl(request.getResumeUrl());
-        candidate.setLinkedInUrl(request.getLinkedInUrl());
-        candidate.setDesiredRole(request.getDesiredRole());
-        candidate.setSkills(request.getSkills());
-        candidate.setRating(request.getRating());
+        if (request.getPhone() != null) candidate.setPhone(request.getPhone());
+        if (request.getResumeUrl() != null) {
+            candidate.setResumeUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(
+                    request.getResumeUrl(), candidate.getResumeUrl()));
+        }
+        if (request.getLinkedInUrl() != null) candidate.setLinkedInUrl(request.getLinkedInUrl());
+        if (request.getDesiredRole() != null) candidate.setDesiredRole(request.getDesiredRole());
+        if (request.getSkills() != null) candidate.setSkills(request.getSkills());
+        if (request.getRating() != null) candidate.setRating(request.getRating());
         if (request.getReason() != null) candidate.setReason(request.getReason());
-        candidate.setNotes(request.getNotes());
+        if (request.getNotes() != null) candidate.setNotes(request.getNotes());
+    }
+
+    /** The application's posting title, via loadable() so a soft-deleted posting reads as "no title" rather than throwing. */
+    private static String desiredRole(JobApplication application) {
+        var posting = SoftDeletedProxies.loadable(application.getJobPosting());
+        return posting != null ? posting.getTitle() : null;
     }
 
     private TalentPoolCandidate requireCandidate(Long id) {
@@ -162,8 +186,6 @@ public class TalentPoolController {
         if (id == null) throw new BadRequestException("No company context");
         return id;
     }
-
-    // ── DTOs ──────────────────────────────────────────────────
 
     @Getter @Setter
     public static class CandidateRequest {
@@ -215,11 +237,11 @@ public class TalentPoolController {
             r.rating = c.getRating();
             r.reason = c.getReason();
             r.notes = c.getNotes();
-            if (c.getSourceApplication() != null) {
-                r.sourceApplicationId = c.getSourceApplication().getId();
-                r.sourceJobTitle = c.getSourceApplication().getJobPosting() != null
-                        ? c.getSourceApplication().getJobPosting().getTitle() : null;
-            }
+            // Through SoftDeletedProxies: the source application and its posting are lazy proxies over soft-deletable
+            // rows, and either one throws EntityNotFoundException when read, which 500'd the whole pool list.
+            r.sourceApplicationId = SoftDeletedProxies.id(c.getSourceApplication());
+            var sourceApplication = SoftDeletedProxies.loadable(c.getSourceApplication());
+            r.sourceJobTitle = sourceApplication != null ? desiredRole(sourceApplication) : null;
             r.createdAt = c.getCreatedAt();
             return r;
         }

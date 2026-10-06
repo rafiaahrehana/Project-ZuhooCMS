@@ -25,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.zuhoocms.modules.ai.support.AiTransactionBoundary;
@@ -61,8 +62,9 @@ public class AnnouncementServiceImpl implements AnnouncementService {
         Long companyId = requireCompanyId();
 
         rejectUnsupportedAudience(request.getAudience());
+        requireDepartmentForDepartmentAudience(request.getAudience(), request.getTargetDepartmentId());
         Department targetDept = null;
-        if (request.getTargetDepartmentId() != null) {
+        if (request.getAudience() == AnnouncementAudience.DEPARTMENT && request.getTargetDepartmentId() != null) {
             targetDept = departmentRepository.findByIdAndCompanyId(request.getTargetDepartmentId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                     "Department not found: " + request.getTargetDepartmentId()));
@@ -77,7 +79,7 @@ public class AnnouncementServiceImpl implements AnnouncementService {
             .scheduledAt(request.getScheduledAt())
             .notifyAll(request.isNotifyAll())
             .priority(request.getPriority() != null ? request.getPriority() : 0)
-            .attachmentUrl(request.getAttachmentUrl())
+            .attachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl()))
             .published(false)
             .company(companyRef(companyId))
             .createdBy(securityUtil.getCurrentUser())
@@ -90,7 +92,31 @@ public class AnnouncementServiceImpl implements AnnouncementService {
     @Override
     @Transactional(readOnly = true)
     public AnnouncementResponse getById(Long id) {
-        return AnnouncementMapper.toAnnouncementResponse(findInTenant(id));
+        Announcement announcement = findInTenant(id);
+        // Without ANNOUNCEMENT_VIEW a viewer gets exactly their /active feed: drafts and other audiences' notices were id-guessable.
+        if (!authorizationService.hasPermission(PermissionCode.ANNOUNCEMENT_VIEW)
+                && !visibleInFeed(announcement, requireCompanyId())) {
+            throw new ResourceNotFoundException("Announcement not found: " + id);
+        }
+        return AnnouncementMapper.toAnnouncementResponse(announcement);
+    }
+
+    private boolean visibleInFeed(Announcement a, Long companyId) {
+        if (!a.isPublished()) return false;
+        if (a.getExpiresAt() != null && !a.getExpiresAt().isAfter(LocalDateTime.now())) return false;
+        com.zuhoocms.auth.user.User currentUser = securityUtil.getCurrentUser();
+        com.zuhoocms.modules.hrm.employee.Employee me = currentUser != null
+                ? employeeRepository.findByUserId(currentUser.getId()).orElse(null) : null;
+        if (me == null) return true; // same rule as listActive(): no employee profile sees everything
+        boolean iAmManager = employeeRepository.existsByCompanyIdAndReportingManagerIdAndActiveTrue(companyId, me.getId());
+        return appliesToViewer(a, me, iAmManager);
+    }
+
+    /** A DEPARTMENT announcement with no department used to fall back to notifying the whole company. */
+    private void requireDepartmentForDepartmentAudience(AnnouncementAudience audience, Long targetDepartmentId) {
+        if (audience == AnnouncementAudience.DEPARTMENT && targetDepartmentId == null) {
+            throw new BadRequestException("Choose a target department for a department announcement");
+        }
     }
 
 
@@ -106,22 +132,15 @@ public class AnnouncementServiceImpl implements AnnouncementService {
     @Override
     @Transactional(readOnly = true)
     public List<AnnouncementResponse> listActive() {
-        // Read-only "notice board" feed - any logged-in employee can see active
-        // announcements for their own company, regardless of ANNOUNCEMENT_VIEW.
-        // Creating/editing/publishing announcements stays permission-gated.
-        //
-        // Previously this returned every active announcement regardless of its
-        // audience - a DEPARTMENT-targeted announcement was readable company-wide
-        // even though only its notification (if notifyAll was checked) was
-        // actually scoped. The feed itself is now filtered the same way.
+        // Read-only notice board: any logged-in employee sees their company's active announcements regardless of ANNOUNCEMENT_VIEW.
+        // Filtered by audience, so a DEPARTMENT-targeted announcement is no longer readable company-wide.
         Long companyId = requireCompanyId();
         List<Announcement> active = announcementRepository.findActiveByCompanyId(companyId, LocalDateTime.now());
 
         com.zuhoocms.auth.user.User currentUser = securityUtil.getCurrentUser();
         com.zuhoocms.modules.hrm.employee.Employee me = currentUser != null
                 ? employeeRepository.findByUserId(currentUser.getId()).orElse(null) : null;
-        // No employee profile (e.g. the company owner) sees everything - there is
-        // no meaningful "my department"/"am I a manager" to scope them by.
+        // No employee profile (e.g. the company owner) sees everything: no department or manager status to scope by.
         if (me == null) {
             return active.stream().map(AnnouncementMapper::toAnnouncementResponse).toList();
         }
@@ -156,34 +175,46 @@ public class AnnouncementServiceImpl implements AnnouncementService {
         authorizationService.checkPermission(PermissionCode.ANNOUNCEMENT_UPDATE);
         Long companyId = requireCompanyId();
         Announcement announcement = findInTenant(id);
-        if (announcement.isPublished()) throw new BadRequestException("Announcement is already published");
-        doPublish(announcement, companyId);
+        if (announcement.isPublished() || !doPublish(announcement, companyId)) {
+            throw new BadRequestException("Announcement is already published");
+        }
         return AnnouncementMapper.toAnnouncementResponse(announcement);
     }
 
     /**
-     * System entry point for AnnouncementScheduledPublishScheduler - no security
-     * context, so unlike publish(id) it takes the company id from the entity
-     * itself rather than SecurityUtil, and skips the permission check (there is
-     * no acting user to check permissions against).
+     * System entry point for AnnouncementScheduledPublishScheduler: no security context, so company id comes from the entity and the permission check is skipped.
+     * Not transactional itself - each announcement publishes in its own transaction, so one failure doesn't roll back the whole sweep.
      */
     @Override
-    @Transactional
     public void publishDueScheduled() {
-        for (Announcement announcement : announcementRepository
-                .findByPublishedFalseAndDeletedFalseAndScheduledAtLessThanEqual(LocalDateTime.now())) {
-            doPublish(announcement, announcement.getCompany().getId());
+        List<Long> dueIds = aiTx.load(() -> announcementRepository
+                .findByPublishedFalseAndDeletedFalseAndScheduledAtLessThanEqual(LocalDateTime.now())
+                .stream().map(Announcement::getId).toList());
+        for (Long id : dueIds) {
+            try {
+                aiTx.persist(() -> {
+                    announcementRepository.findById(id)
+                            .filter(a -> !a.isPublished())
+                            .ifPresent(a -> doPublish(a, a.getCompany().getId()));
+                    return null;
+                });
+            } catch (Exception ex) {
+                log.error("Scheduled publish failed for announcement {}", id, ex);
+            }
         }
     }
 
-    private void doPublish(Announcement announcement, Long companyId) {
+    /** Returns false if another caller published it first: the conditional UPDATE is the single point deciding who fans out notifications. */
+    private boolean doPublish(Announcement announcement, Long companyId) {
+        LocalDateTime now = LocalDateTime.now();
+        if (announcementRepository.markPublishedIfUnpublished(announcement.getId(), now) == 0) {
+            return false;
+        }
         announcement.setPublished(true);
-        announcement.setPublishedAt(LocalDateTime.now());
+        announcement.setPublishedAt(now);
 
         if (announcement.isNotifyAll()) {
-            // The checkbox is labelled "Send Email Notification to All" but this
-            // used to only create in-app NotificationService entries - nothing
-            // was ever emailed, so the label promised something the code never did.
+            // Emails as well as in-app entries: the "Send Email Notification to All" checkbox previously only created in-app notifications.
             EmailBranding.Data branding = null;
             try {
                 Company fullCompany = companyRepository.findById(companyId).orElse(null);
@@ -196,17 +227,18 @@ public class AnnouncementServiceImpl implements AnnouncementService {
             final int PAGE_SIZE = 100;
             org.springframework.data.domain.Page<com.zuhoocms.modules.hrm.employee.Employee> page;
             do {
-                // Audience-scoped notification fan-out: EMPLOYEES/MANAGERS used to
-                // fall through to "everyone" here, same as DEPARTMENT without a
-                // target used to. Each branch now queries only its real audience.
+                // Each branch queries only its real audience; EMPLOYEES/MANAGERS/targetless DEPARTMENT used to fall through to everyone.
+                // Sorted by id: unordered offset paging can skip or repeat people between pages.
+                // Same population as the /active feed (appliesToViewer); a DEPARTMENT row with no department reaches nobody.
+                PageRequest pageRequest = PageRequest.of(pageNum, PAGE_SIZE, Sort.by("id"));
                 page = switch (announcement.getAudience()) {
                     case DEPARTMENT -> announcement.getTargetDepartment() != null
-                            ? employeeRepository.findByCompanyIdAndDepartmentId(
-                                companyId, announcement.getTargetDepartment().getId(), PageRequest.of(pageNum, PAGE_SIZE))
-                            : employeeRepository.findByCompanyId(companyId, PageRequest.of(pageNum, PAGE_SIZE));
-                    case MANAGERS -> employeeRepository.findManagersByCompanyId(companyId, PageRequest.of(pageNum, PAGE_SIZE));
-                    case EMPLOYEES -> employeeRepository.findNonManagersByCompanyId(companyId, PageRequest.of(pageNum, PAGE_SIZE));
-                    default -> employeeRepository.findByCompanyId(companyId, PageRequest.of(pageNum, PAGE_SIZE));
+                            ? announcementRepository.findActiveEmployeesInDepartment(
+                                companyId, announcement.getTargetDepartment().getId(), pageRequest)
+                            : Page.empty(pageRequest);
+                    case MANAGERS -> employeeRepository.findManagersByCompanyId(companyId, pageRequest);
+                    case EMPLOYEES -> employeeRepository.findNonManagersByCompanyId(companyId, pageRequest);
+                    default -> announcementRepository.findActiveEmployees(companyId, pageRequest);
                 };
                 EmailBranding.Data brandingForLoop = branding;
                 page.getContent().forEach(emp -> {
@@ -235,6 +267,7 @@ public class AnnouncementServiceImpl implements AnnouncementService {
                 pageNum++;
             } while (page.hasNext());
         }
+        return true;
     }
 
     @Override
@@ -250,15 +283,22 @@ public class AnnouncementServiceImpl implements AnnouncementService {
             rejectUnsupportedAudience(request.getAudience());
             announcement.setAudience(request.getAudience());
         }
-        if (request.getAttachmentUrl()!= null) announcement.setAttachmentUrl(request.getAttachmentUrl());
+        if (request.getAttachmentUrl()!= null) announcement.setAttachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl(), announcement.getAttachmentUrl()));
         if (request.getPriority()!= null) announcement.setPriority(request.getPriority());
         announcement.setExpiresAt(request.getExpiresAt());
         announcement.setScheduledAt(request.getScheduledAt());
         announcement.setNotifyAll(request.isNotifyAll());
-        if (request.getTargetDepartmentId() != null) {
-            announcement.setTargetDepartment(
-                departmentRepository.findByIdAndCompanyId(request.getTargetDepartmentId(), companyId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Department not found")));
+        if (announcement.getAudience() == AnnouncementAudience.DEPARTMENT) {
+            if (request.getTargetDepartmentId() != null) {
+                announcement.setTargetDepartment(
+                    departmentRepository.findByIdAndCompanyId(request.getTargetDepartmentId(), companyId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Department not found")));
+            }
+            requireDepartmentForDepartmentAudience(announcement.getAudience(),
+                announcement.getTargetDepartment() != null ? announcement.getTargetDepartment().getId() : null);
+        } else {
+            // Clear a stale department so a non-department announcement doesn't look department-scoped.
+            announcement.setTargetDepartment(null);
         }
         return AnnouncementMapper.toAnnouncementResponse(announcement);
     }
@@ -272,9 +312,7 @@ public class AnnouncementServiceImpl implements AnnouncementService {
         a.softDelete();
     }
 
-    // No @Transactional here on purpose: the company lookup runs inside
-    // aiTx.load(), which commits before the provider call so no DB connection is
-    // held across it - see AiTransactionBoundary.
+    // No @Transactional on purpose: aiTx.load() commits before the provider call so no DB connection is held across it - see AiTransactionBoundary.
     @Override
     public AnnouncementDraftResponse draftWithAi(AnnouncementDraftRequest request) {
         authorizationService.checkPermission(PermissionCode.ANNOUNCEMENT_CREATE);
@@ -306,8 +344,7 @@ public class AnnouncementServiceImpl implements AnnouncementService {
             response.setTitle(node.path("title").asText(null));
             response.setBody(node.path("body").asText(null));
         } catch (Exception ignored) {
-            // Model didn't return valid JSON despite instructions - fall back to the
-            // raw text as the body rather than failing the whole request.
+            // Model didn't return valid JSON: fall back to the raw text as the body rather than failing the request.
         }
         if (response.getTitle() == null || response.getTitle().isBlank()) {
             response.setTitle(fallbackInstructions.length() > 80

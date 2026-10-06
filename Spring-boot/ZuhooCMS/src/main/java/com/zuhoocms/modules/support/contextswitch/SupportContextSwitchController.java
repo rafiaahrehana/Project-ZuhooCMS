@@ -6,11 +6,16 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import com.zuhoocms.modules.support.SupportPaging;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Value;
 
 @RestController
 @RequestMapping("/api/support/context-switches")
@@ -28,14 +33,39 @@ public class SupportContextSwitchController {
         return ResponseEntity.ok(service.switchContext(request, resolveClientIp(httpRequest), httpRequest.getHeader("User-Agent")));
     }
 
-    // Same X-Forwarded-For-first pattern as AuthServiceImpl.resolveClientIp() -
-    // the client's raw remote address is the proxy's address once behind one.
-    private String resolveClientIp(HttpServletRequest request) {
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
+    /** Comma-separated IPs of proxies whose X-Forwarded-For may be trusted; empty by default, since any client can send an arbitrary X-Forwarded-For. */
+    @Value("${app.security.trusted-proxies:}")
+    private String trustedProxiesConfig;
+
+    /** X-Forwarded-For is consulted only when the direct peer is a trusted proxy; the chain is walked from the right and the first untrusted hop is the client. */
+    String resolveClientIp(HttpServletRequest request) {
+        String remote = request.getRemoteAddr();
+        Set<String> trusted = trustedProxies();
+        if (trusted.isEmpty() || !trusted.contains(remote)) {
+            return remote;
         }
-        return request.getRemoteAddr();
+        String xff = request.getHeader("X-Forwarded-For");
+        if (xff == null || xff.isBlank()) {
+            return remote;
+        }
+        String[] hops = xff.split(",");
+        for (int i = hops.length - 1; i >= 0; i--) {
+            String hop = hops[i].trim();
+            if (!hop.isEmpty() && !trusted.contains(hop)) {
+                return hop;
+            }
+        }
+        return remote;
+    }
+
+    private Set<String> trustedProxies() {
+        if (trustedProxiesConfig == null || trustedProxiesConfig.isBlank()) {
+            return Set.of();
+        }
+        return Arrays.stream(trustedProxiesConfig.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toSet());
     }
 
     @PostMapping("/{id}/end")
@@ -60,11 +90,12 @@ public class SupportContextSwitchController {
             @PathVariable Long supportAgentId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getContextSwitchHistory(supportAgentId, PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getContextSwitchHistory(supportAgentId, SupportPaging.of(page, size, Sort.by("switchedInTime").descending())));
     }
 
     @GetMapping("/active")
-    @PreAuthorize("hasRole('SUPER_ADMIN') or hasRole('SUPPORT_MANAGER')")
+    // SUPPORT_AGENT is included or the Context Switches screen 403s for them; the service still returns only their own.
+    @PreAuthorize("hasRole('SUPER_ADMIN') or hasRole('SUPPORT_MANAGER') or hasRole('SUPPORT_AGENT')")
     @Operation(summary = "Get All Active Context Switches")
     public ResponseEntity<List<SupportContextSwitchResponse>> getActiveContextSwitches() {
         return ResponseEntity.ok(service.getActiveContextSwitches());

@@ -1,13 +1,6 @@
 package com.zuhoocms.modules.finance.generalledger;
 
-/**
- * What kind of source document a GeneralLedger entry was posted from. Previously each
- * poster (invoice, payment, expense, payroll, journal entry) passed its own raw String
- * literal to GeneralLedgerService.recordTransaction() - a typo in any one of them would
- * silently create an untracked reference type with no compile-time signal. The enum
- * name() is stored in the existing GeneralLedger.referenceType String column, so no
- * schema change is needed.
- */
+/** What source document a GeneralLedger entry was posted from; replaces raw String literals whose typos silently created untracked reference types. name() is stored in the existing referenceType column, so no schema change. */
 public enum GlReferenceType {
     INVOICE,
     INVOICE_CANCEL,
@@ -22,6 +15,8 @@ public enum GlReferenceType {
     VENDOR_BILL_PAYMENT,
     PAYMENT_REVERSAL,
     FIXED_ASSET_PURCHASE,
+    /** Sale/write-off of a fixed asset; reusing FIXED_ASSET_PURCHASE showed two "purchase" postings and left getByReference() unable to tell acquisition from disposal. */
+    FIXED_ASSET_DISPOSAL,
     DEPRECIATION,
     OPENING_BALANCE
 }

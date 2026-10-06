@@ -51,7 +51,6 @@ public class Employee extends BaseEntity {
     @Column(length = 30)
     private EmploymentStatus employmentStatus = EmploymentStatus.PROBATION;
 
-    // personal information
     @Enumerated(EnumType.STRING)
     @Column(length = 10)
     private Gender gender;
@@ -73,28 +72,21 @@ public class Employee extends BaseEntity {
     private LocalDate probationEndDate;
     private LocalDate contractEndDate;
 
-    // Set once ContractExpiryScheduler notifies HR this contract is ending soon;
-    // reset to null whenever contractEndDate itself changes (extended/cleared),
-    // so a renewed contract gets its own future reminder instead of staying
-    // permanently suppressed.
+    // Set once ContractExpiryScheduler notifies HR; reset to null when contractEndDate changes, so a renewed contract gets its own reminder.
     private java.time.LocalDateTime contractEndReminderSentAt;
 
-    // Salary
     private BigDecimal basicSalary;
     private BigDecimal houseRent;
     private BigDecimal medicalAllowance;
     private BigDecimal transportAllowance;
 
-    // Fixed pay rate for approved billable timesheet hours - added on top of the
-    // salary components above when payroll is generated for a period.
+    // Fixed pay rate for approved billable timesheet hours, added on top of the salary components when payroll is generated.
     private BigDecimal billableRate;
 
-    // Bank
     private String bankName;
     private String bankAccountNumber;
     private String bankRoutingNumber;
 
-    // Emergency contact
     private String emergencyContactName;
     private String emergencyContactPhone;
     private String emergencyContactRelation;

@@ -12,13 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 
-/**
- * One-time startup fix for companies registered before the owner's Employee
- * record was created automatically at registration (see AuthServiceImpl.register).
- * Every module that resolves "the current user's employee profile" (leads,
- * leaves, timesheets, expenses, payroll...) fails with "Employee profile not
- * found" for owners created before that fix - this backfills them.
- */
+/** One-time startup backfill of the owner's Employee record (see AuthServiceImpl.register): without it every "current user's employee profile" lookup fails with "Employee profile not found". */
 @Component
 @Order(1)
 @RequiredArgsConstructor
@@ -32,7 +26,10 @@ public class OwnerEmployeeBackfillInitializer implements CommandLineRunner {
     public void run(String... args) {
         for (Company company : companyRepository.findAll()) {
             User owner = company.getOwner();
-            if (owner == null || employeeRepository.findByUserId(owner.getId()).isPresent()) {
+            // Per company, not per user: one person can own several companies, and findByUserId matched their employee
+            // row in ANY of them, so every company after the first was left with no owner employee record at all -
+            // which is exactly the "Employee profile not found" this backfill exists to prevent.
+            if (owner == null || employeeRepository.existsByUserIdAndCompanyId(owner.getId(), company.getId())) {
                 continue;
             }
 

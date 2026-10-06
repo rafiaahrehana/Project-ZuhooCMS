@@ -13,7 +13,7 @@ public interface SupportTicketService {
     Page<SupportTicketResponse> getAll(Pageable pageable);
     Page<SupportTicketResponse> getByCompany(Long companyId, Pageable pageable);
     Page<SupportTicketResponse> getByStatus(TicketStatus status, Pageable pageable);
-    Page<SupportTicketResponse> getAssignedToMe(Long agentId, Pageable pageable);
+    Page<SupportTicketResponse> getAssignedToMe(Pageable pageable);
     Page<SupportTicketResponse> getMyTickets(Long userId, Pageable pageable);
 
     void assignToAgent(Long ticketId, Long agentId);
@@ -30,19 +30,17 @@ public interface SupportTicketService {
     List<SupportTicketResponse> getSLABreachedTickets();
     List<SupportTicketResponse> getOpenCriticalTickets();
 
-    SupportTicketResponse update(Long id, SupportTicketRequest request);
+    SupportTicketResponse update(Long id, SupportTicketPatchRequest request);
     void delete(Long id);
 
-    // CLIENT-facing: raises a CUSTOMER_SUPPORT ticket against the client's own
-    // client-company (not the platform), scoped and ownership-checked separately
-    // from the staff/platform methods above - see SupportTicketServiceImpl.
+    // Client-facing CUSTOMER_SUPPORT against the client's own client-company, ownership-checked separately from the methods above - see SupportTicketServiceImpl.
     SupportTicketResponse createForClient(SupportTicketRequest request);
     Page<SupportTicketResponse> getMyClientTickets(Pageable pageable);
     SupportTicketResponse getClientTicketById(Long id);
 
-    // STAFF-facing counterpart: this company's own clients' CUSTOMER_SUPPORT
-    // tickets (the "Client Chat" inbox), separate from getAll()/getByStatus()
-    // above which are PLATFORM_SUPPORT (this company -> ZuhooCMS) only.
+    // Staff-facing counterpart: this company's own clients' tickets ("Client Chat"), separate from getAll()/getByStatus(), which are PLATFORM_SUPPORT only.
     Page<SupportTicketResponse> getClientTicketsForCompany(Pageable pageable);
     Page<SupportTicketResponse> getClientTicketsForCompanyByStatus(TicketStatus status, Pageable pageable);
+    // Client Chat detail, 404 for any other ticket; same path/shape as servicedesk-service.
+    SupportTicketResponse getClientTicketForCompany(Long id);
 }

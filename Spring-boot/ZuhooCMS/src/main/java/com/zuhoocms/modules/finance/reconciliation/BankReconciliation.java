@@ -17,7 +17,7 @@ import java.time.LocalDate;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class BankReconciliation extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "bank_account_id", nullable = false)
@@ -28,13 +28,10 @@ public class BankReconciliation extends BaseEntity {
     private BigDecimal glBalance;
     private BigDecimal bankStatementBalance;
 
-    // glBalance - adjustedBankBalance, where adjustedBankBalance = bankStatementBalance
-    // + outstandingDepositsTotal - outstandingChecksTotal. Must be (near) zero before
-    // this can be marked reconciled - see BankReconciliationServiceImpl.markAsReconciled.
+    // glBalance - (bankStatementBalance + outstandingDepositsTotal - outstandingChecksTotal); must be zero before this can be marked reconciled - see BankReconciliationServiceImpl.markAsReconciled.
     private BigDecimal difference;
 
-    // Computed live from GeneralLedger entries for this account that are still
-    // isReconciled=false as of reconciliationDate - not hand-typed.
+    // Computed live from this account's GeneralLedger entries still isReconciled=false as of reconciliationDate, not hand-typed.
     @Builder.Default
     private BigDecimal outstandingDepositsTotal = BigDecimal.ZERO;
     @Builder.Default
@@ -47,11 +44,14 @@ public class BankReconciliation extends BaseEntity {
     private LocalDate reconciledDate;
     private String reconciledBy;
 
-    // The actual bank statement (PDF/image) this reconciliation was matched against -
-    // audit trail for "what did the bank say at the time," not derivable from the GL.
+    // The bank statement this was matched against: audit trail for what the bank said at the time, not derivable from the GL.
     private String statementFileName;
     private String statementFileUrl;
     private java.time.LocalDateTime statementUploadedAt;
+
+    // When the overdue reminder was sent: the scheduler fires for ANY open reconciliation past the threshold (an exact-day match lost the reminder on a missed run) and stamps this to keep it to one reminder each.
+    // Nullable on purpose - existing rows must stay un-notified, so no @ColumnDefault.
+    private java.time.LocalDateTime overdueNotifiedAt;
 
     public void markAsReconciled(String reconciledByName) {
         this.reconciled = true;

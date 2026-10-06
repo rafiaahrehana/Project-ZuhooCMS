@@ -30,6 +30,8 @@ public class FixedAssetService {
     private final FixedAssetRepository assetRepository;
     private final DepreciationRunRepository runRepository;
     private final GeneralLedgerService glService;
+    // Read-only: used to tell whether an asset's purchase actually reached the ledger.
+    private final com.zuhoocms.modules.finance.generalledger.GeneralLedgerRepository glRepository;
     private final DefaultAccountResolver accountResolver;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
@@ -89,44 +91,67 @@ public class FixedAssetService {
             throw new BadRequestException("Asset is already disposed");
         }
         // Simple disposal at zero proceeds: write the remaining book value off the books.
-        // Dr Accumulated Depreciation (its balance for this asset) + Dr Depreciation
-        // Expense (remaining book value, as a loss) / Cr Fixed Assets (full cost).
         BigDecimal accumulated = asset.getAccumulatedDepreciation() != null ? asset.getAccumulatedDepreciation() : BigDecimal.ZERO;
         BigDecimal bookValue = asset.bookValue();
 
         Long companyId = asset.getCompanyId();
-        ChartOfAccount fixedAssets = accountResolver.fixedAssets(companyId);
         ChartOfAccount accumDep = accountResolver.accumulatedDepreciation(companyId);
         ChartOfAccount depExpense = accountResolver.depreciationExpense(companyId);
 
+        // An asset registered with postPurchaseToLedger = false never debited Fixed Assets, so crediting it here would invent a credit that was never debited and unbalance the books.
+        boolean purchaseWasPosted = !glRepository.findByCompanyIdAndReferenceTypeAndReferenceId(
+                companyId, GlReferenceType.FIXED_ASSET_PURCHASE.name(), asset.getId()).isEmpty();
+
         List<LedgerLine> lines = new java.util.ArrayList<>();
-        if (accumulated.compareTo(BigDecimal.ZERO) > 0) lines.add(LedgerLine.debit(accumDep.getId(), accumulated));
-        if (bookValue.compareTo(BigDecimal.ZERO) > 0) lines.add(LedgerLine.debit(depExpense.getId(), bookValue));
-        lines.add(LedgerLine.credit(fixedAssets.getId(), asset.getCost()));
-        glService.recordBalancedTransaction(companyId, lines,
-                "Disposal of fixed asset: " + asset.getName(),
-                GlReferenceType.FIXED_ASSET_PURCHASE, asset.getId(), asset.getAssetTag(), LocalDate.now());
+        if (purchaseWasPosted) {
+            // Dr Accumulated Depreciation (this asset's balance) + Dr Depreciation Expense (remaining book value as a loss) / Cr Fixed Assets (full cost).
+            ChartOfAccount fixedAssets = accountResolver.fixedAssets(companyId);
+            if (accumulated.compareTo(BigDecimal.ZERO) > 0) lines.add(LedgerLine.debit(accumDep.getId(), accumulated));
+            if (bookValue.compareTo(BigDecimal.ZERO) > 0) lines.add(LedgerLine.debit(depExpense.getId(), bookValue));
+            lines.add(LedgerLine.credit(fixedAssets.getId(), asset.getCost()));
+        } else if (accumulated.compareTo(BigDecimal.ZERO) > 0) {
+            // Cost was never capitalized but depreciation runs did post, so the only balance to unwind is accumulated depreciation: Dr Accumulated Depreciation / Cr Depreciation Expense, with no loss to recognize.
+            lines.add(LedgerLine.debit(accumDep.getId(), accumulated));
+            lines.add(LedgerLine.credit(depExpense.getId(), accumulated));
+        }
+        // Nothing posted and nothing depreciated: the asset never touched the ledger, so a disposal entry would be a no-op batch.
+        if (!lines.isEmpty()) {
+            glService.recordBalancedTransaction(companyId, lines,
+                    "Disposal of fixed asset: " + asset.getName(),
+                    // Not FIXED_ASSET_PURCHASE: that showed two "purchase" postings with no way to tell acquisition from disposal.
+                    GlReferenceType.FIXED_ASSET_DISPOSAL, asset.getId(), asset.getAssetTag(), LocalDate.now());
+        }
 
         asset.setStatus(FixedAssetStatus.DISPOSED);
         asset = assetRepository.save(asset);
         return FixedAssetDtos.toResponse(asset);
     }
 
-    /**
-     * Runs straight-line depreciation for one calendar month across every ACTIVE asset
-     * acquired on/before that month's end. Idempotent - a month can only run once.
-     */
+    /** Straight-line depreciation for one calendar month across every ACTIVE asset acquired on or before that month's end; idempotent, a month can only run once. */
     @Transactional
     public FixedAssetDtos.DepreciationRunResponse runDepreciation(int year, int month) {
         authorizationService.checkPermission(PermissionCode.FIXED_ASSET_MANAGE);
         Long companyId = requireCompanyId();
         if (month < 1 || month > 12) throw new BadRequestException("Month must be 1-12");
+        // Guard the year before YearMonth.of() so a typo like "20024" is a clear 400, not a 500 deeper in.
+        requireValidYear(year);
         if (runRepository.existsByCompanyIdAndYearAndMonth(companyId, year, month)) {
             throw new BadRequestException("Depreciation for " + year + "-" + String.format("%02d", month) + " has already been run");
         }
         YearMonth target = YearMonth.of(year, month);
         if (target.isAfter(YearMonth.now())) {
             throw new BadRequestException("Cannot depreciate a future month");
+        }
+        // Runs must be consecutive: skipping a month permanently loses its charge and an earlier month applies out of sequence, neither of which the per-month uniqueness constraint catches.
+        DepreciationRun lastRun = runRepository.findFirstByCompanyIdOrderByYearDescMonthDesc(companyId).orElse(null);
+        if (lastRun != null) {
+            YearMonth expected = YearMonth.of(lastRun.getYear(), lastRun.getMonth()).plusMonths(1);
+            if (!target.equals(expected)) {
+                throw new BadRequestException("Depreciation must be run in order: the next month to run is "
+                        + expected.getYear() + "-" + String.format("%02d", expected.getMonthValue())
+                        + " (last completed run was " + lastRun.getYear() + "-"
+                        + String.format("%02d", lastRun.getMonth()) + ")");
+            }
         }
         LocalDate monthEnd = target.atEndOfMonth();
 
@@ -186,6 +211,13 @@ public class FixedAssetService {
     private FixedAsset findInTenant(Long id) {
         return assetRepository.findByIdAndCompanyId(id, requireCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Fixed asset not found: " + id));
+    }
+
+    /** Any caller-supplied year must be a plausible accounting year, not a typo'd one. */
+    private void requireValidYear(int year) {
+        if (year < 2000 || year > 2100) {
+            throw new BadRequestException("Year must be between 2000 and 2100");
+        }
     }
 
     private Long requireCompanyId() {

@@ -17,12 +17,6 @@ public interface LeaveBalanceService {
     // ADMIN/OWNER: list all leave balances for the company for a given year
     Page<LeaveBalanceResponse> listAll(int year, Pageable pageable);
 
-    /**
-     * The caller's OWN balances for a year.
-     *
-     * Needed because listAll() returns every employee's balances - fine for an
-     * owner, but an employee viewing their dashboard must not be handed the
-     * whole company's leave data just to render their own three bars.
-     */
+    /** The caller's OWN balances for a year; listAll() returns every employee's, which a dashboard must not hand an employee. */
     java.util.List<LeaveBalanceResponse> listMine(int year);
 }

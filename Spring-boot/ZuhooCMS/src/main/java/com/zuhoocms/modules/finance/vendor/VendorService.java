@@ -51,7 +51,12 @@ public class VendorService {
     public VendorDtos.VendorResponse update(Long id, VendorDtos.VendorRequest request) {
         authorizationService.checkPermission(PermissionCode.VENDOR_UPDATE);
         Vendor vendor = findInTenant(id);
-        vendor.setName(request.getName().trim());
+        String name = request.getName().trim();
+        // A rename must re-run create's uniqueness check (excluding this vendor), or renaming B to A's name produces two identically-named suppliers.
+        if (vendorRepository.existsByCompanyIdAndNameIgnoreCaseAndIdNot(vendor.getCompanyId(), name, vendor.getId())) {
+            throw new BadRequestException("A vendor with this name already exists");
+        }
+        vendor.setName(name);
         vendor.setContactPerson(request.getContactPerson());
         vendor.setEmail(request.getEmail());
         vendor.setPhone(request.getPhone());

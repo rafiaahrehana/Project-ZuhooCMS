@@ -27,19 +27,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The company's own user directory.
- *
- * <p>There is no {@code users.company_id} column - membership is derived, because
- * a User becomes part of a company in three different ways: they own it, they
- * have an Employee record in it, or they have a Client record in it. This
- * controller resolves those three sets and returns their union, which is why it
- * cannot simply page a repository query.
- *
- * <p>Consequence worth knowing: paging is applied in memory after the union.
- * That is fine at the scale of one company's staff and clients (hundreds), and
- * it is the honest trade for not denormalising a company id onto User. If a
- * tenant ever grows into the tens of thousands of users, this needs a real
- * projection query instead.
+ * There is no {@code users.company_id} column: membership is the union of owner, Employee and Client records, so this cannot page a repository query.
+ * Paging is therefore applied in memory after the union - fine for hundreds of users, but a tenant with tens of thousands needs a real projection query.
  */
 @RestController
 @RequestMapping("/api/users")
@@ -65,13 +54,11 @@ public class CompanyUserController {
 
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId == null) {
-            // Platform staff have no home tenant, so "this company's users" is
-            // meaningless for them - they use the platform user screens instead.
+            // Platform staff have no home tenant, so "this company's users" is meaningless for them.
             throw new UnauthorizedException("No company context for the current user");
         }
 
-        // LinkedHashMap so a user who is both owner and employee is listed once,
-        // keeping the first (strongest) membership rather than duplicating them.
+        // LinkedHashMap so a user who is both owner and employee appears once, keeping the first (strongest) membership.
         Map<Long, String> membershipByUserId = new LinkedHashMap<>();
 
         companyRepository.findById(companyId)

@@ -3,6 +3,8 @@ package com.zuhoocms.modules.crm.activity;
 import com.zuhoocms.modules.ai.enums.AiFeature;
 import com.zuhoocms.modules.ai.prompt.CrmActivitySummaryPromptBuilder;
 import com.zuhoocms.modules.ai.service.AiService;
+import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.modules.crm.client.Client;
 import com.zuhoocms.modules.crm.client.ClientRepository;
 import com.zuhoocms.modules.crm.opportunity.Opportunity;
@@ -32,6 +34,7 @@ public class CrmActivityServiceImpl implements CrmActivityService {
     private final SecurityUtil securityUtil;
     private final AiService aiService;
     private final AiTransactionBoundary aiTx;
+    private final AuthorizationService authorizationService;
 
     @Override
     public CrmActivityResponse log(CrmActivityRequest request) {
@@ -39,6 +42,8 @@ public class CrmActivityServiceImpl implements CrmActivityService {
         if (request.getClientId() == null && request.getOpportunityId() == null) {
             throw new BadRequestException("An activity must reference a client or an opportunity");
         }
+        // Writing to a timeline edits the record - it moves the staleness clock - so it needs the update permission for whichever record it attaches to.
+        requireWritePermission(request.getClientId(), request.getOpportunityId());
 
         CrmActivity.CrmActivityBuilder builder = CrmActivity.builder()
             .type(request.getType())
@@ -46,6 +51,8 @@ public class CrmActivityServiceImpl implements CrmActivityService {
             .description(request.getDescription())
             .activityDate(request.getActivityDate() != null ? request.getActivityDate() : LocalDateTime.now())
             .scheduledAt(request.getScheduledAt())
+            // Without this, no endpoint wrote followUpAt, though CrmFollowUpScheduler and the dashboard both read it.
+            .followUpAt(request.getFollowUpAt())
             .completed(request.getCompleted() == null || request.getCompleted())
             .systemGenerated(false)
             .performedBy(securityUtil.getCurrentUser());
@@ -113,6 +120,7 @@ public class CrmActivityServiceImpl implements CrmActivityService {
     @Override
     @Transactional(readOnly = true)
     public Page<CrmActivityResponse> getTimeline(Long clientId, Long opportunityId, Pageable pageable) {
+        requireReadPermission(clientId, opportunityId);
         Long companyId = requireCompanyId();
         Page<CrmActivity> page;
         if (opportunityId != null) {
@@ -128,13 +136,19 @@ public class CrmActivityServiceImpl implements CrmActivityService {
     @Override
     public CrmActivityResponse markCompleted(Long id) {
         CrmActivity activity = findOwned(id);
+        requireWritePermissionFor(activity);
         activity.setCompleted(true);
+        // Also closes the follow-up: otherwise the dashboard widget and scheduler kept listing a completed activity as upcoming.
+        if (activity.getFollowUpAt() != null) {
+            activity.setFollowUpDone(true);
+        }
         return CrmActivityMapper.toResponse(crmActivityRepository.save(activity));
     }
 
     @Override
     public void delete(Long id) {
         CrmActivity activity = findOwned(id);
+        requireWritePermissionFor(activity);
         if (activity.isSystemGenerated()) {
             throw new BadRequestException("System-generated timeline entries cannot be deleted");
         }
@@ -142,10 +156,7 @@ public class CrmActivityServiceImpl implements CrmActivityService {
         crmActivityRepository.save(activity);
     }
 
-    // NOT_SUPPORTED overrides this class's @Transactional so the provider call
-    // isn't inside a transaction - see AiTransactionBoundary. Everything that
-    // reads entities (including the lazy client.getUser()) happens inside
-    // aiTx.load(), which commits before the AI call.
+    // NOT_SUPPORTED overrides the class @Transactional so the provider call runs outside a transaction (see AiTransactionBoundary); every entity read, including lazy client.getUser(), must be inside aiTx.load().
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CrmActivitySummaryResponse summarise(Long clientId, Long opportunityId) {
@@ -153,6 +164,8 @@ public class CrmActivityServiceImpl implements CrmActivityService {
         if (clientId == null && opportunityId == null) {
             throw new BadRequestException("Provide a clientId or an opportunityId to summarise");
         }
+        // An AI summary of a record's history is a read of that history.
+        requireReadPermission(clientId, opportunityId);
 
         String prompt = aiTx.load(() -> {
             String recordType;
@@ -197,6 +210,45 @@ public class CrmActivityServiceImpl implements CrmActivityService {
         CrmActivitySummaryResponse response = new CrmActivitySummaryResponse();
         response.setSummary(aiService.generateRaw(AiFeature.CRM_ACTIVITY_SUMMARY, prompt));
         return response;
+    }
+
+    /**
+     * This service was reachable by any authenticated employee, though the timeline holds the commercially sensitive detail; reads now need the record's view permission, writes its update permission.
+     *
+     * Opportunity-scoped entries check OPPORTUNITY_*, client-scoped ones CLIENT_*, and the unscoped timeline spans both, so it requires both.
+     */
+    private void requireReadPermission(Long clientId, Long opportunityId) {
+        if (opportunityId != null) {
+            authorizationService.checkPermission(PermissionCode.OPPORTUNITY_VIEW);
+        }
+        if (clientId != null) {
+            authorizationService.checkPermission(PermissionCode.CLIENT_VIEW);
+        }
+        if (clientId == null && opportunityId == null) {
+            authorizationService.checkPermission(PermissionCode.CLIENT_VIEW);
+            authorizationService.checkPermission(PermissionCode.OPPORTUNITY_VIEW);
+        }
+    }
+
+    private void requireWritePermission(Long clientId, Long opportunityId) {
+        if (opportunityId != null) {
+            authorizationService.checkPermission(PermissionCode.OPPORTUNITY_UPDATE);
+        }
+        if (clientId != null) {
+            authorizationService.checkPermission(PermissionCode.CLIENT_UPDATE);
+        }
+    }
+
+    /** The same rule, for an entry that already exists. */
+    private void requireWritePermissionFor(CrmActivity activity) {
+        Long opportunityId = activity.getOpportunity() != null ? activity.getOpportunity().getId() : null;
+        Long clientId = activity.getClient() != null ? activity.getClient().getId() : null;
+        if (opportunityId == null && clientId == null) {
+            // A lead-scoped entry (or an orphan) - the lead endpoints own those.
+            authorizationService.checkPermission(PermissionCode.LEAD_UPDATE);
+            return;
+        }
+        requireWritePermission(clientId, opportunityId);
     }
 
     private CrmActivity findOwned(Long id) {

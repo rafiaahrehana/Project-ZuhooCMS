@@ -2,11 +2,7 @@ package com.zuhoocms.modules.ai.prompt;
 
 import com.zuhoocms.modules.ai.exception.AiPromptException;
 
-/**
- * Shared helpers for the *PromptBuilder classes in this package - not a base
- * class, since each builder's fields and prompt shape are otherwise unrelated
- * and inheritance would add more indirection than it saves.
- */
+/** Shared helpers for the *PromptBuilder classes, deliberately not a base class since the builders' fields and prompt shapes are unrelated. */
 final class PromptSupport {
 
     private PromptSupport() {}

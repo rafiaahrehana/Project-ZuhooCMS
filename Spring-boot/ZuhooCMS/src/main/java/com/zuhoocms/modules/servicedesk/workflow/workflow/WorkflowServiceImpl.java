@@ -9,6 +9,7 @@ import com.zuhoocms.modules.servicedesk.workflow.template.WorkflowTemplateReposi
 import com.zuhoocms.modules.servicedesk.workflow.template.WorkflowTemplateRequest;
 import com.zuhoocms.modules.servicedesk.workflow.template.WorkflowTemplateResponse;
 import com.zuhoocms.modules.company.Company;
+import com.zuhoocms.enums.ServiceRequestStatus;
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.modules.ai.enums.AiFeature;
@@ -38,8 +39,7 @@ public class WorkflowServiceImpl implements WorkflowService {
     private final AuthorizationService       authorizationService;
     private final AiService                  aiService;
     private final AiTransactionBoundary      aiTx;
-
-    // ── Templates ─────────────────────────────────────────────────
+    private final com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequestRepository serviceRequestRepository;
 
     @Override
     @Transactional
@@ -66,6 +66,10 @@ public class WorkflowServiceImpl implements WorkflowService {
     @Override
     @Transactional(readOnly = true)
     public WorkflowTemplateResponse getTemplateById(Long id) {
+        // Gated like listTemplates below. Reading one template by id was open to any member of the company while
+        // the list beside it asked for the code. listActiveTemplates stays open: it is the picker the service form
+        // uses, the same exception the service catalogue makes for its own active list.
+        authorizationService.checkPermission(PermissionCode.WORKFLOW_VIEW);
         return WorkflowMapper.toResponse(findTemplate(id));
     }
 
@@ -74,25 +78,17 @@ public class WorkflowServiceImpl implements WorkflowService {
     public Page<WorkflowTemplateResponse> listTemplates(Pageable pageable) {
         authorizationService.checkPermission(PermissionCode.WORKFLOW_VIEW);
         Long companyId = requireCompanyId();
-        /*
-         * BUG-FIX: was templateRepository.findAll(pageable) — leaked ALL tenants' templates.
-         * Fixed to findByCompanyId() to enforce tenant isolation.
-         */
+        // Must be company-scoped: findAll(pageable) leaked every tenant's templates.
         return templateRepository.findByCompanyId(companyId, pageable)
                 .map(WorkflowMapper::toResponse);
     }
 
-    // Deliberately NOT gated by WORKFLOW_VIEW here: this is the active-workflow picker
-    // consumed by the Services admin page when attaching a workflow template to a
-    // service - users with SERVICE_CATALOG_VIEW but not WORKFLOW_VIEW still need it.
+    // Deliberately not gated by WORKFLOW_VIEW: the Services admin page's workflow picker is needed by users with SERVICE_CATALOG_VIEW only.
     @Override
     @Transactional(readOnly = true)
     public List<WorkflowTemplateResponse> listActiveTemplates() {
         Long companyId = requireCompanyId();
-        /*
-         * BUG-FIX: was templateRepository.findByActiveTrue() — leaked cross-tenant data.
-         * Fixed to findByCompanyIdAndActiveTrue().
-         */
+        // Must be company-scoped: findByActiveTrue() leaked cross-tenant data.
         return templateRepository.findByCompanyIdAndActiveTrue(companyId)
                 .stream()
                 .map(WorkflowMapper::toResponse)
@@ -158,8 +154,6 @@ public class WorkflowServiceImpl implements WorkflowService {
         
     }
 
-    // ── Stages ────────────────────────────────────────────────────
-
     @Override
     @Transactional
     public WorkflowStageResponse addStage(Long templateId, WorkflowStageRequest request) {
@@ -172,6 +166,12 @@ public class WorkflowServiceImpl implements WorkflowService {
             throw new BadRequestException(
                     "Stage order " + request.getStageOrder() + " is already taken in this workflow");
         }
+        // Appending is safe; inserting before an existing stage shifts the indexes in-flight requests are positioned by.
+        boolean insertsBeforeExisting = stageRepository.findByWorkflowTemplateIdOrderByStageOrderAsc(templateId)
+                .stream().anyMatch(s -> s.getStageOrder() > request.getStageOrder());
+        if (insertsBeforeExisting) {
+            guardNoInFlightRequests(templateId, "insert a stage before existing stages of");
+        }
 
         WorkflowStage stage = WorkflowStage.builder()
                 .name(request.getName())
@@ -179,9 +179,11 @@ public class WorkflowServiceImpl implements WorkflowService {
                 .stageOrder(request.getStageOrder())
                 .estimatedDays(request.getEstimatedDays())
                 .slaHours(request.getSlaHours())
-                .requiresApproval(request.getRequiresApproval())
+                // Absent means false on a create, stated here rather than by a field initialiser on the request,
+                // so that update can still tell "not mentioned" from "set to false".
+                .requiresApproval(Boolean.TRUE.equals(request.getRequiresApproval()))
                 .assigneeRole(request.getAssigneeRole())
-                .requiresPayment(request.getRequiresPayment())
+                .requiresPayment(Boolean.TRUE.equals(request.getRequiresPayment()))
                 .paymentPercent(request.getPaymentPercent())
                 .workflowTemplate(template)
                 .company(companyRef(companyId))
@@ -212,14 +214,20 @@ public class WorkflowServiceImpl implements WorkflowService {
             throw new BadRequestException(
                     "Stage order " + request.getStageOrder() + " is already taken");
         }
+        // Reordering shifts the stage indexes in-flight requests are positioned by; editing name/SLA/approval in place does not.
+        if (!stage.getStageOrder().equals(request.getStageOrder())) {
+            guardNoInFlightRequests(templateId, "reorder stages of");
+        }
 
         stage.setName(request.getName());
         stage.setStageOrder(request.getStageOrder());
         stage.setEstimatedDays(request.getEstimatedDays());
         stage.setSlaHours(request.getSlaHours());
-        stage.setRequiresApproval(request.getRequiresApproval());
+        // Guarded, like description below. Unconditional, an update that omitted these keys turned the approval
+        // gate and milestone billing off and answered 200 - the two gates on this entity that matter most.
+        if (request.getRequiresApproval() != null) stage.setRequiresApproval(request.getRequiresApproval());
         stage.setAssigneeRole(request.getAssigneeRole());
-        stage.setRequiresPayment(request.getRequiresPayment());
+        if (request.getRequiresPayment() != null) stage.setRequiresPayment(request.getRequiresPayment());
         stage.setPaymentPercent(request.getPaymentPercent());
         if (request.getDescription() != null)
             stage.setDescription(request.getDescription());
@@ -243,6 +251,8 @@ public class WorkflowServiceImpl implements WorkflowService {
                 .filter(s -> s.getWorkflowTemplate().getId().equals(templateId))
                 .orElseThrow(() -> new ResourceNotFoundException("Stage not found: " + stageId));
 
+        guardNoInFlightRequests(templateId, "delete a stage from");
+
         stage.softDelete();
         stageRepository.save(stage);
 
@@ -252,12 +262,13 @@ public class WorkflowServiceImpl implements WorkflowService {
         
     }
 
-    // No @Transactional here on purpose: the template reads run inside
-    // aiTx.load(), which commits before the provider call so no DB connection is
-    // held across it - see AiTransactionBoundary. t.getStages() is a lazy
-    // collection, so the summary has to be built inside the callback.
+    // No @Transactional on purpose: aiTx.load() commits before the provider call so no DB connection is held across it - see AiTransactionBoundary; lazy t.getStages() must be read inside the callback.
     @Override
     public WorkflowSuggestionResponse suggest(WorkflowSuggestionRequest request) {
+        // The only method in this class that checked nothing, and the only one that calls a paid AI provider: any
+        // employee could spend the company's AI budget. Gated on WORKFLOW_CREATE because what it returns is a draft
+        // workflow to create - asking for a suggestion you could not then save is not a capability worth having.
+        authorizationService.checkPermission(PermissionCode.WORKFLOW_CREATE);
         Long companyId = requireCompanyId();
 
         String prompt = aiTx.load(() -> {
@@ -282,12 +293,7 @@ public class WorkflowServiceImpl implements WorkflowService {
         return response;
     }
 
-    /**
-     * The prompt demands bare JSON, but models routinely wrap it in ```json
-     * fences or lead with a sentence anyway. Strip fences, cut to the outer
-     * braces, parse; if it still isn't valid JSON, hand the raw text back so
-     * the UI can at least show what came back instead of an error.
-     */
+    /** Models wrap the demanded bare JSON in fences or prose, so strip fences and cut to the outer braces; invalid JSON falls back to the raw text rather than an error. */
     private WorkflowSuggestionResponse parseSuggestion(String raw) {
         WorkflowSuggestionResponse response = new WorkflowSuggestionResponse();
         String candidate = raw == null ? "" : raw.replaceAll("```(?:json)?", "").trim();
@@ -312,7 +318,19 @@ public class WorkflowServiceImpl implements WorkflowService {
         return response;
     }
 
-    // ── Private helpers ───────────────────────────────────────────
+    private static final List<ServiceRequestStatus> TERMINAL_REQUEST_STATUSES = List.of(
+            ServiceRequestStatus.COMPLETED, ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED);
+
+    /** ServiceRequest.currentStage is a plain index into the ordered stage list, so structural edits are refused while open requests run on the template (until requests pin a stage id). */
+    private void guardNoInFlightRequests(Long templateId, String action) {
+        long inFlight = serviceRequestRepository.countInFlightByWorkflowTemplate(templateId, TERMINAL_REQUEST_STATUSES);
+        if (inFlight > 0) {
+            throw new BadRequestException("Cannot " + action + " this workflow while " + inFlight
+                    + " open service request" + (inFlight == 1 ? " is" : "s are")
+                    + " using it - complete, reject or cancel "
+                    + (inFlight == 1 ? "it" : "them") + " first, or create a new workflow template version.");
+        }
+    }
 
     private WorkflowTemplate findTemplate(Long id) {
         return templateRepository.findByIdAndCompanyId(id, requireCompanyId())

@@ -9,9 +9,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
+/** Upload endpoints: multipart {@code file} plus optional {@code purpose} (default DOCUMENT); the returned fileUrl is public for AVATAR/LOGO/WEBSITE and relative, so clients resolve it against the API origin. */
 @RestController
 @RequestMapping("/api/upload")
 @RequiredArgsConstructor
@@ -21,20 +22,23 @@ public class FileUploadController {
     private final LocalFileStorageService fileStorageService;
 
     @PostMapping
-    public ResponseEntity<Map<String, String>> uploadFile(@RequestParam("file") MultipartFile file) {
-        return ResponseEntity.ok(toResponse(file, fileStorageService.storeFile(file)));
+    public ResponseEntity<Map<String, Object>> uploadFile(@RequestParam("file") MultipartFile file,
+                                                          @RequestParam(value = "purpose", required = false) String purpose) {
+        StoredFile stored = fileStorageService.store(file, FilePurpose.parse(purpose, FilePurpose.DOCUMENT));
+        return ResponseEntity.ok(toResponse(stored));
     }
 
-    /** Profile-picture upload: images only, validated as real image data, 5MB cap. */
+    /** Profile picture: always AVATAR (public, images only, 5MB). */
     @PostMapping("/avatar")
-    public ResponseEntity<Map<String, String>> uploadAvatar(@RequestParam("file") MultipartFile file) {
-        return ResponseEntity.ok(toResponse(file, fileStorageService.storeAvatar(file)));
+    public ResponseEntity<Map<String, Object>> uploadAvatar(@RequestParam("file") MultipartFile file) {
+        return ResponseEntity.ok(toResponse(fileStorageService.store(file, FilePurpose.AVATAR)));
     }
 
-    private Map<String, String> toResponse(MultipartFile file, String fileDownloadUri) {
-        Map<String, String> response = new HashMap<>();
-        response.put("fileName", file.getOriginalFilename());
-        response.put("fileUrl", fileDownloadUri);
+    private Map<String, Object> toResponse(StoredFile stored) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("fileName", stored.getOriginalName());
+        response.put("fileUrl", fileStorageService.urlFor(stored));
+        response.put("fileId", stored.getId());
         response.put("message", "File uploaded successfully!");
         return response;
     }

@@ -32,4 +32,21 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
 
     boolean existsByRecipientIdAndServiceRequestIdAndType(
         Long recipientId, Long serviceRequestId, NotificationType type);
+
+    /** True when an identical service-request notification was created at or after {@code since}. */
+    @Query("""
+        SELECT COUNT(n) > 0 FROM Notification n
+        WHERE n.recipient.id = :recipientId
+          AND n.serviceRequest.id = :serviceRequestId
+          AND n.type = :type
+          AND n.title = :title
+          AND (n.message = :message OR (n.message IS NULL AND :message IS NULL))
+          AND n.createdAt >= :since
+        """)
+    boolean existsRecentDuplicate(@Param("recipientId") Long recipientId,
+                                  @Param("serviceRequestId") Long serviceRequestId,
+                                  @Param("type") NotificationType type,
+                                  @Param("title") String title,
+                                  @Param("message") String message,
+                                  @Param("since") LocalDateTime since);
 }

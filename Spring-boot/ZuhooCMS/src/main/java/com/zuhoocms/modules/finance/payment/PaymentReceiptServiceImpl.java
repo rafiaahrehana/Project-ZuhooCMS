@@ -6,6 +6,8 @@ import com.zuhoocms.modules.crm.client.Client;
 import com.zuhoocms.modules.crm.client.ClientRepository;
 import com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccount;
 import com.zuhoocms.modules.finance.chartofaccounts.DefaultAccountResolver;
+import com.zuhoocms.enums.InvoiceStatus;
+import com.zuhoocms.modules.finance.generalledger.DocumentNumberService;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerService;
 import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.generalledger.LedgerLine;
@@ -41,6 +43,14 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
     private final AuthorizationService authorizationService;
     private final CompanyRepository companyRepository;
     private final NotificationService notificationService;
+    private final DocumentNumberService documentNumberService;
+
+    /** DocumentNumberService counter key for payment receipts. */
+    static final String DOC_TYPE_RECEIPT = "PAYMENT_RECEIPT";
+
+    /** Closed invoices: no payment may be confirmed against, or reversed back onto, them. */
+    private static final java.util.Set<InvoiceStatus> CLOSED_INVOICE_STATUSES =
+            java.util.EnumSet.of(InvoiceStatus.CANCELLED, InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED);
 
     @Override
     @Transactional
@@ -57,7 +67,7 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
                     .orElseThrow(() -> new ResourceNotFoundException("Invoice not found"));
         }
 
-        String receiptNumber = generateReceiptNumber(companyId);
+        String receiptNumber = generateReceiptNumber(companyId, request.getPaymentDate());
 
         PaymentReceipt receipt = PaymentReceipt.builder()
                 .companyId(companyId)
@@ -116,27 +126,20 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
         if (receipt.getStatus() == PaymentStatus.CONFIRMED || receipt.getStatus() == PaymentStatus.DEPOSITED) {
             throw new BadRequestException("Payment receipt is already confirmed");
         }
-        // Previously this ran unconditionally before the invoice-status check
-        // below, so confirming against a CANCELLED invoice still flipped the
-        // receipt to CONFIRMED while silently skipping both the invoice update
-        // and the GL posting - staff saw "Confirmed" and reasonably believed the
-        // cash was recorded, when it wasn't.
+        // Checked before confirming: a receipt against a CANCELLED invoice otherwise showed CONFIRMED while the invoice update and GL posting were skipped.
         if (receipt.getInvoice() != null) {
             ClientInvoice linkedInvoice = invoiceRepository
                     .findByIdAndCompanyId(receipt.getInvoice().getId(), receipt.getCompanyId()).orElse(null);
-            if (linkedInvoice != null && linkedInvoice.getStatus() == com.zuhoocms.enums.InvoiceStatus.CANCELLED) {
+            if (linkedInvoice != null && CLOSED_INVOICE_STATUSES.contains(linkedInvoice.getStatus())) {
                 throw new BadRequestException(
-                        "Cannot confirm this payment: the linked invoice has been cancelled.");
+                        "Cannot confirm this payment: the linked invoice has been "
+                                + linkedInvoice.getStatus().name().toLowerCase() + ".");
             }
         }
         receipt.confirmPayment();
         receiptRepository.save(receipt);
 
-        // Previously confirming a receipt only flipped its own status - it never
-        // touched the invoice it was recorded against (paidAmount/status stayed
-        // stale) and never hit the General Ledger, so invoices could sit "ISSUED"
-        // forever even after being fully paid, and revenue/cash never showed in
-        // Finance reports.
+        // Confirming must also update the linked invoice and post to the GL, or a fully paid invoice sits at ISSUED and the cash never reaches Finance reports.
         if (receipt.getInvoice() != null) {
             ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(receipt.getInvoice().getId(), receipt.getCompanyId()).orElse(null);
             if (invoice != null && invoice.getStatus() != com.zuhoocms.enums.InvoiceStatus.CANCELLED) {
@@ -157,9 +160,6 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
         notifyPaymentReceived(receipt);
     }
 
-    // NotificationType.PAYMENT_RECEIVED existed but was never used anywhere -
-    // overdue invoices correctly notified the owner; a payment actually
-    // arriving notified no one.
     private void notifyPaymentReceived(PaymentReceipt receipt) {
         Company company = companyRepository.findById(receipt.getCompanyId()).orElse(null);
         if (company == null || company.getOwner() == null) return;
@@ -182,12 +182,21 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
         }
 
         Long companyId = receipt.getCompanyId();
+
+        // Checked before anything posts: reversing onto a CANCELLED/VOIDED invoice reopened it, and onto a REFUNDED one took the same cash out of the books twice.
+        ClientInvoice linkedInvoice = null;
+        if (receipt.getInvoice() != null) {
+            linkedInvoice = invoiceRepository.findByIdAndCompanyId(receipt.getInvoice().getId(), companyId).orElse(null);
+            if (linkedInvoice != null && CLOSED_INVOICE_STATUSES.contains(linkedInvoice.getStatus())) {
+                throw new BadRequestException("Cannot reverse this payment: the linked invoice is "
+                        + linkedInvoice.getStatus().name().toLowerCase()
+                        + ". A payment on a closed invoice has to be handled through a refund.");
+            }
+        }
         String description = "Payment reversal (receipt " + receipt.getReceiptNumber() + ")"
                 + (reason != null && !reason.isBlank() ? " - " + reason : "");
 
-        // Exact mirror of what confirmPayment posted: the cash goes back out of the
-        // books and the receivable is owed again. Foreign-currency invoice payments
-        // convert at the invoice's issue-time rate, same as the original posting.
+        // Exact mirror of confirmPayment's posting, converting foreign-currency payments at the invoice's issue-time rate as the original did.
         BigDecimal amountBase = receipt.getAmount();
         if (receipt.getInvoice() != null && receipt.getInvoice().getExchangeRate() != null
                 && receipt.getInvoice().getExchangeRate().compareTo(BigDecimal.ONE) != 0) {
@@ -203,8 +212,7 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
 
         // Restore the linked invoice: the client owes this money again.
         if (receipt.getInvoice() != null) {
-            ClientInvoice invoice = invoiceRepository
-                    .findByIdAndCompanyId(receipt.getInvoice().getId(), companyId).orElse(null);
+            ClientInvoice invoice = linkedInvoice;
             if (invoice != null) {
                 BigDecimal newPaid = invoice.getPaidAmount().subtract(receipt.getAmount()).max(BigDecimal.ZERO);
                 invoice.setPaidAmount(newPaid);
@@ -241,11 +249,7 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
     public void delete(Long id) {
         authorizationService.checkPermission(PermissionCode.PAYMENT_RECEIPT_DELETE);
         PaymentReceipt receipt = findInTenant(id);
-        // A confirmed/deposited receipt has already posted a balanced GL entry
-        // and, if linked to an invoice, moved its paidAmount/status - deleting
-        // it outright would leave those orphaned with no way back. reverse()
-        // exists specifically to unwind both correctly; only an unconfirmed
-        // (PENDING) receipt can be deleted outright.
+        // A confirmed/deposited receipt has posted a GL entry and moved the invoice's paidAmount/status; only reverse() unwinds both, so only a PENDING receipt can be deleted.
         if (receipt.getStatus() == PaymentStatus.CONFIRMED || receipt.getStatus() == PaymentStatus.DEPOSITED) {
             throw new BadRequestException(
                     "Cannot delete a " + receipt.getStatus() + " payment receipt - reverse it instead");
@@ -254,13 +258,13 @@ public class PaymentReceiptServiceImpl implements PaymentReceiptService {
         receiptRepository.save(receipt);
     }
 
-    private String generateReceiptNumber(Long companyId) {
-        int year = LocalDate.now().getYear();
+    /** RCP-YYYY-NNNNNN from the locked DocumentNumberService counter, year from the receipt's own payment date; the unlocked MAX+1 raced and missed soft-deleted receipts still holding their number. */
+    private String generateReceiptNumber(Long companyId, LocalDate paymentDate) {
+        int year = (paymentDate != null ? paymentDate : LocalDate.now()).getYear();
         String prefix = "RCP-" + year + "-";
-        String maxNumber = receiptRepository
-                .findMaxReceiptNumberByCompanyAndPrefix(companyId, prefix)
-                .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId, DOC_TYPE_RECEIPT, year, prefix, () -> {
+            Long max = receiptRepository.findMaxReceiptSequenceIncludingDeleted(companyId, prefix, prefix.length() + 1);
+            return max == null ? 1L : max + 1L;
+        });
     }
 }

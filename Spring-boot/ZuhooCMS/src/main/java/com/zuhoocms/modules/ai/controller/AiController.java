@@ -59,8 +59,7 @@ public class AiController {
                 PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
-    // SALES_MANAGER (platform staff, no CustomRole) also uses AI chat per its
-    // @PreAuthorize - only gate the tenant caller branch here.
+    // SALES_MANAGER is platform staff with no CustomRole and is gated by @PreAuthorize instead, so only tenant callers are checked here.
     private void checkTenantPermission() {
         User current = securityUtil.getCurrentUser();
         if (current != null && !current.isPlatformUser()) {
@@ -129,8 +128,6 @@ public class AiController {
         return ResponseEntity.noContent().build();
     }
 
-    // ── Conversation threads ────────────────────────────────────
-
     @PostMapping("/threads")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER','SALES_MANAGER','EMPLOYEE')")
     public ResponseEntity<AiThreadResponse> createThread(@Valid @RequestBody AiThreadCreateRequest request) {
@@ -166,16 +163,12 @@ public class AiController {
         return ResponseEntity.noContent().build();
     }
 
-    // ── Agent (tool-calling) ────────────────────────────────────
-
     @PostMapping("/agent/turn")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER','SALES_MANAGER','EMPLOYEE')")
     public ResponseEntity<AiGenerateResponse> agentTurn(@Valid @RequestBody AiAgentTurnRequest request) {
         checkTenantPermission();
         return ResponseEntity.ok(aiService.runAgentTurn(request));
     }
-
-    // ── Proactive daily briefing ────────────────────────────────
 
     @GetMapping("/daily-briefing")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER','SALES_MANAGER','EMPLOYEE')")

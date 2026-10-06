@@ -6,14 +6,12 @@ public interface EmployeeBiometricService {
 
     BiometricDataResponse enrollEmployee(BiometricEnrollmentRequest request);
     BiometricDataResponse getEnrollment(Long employeeId, Long deviceId);
-    // Direct lookup by the enrollment record's own ID (distinct from getEnrollment,
-    // which looks up by employeeId+deviceId pair) - backs the GET /{id} controller endpoint.
+    // Lookup by the enrollment record's own id, unlike getEnrollment which keys on employeeId+deviceId; backs GET /{id}.
     BiometricDataResponse getById(Long id);
     List<BiometricDataResponse> getByEmployee(Long employeeId);
 
     boolean verifyBiometric(Long employeeId, Long deviceId, String template, double threshold);
-    // Overload keyed by the enrollment record's own ID - backs the POST /{id}/verify
-    // controller endpoint, which only has the enrollment id, not employeeId+deviceId.
+    // Overload keyed by the enrollment id, for POST /{id}/verify, which has no employeeId+deviceId.
     boolean verifyBiometric(Long id, String template, double threshold);
 
     void updateEnrollmentStatus(Long id, boolean enrolled);

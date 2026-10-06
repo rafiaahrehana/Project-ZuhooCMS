@@ -26,9 +26,7 @@ import java.time.LocalDateTime;
 
 public class WalletServiceImpl implements WalletService {
 
-    // Fixed placeholder threshold - the wallet has no per-company configurable
-    // amount today, and currency varies by company (see Wallet's "no company_id
-    // column" note), so this is a reasonable default rather than a precise one.
+    // Fixed default: there is no per-company configurable amount, and currency varies by company (see Wallet).
     private static final BigDecimal LOW_BALANCE_THRESHOLD = BigDecimal.valueOf(100);
 
     private final WalletRepository walletRepository;
@@ -80,9 +78,7 @@ public class WalletServiceImpl implements WalletService {
         recordTransaction(wallet, WalletTransactionType.DEBIT, amount,
             wallet.getTotalAvailable(), reference, notes);
 
-        // Previously the only feedback was this same synchronous exception at the
-        // moment a payment attempt actually failed - nothing proactive warned the
-        // owner beforehand, unlike the analogous overdue-reconciliation scheduler.
+        // Warn the owner before a payment attempt fails on an empty wallet.
         if ("COMPANY".equals(contextType) && wallet.getTotalAvailable().compareTo(LOW_BALANCE_THRESHOLD) <= 0) {
             notifyLowBalance(wallet, contextId);
         }
@@ -123,7 +119,25 @@ public class WalletServiceImpl implements WalletService {
         return wallet;
     }
 
-    // ── Private helpers ───────────────────────────────────────────
+    @Override
+    @Transactional
+    public boolean creditOnce(String contextType, Long contextId, BigDecimal amount, WalletTransactionType type,
+                              String reference, String notes) {
+        if (reference == null || reference.isBlank()) {
+            throw new IllegalArgumentException("creditOnce needs a reference to be idempotent");
+        }
+        // Create-if-missing, then lock the row, then look for the reference - the lock is what makes check-then-credit safe.
+        if (!walletRepository.existsByContextTypeAndContextId(contextType, contextId)) {
+            createWallet(contextType, contextId);
+        }
+        Wallet wallet = walletRepository.findByContextTypeAndContextIdForUpdate(contextType, contextId)
+            .orElseThrow(() -> new BadRequestException("Wallet not found for " + contextType + ": " + contextId));
+        if (txRepository.existsByWalletIdAndTypeAndReference(wallet.getId(), type, reference)) {
+            return false;
+        }
+        credit(contextType, contextId, amount, type, reference, notes);
+        return true;
+    }
 
     private Wallet createWallet(String contextType, Long contextId) {
         Wallet w = Wallet.builder().contextType(contextType).contextId(contextId).build();

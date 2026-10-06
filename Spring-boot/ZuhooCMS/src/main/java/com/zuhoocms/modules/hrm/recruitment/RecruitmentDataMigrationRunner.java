@@ -13,15 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 /**
- * One-time data repair for the Candidate/JobApplication split and the
- * expanded offer sub-pipeline (ApplicationStatus.OFFERED -> OFFER_*). There's
- * no Flyway in this project - schema evolution that only needs new nullable
- * columns is handled by hibernate.ddl-auto=update, but fixing up EXISTING
- * rows needs code, so it happens here on boot.
- *
- * Safe to run on every startup: both steps are no-ops once there's nothing
- * left to fix, and step 2 is skipped entirely on a fresh database that never
- * had the old applicant_* columns in the first place.
+ * One-time data repair for the Candidate/JobApplication split and the expanded offer sub-pipeline (OFFERED -> OFFER_*): with no Flyway here, ddl-auto=update adds nullable columns but fixing existing rows needs code.
+ * Safe on every startup: both steps are no-ops once nothing is left to fix, and step 2 is skipped on a fresh database that never had the old applicant_* columns.
  */
 @Slf4j
 @Component
@@ -41,13 +34,8 @@ public class RecruitmentDataMigrationRunner implements ApplicationRunner {
     }
 
     /**
-     * Hibernate generates a CHECK constraint enumerating the enum's values at
-     * the time the column was first created, and ddl-auto=update never
-     * refreshes it for an existing column - a database that ever ran the old
-     * 9-value ApplicationStatus still has a constraint that rejects every
-     * status this refactor adds (SELECTED, the four OFFER_* values). Dropping
-     * it is safe: enum validity is still enforced by Hibernate's own mapping,
-     * this constraint was only ever a second line of defense.
+     * ddl-auto=update never refreshes the CHECK constraint Hibernate generated from the enum's values when the column was created, so an older database rejects SELECTED and the four OFFER_* values.
+     * Dropping it is safe: enum validity is still enforced by Hibernate's own mapping.
      */
     private void dropStaleStatusCheckConstraint() {
         entityManager.createNativeQuery(
@@ -55,12 +43,7 @@ public class RecruitmentDataMigrationRunner implements ApplicationRunner {
             .executeUpdate();
     }
 
-    /**
-     * applicant_name/applicant_email were NOT NULL on the old schema. Hibernate
-     * never drops orphaned columns, and it no longer populates them either -
-     * without this, every new application insert fails the database's own
-     * constraint on a column the application doesn't know exists anymore.
-     */
+    /** applicant_name/applicant_email were NOT NULL on the old schema; Hibernate neither drops nor populates them, so every new insert failed a constraint on a column the code no longer knows about. */
     private void relaxLegacyNotNullConstraints() {
         if (!legacyApplicantColumnsExist()) return;
         entityManager.createNativeQuery("ALTER TABLE job_applications ALTER COLUMN applicant_name DROP NOT NULL").executeUpdate();

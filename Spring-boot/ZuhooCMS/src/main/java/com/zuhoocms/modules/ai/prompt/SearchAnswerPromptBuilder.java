@@ -3,11 +3,7 @@ package com.zuhoocms.modules.ai.prompt;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 
-/**
- * Builds the prompt for AI-powered search answers.
- * The question is the platformuser's natural-language query; context is a
- * plain-text digest of the top search results across modules.
- */
+/** Builds the search-answer prompt: question is the user's natural-language query, context a plain-text digest of top results across modules. */
 @Setter
 @Accessors(chain = true)
 public class SearchAnswerPromptBuilder {

@@ -27,9 +27,7 @@ public class BankReconciliationResponse {
 
     private BigDecimal outstandingDepositsTotal;
     private BigDecimal outstandingChecksTotal;
-    // bankStatementBalance + outstandingDepositsTotal - outstandingChecksTotal - a
-    // convenience so the UI doesn't have to recompute it; should equal glBalance
-    // (difference == 0) before the reconciliation can be closed.
+    // bankStatementBalance + outstandingDepositsTotal - outstandingChecksTotal; must equal glBalance (difference == 0) before the reconciliation can be closed.
     private BigDecimal adjustedBankBalance;
 
     private boolean reconciled;

@@ -3,10 +3,7 @@ package com.zuhoocms.core.automation;
 import lombok.Getter;
 import org.springframework.context.ApplicationEvent;
 
-/**
- * Base cross-module event. All business events carry companyId for
- * tenant isolation — handlers must filter on it.
- */
+/** Base cross-module event: every business event carries companyId and handlers must filter on it for tenant isolation. */
 @Getter
 public abstract class BusinessEvent extends ApplicationEvent {
 

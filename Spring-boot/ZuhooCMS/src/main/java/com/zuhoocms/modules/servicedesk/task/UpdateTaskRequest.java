@@ -16,7 +16,7 @@ public class UpdateTaskRequest {
     private String description;
     private TaskStatus status;
     private ServiceRequestPriority priority;
-    private LocalDate dueDate;              // fixed: was LocalDateTime
+    private LocalDate dueDate;
     private LocalDateTime slaDeadline;
     private Long assignedEmployeeId;
     private Double estimatedHours;

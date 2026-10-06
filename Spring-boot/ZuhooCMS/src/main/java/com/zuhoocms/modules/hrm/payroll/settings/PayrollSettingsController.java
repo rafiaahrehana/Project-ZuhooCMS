@@ -7,13 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-/**
- * Payroll policy for the caller's own company.
- *
- * Reading is open to anyone who can see payroll, because a payslip is not
- * explicable without knowing the divisor behind it. Changing it takes
- * COMPANY_SETTINGS - these values move real money for every employee.
- */
+/** Payroll policy for the caller's company: readable by anyone who can see payroll (a payslip needs its divisor), changeable only with COMPANY_SETTINGS. */
 @RestController
 @RequestMapping("/api/hr/payroll-settings")
 @RequiredArgsConstructor

@@ -6,12 +6,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
-/**
- * Completes signup for a Google account that has no user yet.
- *
- * The token is sent again and verified again — the previous /api/auth/google call proves nothing
- * about this one, and identity must never be carried across requests by the client.
- */
+/** The token is sent and verified again because the previous /api/auth/google call proves nothing about this one; identity must never be carried across requests by the client. */
 @Getter
 @Setter
 public class GoogleRegisterRequest {

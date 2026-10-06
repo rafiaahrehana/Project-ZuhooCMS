@@ -8,16 +8,8 @@ import lombok.NoArgsConstructor;
 import java.util.List;
 
 /**
- * Everything the Recruitment Reports &amp; KPIs page renders, in one round
- * trip - same shape convention as HrDashboardResponse: counts that can
- * legitimately be zero are primitives, rates/averages that may be genuinely
- * UNKNOWN (no data to divide yet) are boxed Double and left null so the UI
- * shows a dash rather than a misleading 0%.
- *
- * Computed live from JobApplication's CURRENT status only - there is no
- * stage-transition history table, so "reached interview" etc. is inferred
- * from where an application sits (or last sat) in the forward pipeline
- * order, not from an actual audit trail. See RecruitmentKpiServiceImpl.
+ * Everything the Recruitment Reports &amp; KPIs page renders, in one round trip; as in HrDashboardResponse, counts are primitives and genuinely unknown rates are boxed and null so the UI shows a dash, not 0%.
+ * Computed live from JobApplication's CURRENT status: there is no stage-transition history table, so "reached interview" is inferred from pipeline order, not an audit trail. See RecruitmentKpiServiceImpl.
  */
 @Data
 @Builder
@@ -25,7 +17,6 @@ import java.util.List;
 @AllArgsConstructor
 public class RecruitmentKpiResponse {
 
-    // ── Headline figures ──────────────────────────────────────
     private long openPositions;
     private long totalCandidates;
     private long totalApplications;
@@ -45,7 +36,6 @@ public class RecruitmentKpiResponse {
     /** Mean CvScoringService.atsScore over applications with atsParseStatus=SUCCESS. Null when nothing has been scored yet. */
     private Double avgAtsMatchScore;
 
-    // ── Panels ────────────────────────────────────────────────
     /** Applications by current stage: Applied -> Screening -> Interview -> Offer -> Hired. */
     private List<FunnelStage> funnel;
     private List<SourceSlice> sourceBreakdown;

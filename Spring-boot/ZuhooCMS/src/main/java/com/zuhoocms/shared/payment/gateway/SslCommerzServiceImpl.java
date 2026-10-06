@@ -2,6 +2,7 @@ package com.zuhoocms.shared.payment.gateway;
 
 import com.zuhoocms.auth.role.enums.Role;
 import com.zuhoocms.auth.user.User;
+import com.zuhoocms.enums.InvoiceStatus;
 import com.zuhoocms.enums.WalletTransactionType;
 import com.zuhoocms.modules.company.Company;
 import com.zuhoocms.modules.company.CompanyRepository;
@@ -26,16 +27,23 @@ import tools.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.EnumSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -43,6 +51,10 @@ import java.util.UUID;
 @Slf4j
 @SuppressWarnings("deprecation")
 public class SslCommerzServiceImpl implements SslCommerzService {
+
+    /** Invoices that can no longer take a gateway payment. */
+    private static final Set<InvoiceStatus> UNPAYABLE_INVOICE_STATUSES = EnumSet.of(
+        InvoiceStatus.PAID, InvoiceStatus.CANCELLED, InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED);
 
     private final SslCommerzProperties properties;
     private final PaymentGatewayTransactionRepository transactionRepository;
@@ -57,6 +69,7 @@ public class SslCommerzServiceImpl implements SslCommerzService {
     private final SubscriptionPlanDefinitionRepository subscriptionPlanDefinitionRepository;
     private final SecurityUtil securityUtil;
     private final ObjectMapper objectMapper;
+    private final PlatformTransactionManager transactionManager;
 
     private final RestClient restClient = RestClient.create();
 
@@ -69,6 +82,9 @@ public class SslCommerzServiceImpl implements SslCommerzService {
         if (properties.getStoreId() == null || properties.getStoreId().isBlank()) {
             throw new BadRequestException("Online payments are not configured (sslcommerz.store-id missing)");
         }
+        if (purpose == null) {
+            throw new BadRequestException("Purpose is required");
+        }
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("Amount must be greater than zero");
         }
@@ -77,12 +93,9 @@ public class SslCommerzServiceImpl implements SslCommerzService {
             throw new BadRequestException("No company context");
         }
         User user = securityUtil.getCurrentUser();
-        validateTarget(purpose, targetId, companyId, user);
+        validateTarget(purpose, targetId, companyId, user, amount);
 
-        // The client-supplied amount is only trustworthy for purposes where it's
-        // derived from a record the server already owns (invoice/subscription total,
-        // wallet top-up choice). A platform plan upgrade must never be priced by the
-        // caller - always charge the catalog price for the requested plan.
+        // A platform plan upgrade must never be priced by the caller - always charge the catalog price.
         BigDecimal effectiveAmount = purpose == GatewayPurpose.PLATFORM_SUBSCRIPTION
             ? decodePlan(targetId).getPrice()
             : amount;
@@ -151,34 +164,60 @@ public class SslCommerzServiceImpl implements SslCommerzService {
     }
 
     /**
-     * Staff (COMPANY_OWNER/EMPLOYEE) may initiate payment against any target in
-     * their own company - tenant scoping via companyId is enough. A CLIENT may
-     * only pay their own invoice/subscription; without this, any authenticated
-     * client could pass an arbitrary targetId belonging to another client in the
-     * same tenant and activate/settle it with their own card.
+     * A CLIENT may only pay their own target; otherwise any client could pay an arbitrary targetId in the same tenant.
+     * Also checks the amount against the target: the gateway charges what is sent here, so an unabsorbable amount charges the customer for nothing.
      */
-    private void validateTarget(GatewayPurpose purpose, Long targetId, Long companyId, User user) {
+    private void validateTarget(GatewayPurpose purpose, Long targetId, Long companyId, User user, BigDecimal amount) {
         boolean isClient = user != null && user.getRole() == Role.CLIENT;
 
         switch (purpose) {
             case INVOICE -> {
+                if (targetId == null) {
+                    throw new BadRequestException("Invoice id is required");
+                }
                 ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(targetId, companyId)
                     .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + targetId));
                 if (isClient && !ownedByUser(invoice.getClient(), user)) {
                     throw new ForbiddenException("This invoice does not belong to you");
                 }
+                if (UNPAYABLE_INVOICE_STATUSES.contains(invoice.getStatus())) {
+                    throw new BadRequestException("This invoice is " + invoice.getStatus().name().toLowerCase()
+                        + " and cannot be paid online");
+                }
+                // The gateway charges in its configured currency but the charge is recorded in the invoice's currency.
+                String gatewayCurrency = properties.getCurrency();
+                String invoiceCurrency = invoice.getCurrency() != null ? invoice.getCurrency() : "BDT";
+                if (gatewayCurrency == null || !gatewayCurrency.equalsIgnoreCase(invoiceCurrency)) {
+                    throw new BadRequestException("This invoice is in " + invoiceCurrency
+                        + ", but online payments are only available in " + gatewayCurrency
+                        + ". Please pay it by another method.");
+                }
+                BigDecimal paid = invoice.getPaidAmount() != null ? invoice.getPaidAmount() : BigDecimal.ZERO;
+                BigDecimal credited = invoice.getCreditedAmount() != null ? invoice.getCreditedAmount() : BigDecimal.ZERO;
+                BigDecimal balance = invoice.getTotalAmount().subtract(paid).subtract(credited);
+                if (amount.compareTo(balance) > 0) {
+                    throw new BadRequestException("Amount " + amount.toPlainString()
+                        + " exceeds the invoice's outstanding balance of " + balance.toPlainString());
+                }
             }
             case PACKAGE_SUBSCRIPTION -> {
+                if (targetId == null) {
+                    throw new BadRequestException("Subscription id is required");
+                }
                 PackageSubscription subscription = subscriptionRepository
                     .findByIdAndCompanyId(targetId, companyId)
                     .orElseThrow(() -> new ResourceNotFoundException("Subscription not found: " + targetId));
                 if (isClient && !ownedByUser(subscription.getClient(), user)) {
                     throw new ForbiddenException("This subscription does not belong to you");
                 }
+                BigDecimal price = subscription.getPricePaid();
+                if (price == null || amount.compareTo(price) != 0) {
+                    throw new BadRequestException("Amount must equal the subscription price"
+                        + (price != null ? " of " + price.toPlainString() : ""));
+                }
             }
             case WALLET_TOPUP -> {
-                // Credits the company's shared wallet, not a specific client's record -
-                // no per-target ownership to check beyond the companyId tenant scope.
+                // Credits the company's shared wallet - no per-target ownership beyond companyId scoping.
             }
             case PLATFORM_SUBSCRIPTION -> {
                 if (user == null || user.getRole() != Role.COMPANY_OWNER) {
@@ -212,29 +251,131 @@ public class SslCommerzServiceImpl implements SslCommerzService {
         return client != null && client.getUser() != null && client.getUser().getId().equals(user.getId());
     }
 
+    /**
+     * Success callback / IPN: verify signature, record the confirmed charge, then apply it - each step commits on its own.
+     * Not @Transactional: as one transaction an apply failure rolled back the SUCCESS marker, leaving INITIATED after a real charge.
+     * A failed apply leaves the row SUCCESS with applied = false for GatewayApplyRetryScheduler.
+     */
     @Override
-    @Transactional
     public GatewayTransactionStatus handleSuccess(Map<String, String> params) {
         String tranId = params.get("tran_id");
+
+        if (!SslCommerzSignature.isValid(params, properties.getStorePassword())) {
+            log.warn("SSLCommerz callback rejected: verify_sign missing or invalid (tran_id={})", tranId);
+            return GatewayTransactionStatus.VALIDATION_FAILED;
+        }
+
         String valId = params.get("val_id");
         logWebhook(params);
 
-        PaymentGatewayTransaction tx = transactionRepository.findByTranIdForUpdate(tranId)
+        PaymentGatewayTransaction snapshot = transactionRepository.findByTranId(tranId)
             .orElseThrow(() -> new ResourceNotFoundException("Unknown transaction: " + tranId));
 
         // Idempotency: success callback AND IPN both land here
-        if (tx.getStatus() == GatewayTransactionStatus.SUCCESS) {
+        if (snapshot.getStatus() == GatewayTransactionStatus.SUCCESS) {
             return GatewayTransactionStatus.SUCCESS;
         }
 
-        if (!validateWithGateway(tx, valId)) {
+        // Network call made without holding the row lock.
+        GatewayValidation validation = validateWithGateway(snapshot, valId);
+
+        GatewayTransactionStatus recorded;
+        try {
+            recorded = requiresNew().execute(status -> recordValidation(tranId, valId, params, validation));
+        } catch (DataIntegrityViolationException e) {
+            // uq_pgt_val_id: a concurrent callback settled another row with the same val_id.
+            log.warn("SSLCommerz val_id {} already settles another transaction - {} rejected", valId, tranId);
+            return GatewayTransactionStatus.VALIDATION_FAILED;
+        }
+        if (recorded != GatewayTransactionStatus.SUCCESS) {
+            return recorded;
+        }
+
+        applyConfirmedTransaction(tranId);
+        // The charge is recorded either way; an apply failure is retried and does not fail the customer's payment.
+        return GatewayTransactionStatus.SUCCESS;
+    }
+
+    /** Step 2: runs in its own transaction with the row locked. */
+    private GatewayTransactionStatus recordValidation(String tranId, String valId, Map<String, String> params,
+                                                      GatewayValidation validation) {
+        PaymentGatewayTransaction tx = transactionRepository.findByTranIdForUpdate(tranId)
+            .orElseThrow(() -> new ResourceNotFoundException("Unknown transaction: " + tranId));
+        if (tx.getStatus() == GatewayTransactionStatus.SUCCESS) {
+            return GatewayTransactionStatus.SUCCESS; // a concurrent callback got here first
+        }
+        if (!validation.ok()) {
             tx.setStatus(GatewayTransactionStatus.VALIDATION_FAILED);
+            tx.setValidationStatus(truncate(validation.status(), 30));
+            tx.setValidatedAt(LocalDateTime.now());
+            transactionRepository.save(tx);
+            return GatewayTransactionStatus.VALIDATION_FAILED;
+        }
+        if (transactionRepository.existsByValIdAndIdNot(valId, tx.getId())) {
+            log.warn("SSLCommerz val_id {} already settled another transaction; {} not accepted", valId, tranId);
+            tx.setStatus(GatewayTransactionStatus.VALIDATION_FAILED);
+            tx.setValidationStatus("DUPLICATE_VAL_ID");
+            tx.setValidatedAt(LocalDateTime.now());
             transactionRepository.save(tx);
             return GatewayTransactionStatus.VALIDATION_FAILED;
         }
 
-        // Apply to the domain object using the companyId captured at initiate
-        // time - callbacks have no security context.
+        LocalDateTime now = LocalDateTime.now();
+        tx.setStatus(GatewayTransactionStatus.SUCCESS);
+        tx.setValId(valId);
+        tx.setBankTranId(params.get("bank_tran_id"));
+        tx.setCardType(params.get("card_type"));
+        tx.setCompletedAt(now);
+        tx.setValidationStatus(truncate(validation.status(), 30));
+        tx.setValidatedAmount(validation.amount());
+        tx.setValidatedAt(now);
+        tx.setApplied(Boolean.FALSE);
+        tx.setApplyAttempts(0);
+        transactionRepository.saveAndFlush(tx);
+        return GatewayTransactionStatus.SUCCESS;
+    }
+
+    /** Applies a recorded, not-yet-applied charge in its own transaction; on failure records the error in yet another one. */
+    @Override
+    public boolean applyConfirmedTransaction(String tranId) {
+        try {
+            Boolean applied = requiresNew().execute(status -> {
+                PaymentGatewayTransaction tx = transactionRepository.findByTranIdForUpdate(tranId).orElse(null);
+                if (tx == null || tx.getStatus() != GatewayTransactionStatus.SUCCESS
+                        || !Boolean.FALSE.equals(tx.getApplied())) {
+                    return false; // unknown, not confirmed, already applied, or a legacy row
+                }
+                applyToDomain(tx);
+                tx.setApplied(Boolean.TRUE);
+                tx.setAppliedAt(LocalDateTime.now());
+                tx.setApplyError(null);
+                tx.setApplyAttempts((tx.getApplyAttempts() == null ? 0 : tx.getApplyAttempts()) + 1);
+                tx.setLastApplyAttemptAt(LocalDateTime.now());
+                transactionRepository.save(tx);
+                return true;
+            });
+            return Boolean.TRUE.equals(applied);
+        } catch (Exception e) {
+            log.error("SSLCommerz transaction {} was charged but could not be applied: {}", tranId, e.getMessage());
+            try {
+                requiresNew().executeWithoutResult(status ->
+                    transactionRepository.findByTranIdForUpdate(tranId).ifPresent(tx -> {
+                        if (Boolean.FALSE.equals(tx.getApplied())) {
+                            tx.setApplyError(truncate(e.getClass().getSimpleName() + ": " + e.getMessage(), 1000));
+                            tx.setApplyAttempts((tx.getApplyAttempts() == null ? 0 : tx.getApplyAttempts()) + 1);
+                            tx.setLastApplyAttemptAt(LocalDateTime.now());
+                            transactionRepository.save(tx);
+                        }
+                    }));
+            } catch (Exception recordError) {
+                log.error("Could not record the apply failure for {}: {}", tranId, recordError.getMessage());
+            }
+            return false;
+        }
+    }
+
+    /** Applies to the domain object using the companyId captured at initiate time - callbacks have no security context. */
+    private void applyToDomain(PaymentGatewayTransaction tx) {
         switch (tx.getPurpose()) {
             case INVOICE -> invoiceService.recordPaymentForCompany(
                 tx.getCompanyId(), tx.getTargetId(), tx.getAmount());
@@ -247,41 +388,60 @@ public class SslCommerzServiceImpl implements SslCommerzService {
                 tx.getCompanyId(), decodePlan(tx.getTargetId()), tx.getAmount(),
                 tx.getTranId(), tx.getInitiatedByUserId());
         }
-
-        tx.setStatus(GatewayTransactionStatus.SUCCESS);
-        tx.setValId(valId);
-        tx.setBankTranId(params.get("bank_tran_id"));
-        tx.setCardType(params.get("card_type"));
-        tx.setCompletedAt(LocalDateTime.now());
-        transactionRepository.save(tx);
-        return GatewayTransactionStatus.SUCCESS;
     }
 
-    /** Server-side validation - never trust the browser redirect alone. */
-    private boolean validateWithGateway(PaymentGatewayTransaction tx, String valId) {
-        if (valId == null || valId.isBlank()) return false;
+    private TransactionTemplate requiresNew() {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return template;
+    }
+
+    record GatewayValidation(boolean ok, String status, BigDecimal amount) {
+    }
+
+    /** Server-side validation: must be VALID/VALIDATED for this exact tran_id, amount and currency - a genuine val_id from a cheaper checkout used to be accepted for any tran_id. */
+    private GatewayValidation validateWithGateway(PaymentGatewayTransaction tx, String valId) {
+        if (valId == null || valId.isBlank()) return new GatewayValidation(false, "MISSING_VAL_ID", null);
         try {
-            String url = properties.validationUrl()
-                + "?val_id=" + valId
-                + "&store_id=" + properties.getStoreId()
-                + "&store_passwd=" + properties.getStorePassword()
-                + "&format=json";
-            String body = restClient.get().uri(url).retrieve().body(String.class);
+            String url = UriComponentsBuilder.fromUriString(properties.validationUrl())
+                .queryParam("val_id", valId)
+                .queryParam("store_id", properties.getStoreId())
+                .queryParam("store_passwd", properties.getStorePassword())
+                .queryParam("format", "json")
+                .encode()
+                .toUriString();
+            String body = restClient.get().uri(java.net.URI.create(url)).retrieve().body(String.class);
             JsonNode json = objectMapper.readTree(body);
             String status = json.path("status").asText();
             boolean statusOk = "VALID".equalsIgnoreCase(status) || "VALIDATED".equalsIgnoreCase(status);
-            boolean amountOk = tx.getAmount()
-                .compareTo(new BigDecimal(json.path("amount").asText("0"))) == 0;
-            boolean currencyOk = tx.getCurrency().equalsIgnoreCase(json.path("currency").asText(""));
-            if (!statusOk || !amountOk || !currencyOk) {
-                log.warn("SSLCommerz validation mismatch for {}: status={} amountOk={} currencyOk={}",
-                    tx.getTranId(), status, amountOk, currencyOk);
+            BigDecimal validatedAmount = parseAmount(json.path("amount").asText("0"));
+            boolean amountOk = validatedAmount != null && tx.getAmount().compareTo(validatedAmount) == 0;
+            boolean currencyOk = tx.getCurrency() != null
+                && tx.getCurrency().equalsIgnoreCase(json.path("currency").asText(""));
+            boolean tranIdOk = tx.getTranId().equals(json.path("tran_id").asText(""));
+            if (!statusOk || !amountOk || !currencyOk || !tranIdOk) {
+                log.warn("SSLCommerz validation mismatch for {}: status={} amountOk={} currencyOk={} tranIdOk={}",
+                    tx.getTranId(), status, amountOk, currencyOk, tranIdOk);
             }
-            return statusOk && amountOk && currencyOk;
+            String recordedStatus = tranIdOk ? status : "TRAN_ID_MISMATCH";
+            return new GatewayValidation(statusOk && amountOk && currencyOk && tranIdOk, recordedStatus, validatedAmount);
         } catch (Exception e) {
             log.error("SSLCommerz validation error for {}", tx.getTranId(), e);
-            return false;
+            return new GatewayValidation(false, "VALIDATION_ERROR", null);
         }
+    }
+
+    private static BigDecimal parseAmount(String raw) {
+        try {
+            return new BigDecimal(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return null;
+        return value.length() <= max ? value : value.substring(0, max);
     }
 
     @Override

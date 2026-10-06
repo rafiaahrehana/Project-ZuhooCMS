@@ -21,7 +21,7 @@ import java.time.LocalDate;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class GeneralLedger extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     private LocalDate transactionDate;
 
@@ -36,28 +36,25 @@ public class GeneralLedger extends BaseEntity {
 
     private String description; // e.g., "Payment for invoice #INV-001"
 
-    // Reference to source transaction
     private String referenceType; // EXPENSE, INVOICE, SALARY, VENDOR_PAYMENT, JOURNAL_ENTRY
-    private Long referenceId; // FK to source table
+    private Long referenceId;
 
     private String referenceNumber; // e.g., "INV-001", "EXP-005"
 
     @Builder.Default
-    private boolean isReconciled = false; // For bank reconciliation
+    private boolean isReconciled = false;
 
     private String reconciliationNotes;
 
-    // Which BankReconciliation cleared this line, if any - lets a reconciliation's
-    // "still outstanding" set be computed live (unreconciled entries for the account)
-    // instead of the user hand-typing amounts. Plain id (not a @ManyToOne) to avoid a
-    // cross-package dependency on the reconciliation module, same pattern as referenceId.
+    // Which BankReconciliation cleared this line, so its "still outstanding" set is computed live instead of hand-typed.
+    // A plain id rather than a @ManyToOne, to avoid a cross-package dependency on the reconciliation module - same pattern as referenceId.
     private Long reconciledInReconciliationId;
 
-    private String postedBy; // User who posted this GL entry
+    private String postedBy;
     private LocalDate postedDate;
 
     @Builder.Default
-    private boolean posted = true; // GL entry is posted
+    private boolean posted = true;
 
     public BigDecimal getAmount() {
         if (debitAmount.compareTo(BigDecimal.ZERO) > 0) {

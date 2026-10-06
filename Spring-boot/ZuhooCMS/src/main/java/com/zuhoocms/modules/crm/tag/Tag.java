@@ -8,17 +8,15 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * A shared tag taxonomy across Lead/Opportunity/Client within one company -
- * one vocabulary reused everywhere, not free text per record (see Client.tags,
- * which remains a legacy free-text field for backward compatibility).
- */
+/** A shared tag taxonomy across Lead/Opportunity/Client within one company, not free text per record (Client.tags remains a legacy free-text field). */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
-@Table(name = "tags", uniqueConstraints = {
-    @UniqueConstraint(name = "uq_tag_company_name", columnNames = {"company_id", "name"})
-})
+/*
+ * No @UniqueConstraint on purpose: JPA's total (company_id, name) constraint covered soft-deleted rows, reserving a deleted tag's name, and was case-sensitive while the service checks existsByNameIgnoreCase.
+ * CrmSchemaMigrationRunner creates the replacement instead: UNIQUE (company_id, lower(name)) WHERE deleted = false.
+ */
+@Table(name = "tags")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Tag extends BaseEntity {
 

@@ -14,6 +14,9 @@ public class CrmActivityResponse {
     private LocalDateTime activityDate;
     private LocalDateTime scheduledAt;
     private boolean completed;
+    // Echoed back so the caller can render the reminder it just set and the dashboard widget and timeline agree on what is outstanding.
+    private LocalDateTime followUpAt;
+    private boolean followUpDone;
     private boolean systemGenerated;
     private Long clientId;
     private Long opportunityId;

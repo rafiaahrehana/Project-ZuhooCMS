@@ -5,20 +5,15 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 /**
- * Fields an employee may edit on their OWN Employee record via PATCH /api/employees/me -
- * deliberately a narrow subset of UpdateEmployeeRequest. Job title, department, designation,
- * employment type/status, salary, bank details, hire dates, and date of birth are HR/owner-
- * managed only (EMPLOYEE_UPDATE via PATCH /api/employees/{id}) - letting an employee self-edit
- * those would let them change their own pay or job standing. National ID and Tax ID are
- * self-reported personal identity fields (the employee is the authority on their own ID
- * numbers), so those stay self-editable alongside the rest of the personal-info fields.
+ * Fields an employee may edit on their OWN record via PATCH /api/employees/me: a deliberately narrow subset of UpdateEmployeeRequest.
+ * Job title, department, designation, employment type/status, salary, bank details, hire dates and date of birth are EMPLOYEE_UPDATE-only, since self-editing them would change own pay or job standing.
+ * National ID and Tax ID stay self-editable as self-reported identity fields.
  */
 @Data
 public class SelfUpdateEmployeeRequest {
     @Size(max = 30)
     private String workPhone;
-    // Personal mobile number - lives on the linked User account (User.phone), distinct
-    // from workPhone which lives on the Employee record.
+    // Personal mobile number: lives on the linked User account (User.phone), distinct from workPhone on the Employee record.
     @Size(max = 30)
     private String phone;
     @Size(max = 500)

@@ -6,14 +6,16 @@ import org.springframework.data.domain.Pageable;
 
 public interface CandidateService {
 
-    /**
-     * Finds the existing candidate for this company+email (case-insensitive), or
-     * creates one. Applying again with the same email reuses the same person
-     * instead of creating a duplicate - contact details are refreshed from the
-     * latest application, but the original source is left untouched.
-     */
+    /** Finds or creates the candidate for this company+email (case-insensitive): contact details are refreshed from the latest application, the original source is left untouched. */
+    default Candidate findOrCreate(Long companyId, String name, String email, String phone,
+                            ApplicationSource source, String resumeUrl, String linkedInUrl, String portfolioUrl) {
+        return findOrCreate(companyId, name, email, phone, source, resumeUrl, linkedInUrl, portfolioUrl, true);
+    }
+
+    /** @param refreshExistingDetails false for anonymous (careers page) applications, leaving an existing candidate's details untouched; the caller stores what was submitted on the application. */
     Candidate findOrCreate(Long companyId, String name, String email, String phone,
-                            ApplicationSource source, String resumeUrl, String linkedInUrl, String portfolioUrl);
+                            ApplicationSource source, String resumeUrl, String linkedInUrl, String portfolioUrl,
+                            boolean refreshExistingDetails);
 
     CandidateResponse getById(Long id);
 

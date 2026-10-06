@@ -80,8 +80,7 @@ public class KbArticleServiceImpl implements KbArticleService {
     @Override
     @Transactional(readOnly = true)
     public Page<KbArticleResponse> list(String keyword, String status, Pageable pageable) {
-        // Only gated for tenant staff - CLIENT users (no CustomRole) browse published,
-        // client-visible articles from the portal via this same endpoint.
+        // Only gated for staff: CLIENT users have no CustomRole and browse published, client-visible articles through this same endpoint.
         if (!isClient()) {
             authorizationService.checkPermission(PermissionCode.KNOWLEDGE_BASE_VIEW);
         }
@@ -136,12 +135,14 @@ public class KbArticleServiceImpl implements KbArticleService {
 
     private ServiceCategory resolveCategory(Long categoryId) {
         if (categoryId == null) return null;
-        return categoryRepository.findById(categoryId)
+        // Categories are per-company - an article must not reference another tenant's.
+        return categoryRepository.findByIdAndCompanyId(categoryId, securityUtil.getCurrentCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
     }
 
     private ServiceTemplate resolveRelatedService(Long relatedServiceId) {
         if (relatedServiceId == null) return null;
+        // ServiceTemplate is platform-owned with no company column (see ServiceTemplateServiceImpl), so there is no tenant to scope by.
         return templateRepository.findById(relatedServiceId)
                 .orElseThrow(() -> new ResourceNotFoundException("Related service not found"));
     }

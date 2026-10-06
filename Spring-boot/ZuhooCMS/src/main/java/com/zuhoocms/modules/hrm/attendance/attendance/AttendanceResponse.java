@@ -10,20 +10,22 @@ import java.time.LocalTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+// Lombok's isLate()/isOvertime()/isVerified() also emit the stripped "late"/"overtime"/"verified" keys alongside the
+// pinned ones below. A grep of all three clients (Angular, Flutter, Android) found nothing reading the stripped
+// spellings for attendance, so they are suppressed here and only the "is" keys are on the wire - the same treatment
+// SupportMessageResponse already gives "internal"/"resolution".
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties({"late", "overtime", "verified"})
 public class AttendanceResponse {
 
     private Long id;
     private Long companyId;
 
-    // Employee info
     private Long employeeId;
     private String employeeName;
     private String employeeNumber;
 
-    // Date
     private LocalDate attendanceDate;
 
-    // Check-in
     private LocalTime checkInTime;
     private LocalDateTime checkInDateTime;
     private AttendanceMethod checkInMethod;
@@ -32,59 +34,54 @@ public class AttendanceResponse {
     private String checkInLongitude;
     private String checkInReason;
 
-    // Check-out
     private LocalTime checkOutTime;
     private LocalDateTime checkOutDateTime;
     private AttendanceMethod checkOutMethod;
     private String checkOutLocation;
 
-    // Status
+    /** The selfies taken at each punch, as this app's own file URLs; the Android check-in screen reads checkInSelfieUrl. */
+    private String checkInSelfieUrl;
+    private String checkOutSelfieUrl;
+
+    /**
+     * Set when a punch that day fell outside the company's office radius (or a GPS punch arrived with no usable
+     * coordinates). The reason is the first offence of the day - a later in-range punch does not clear it.
+     */
+    private boolean locationFlagged;
+    private String locationFlagReason;
+    private Double distanceFromOfficeMeters;
+
     private AttendanceStatus status;
     private ShiftType shiftType;
 
-    // Late tracking
-    /**
-     * Serialised as "isLate", not Jackson's default "late".
-     *
-     * For a boolean named isLate, Jackson derives the property from the getter
-     * isLate() and emits "late". The frontend has always read isLate, so the
-     * Late column silently rendered empty for every record. Pinning the name
-     * here fixes it without a rename rippling through the client.
-     */
+    /** Pinned to "isLate": Jackson derives "late" from isLate(), and the frontend reads isLate, so the Late column rendered empty for every record. */
     @com.fasterxml.jackson.annotation.JsonProperty("isLate")
     private boolean isLate;
     private long lateMinutes;
     private String lateReason;
 
-    // Overtime tracking
     /** Pinned like isLate above: Jackson would otherwise emit "overtime", which the frontend never reads. */
     @com.fasterxml.jackson.annotation.JsonProperty("isOvertime")
     private boolean isOvertime;
     private BigDecimal overtimeHours;
 
-    // Early departure
     private boolean leftEarly;
     private long earlyMinutes;
     private String earlyDepartureReason;
 
-    // Hours
     private BigDecimal totalWorkingHours;
 
-    // Biometric
     /** Pinned like isLate above: Jackson would otherwise emit "verified", which the frontend never reads. */
     @com.fasterxml.jackson.annotation.JsonProperty("isVerified")
     private boolean isVerified;
     private double verificationScore;
 
-    // Approval
     private boolean approved;
     private String approvedBy;
     private LocalDateTime approvedDateTime;
 
-    // Notes
     private String notes;
 
-    // Audit
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

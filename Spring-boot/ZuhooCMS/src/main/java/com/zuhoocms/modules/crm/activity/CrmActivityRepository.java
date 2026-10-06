@@ -20,14 +20,14 @@ public interface CrmActivityRepository extends JpaRepository<CrmActivity, Long> 
 
     Page<CrmActivity> findByLeadIdAndCompanyId(Long leadId, Long companyId, Pageable pageable);
 
-    // No companyId scoping - runs outside an HTTP request context (scheduler), so the
-    // tenant Hibernate filter isn't active; matches the convention used by SLA/invoice
-    // schedulers, which likewise scan across all companies.
+    // No companyId scoping: runs from a scheduler with no request context, so the tenant Hibernate filter is inactive, as in the SLA/invoice schedulers.
     List<CrmActivity> findByFollowUpAtLessThanEqualAndFollowUpDoneFalseAndDeletedFalse(LocalDateTime cutoff);
 
-    /** Due, still open, and not yet notified - the set the scheduler acts on. */
-    List<CrmActivity> findByFollowUpAtLessThanEqualAndFollowUpDoneFalseAndFollowUpNotifiedAtIsNullAndDeletedFalse(LocalDateTime cutoff);
+    /** Due, still open and not yet notified - the set the scheduler acts on; paged because unpaged it loaded every company's outstanding follow-ups into one transaction. */
+    List<CrmActivity> findByFollowUpAtLessThanEqualAndFollowUpDoneFalseAndFollowUpNotifiedAtIsNullAndDeletedFalse(
+            LocalDateTime cutoff, Pageable pageable);
 
+    // Pageable, so the dashboard's five-row widget asks for five rows instead of the company's whole follow-up backlog.
     List<CrmActivity> findByCompanyIdAndFollowUpDoneFalseAndFollowUpAtGreaterThanEqualOrderByFollowUpAtAsc(
-            Long companyId, LocalDateTime from);
+            Long companyId, LocalDateTime from, Pageable pageable);
 }

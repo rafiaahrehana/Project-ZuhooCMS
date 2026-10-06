@@ -18,4 +18,7 @@ public interface VendorRepository extends JpaRepository<Vendor, Long> {
     List<Vendor> findByCompanyIdAndActiveTrueOrderByNameAsc(Long companyId);
 
     boolean existsByCompanyIdAndNameIgnoreCase(Long companyId, String name);
+
+    /** Duplicate-name check ignoring the vendor being edited, so update() can run it on rename: otherwise a rename hit the (company_id, name) unique constraint as a raw 409, or slipped through once one row was soft-deleted. */
+    boolean existsByCompanyIdAndNameIgnoreCaseAndIdNot(Long companyId, String name, Long id);
 }

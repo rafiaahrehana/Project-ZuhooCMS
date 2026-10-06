@@ -58,6 +58,8 @@ public class AuthServiceImpl implements AuthService {
 
     private static final long PASSWORD_RESET_MINS = 15;
     private static final int  EMAIL_VERIFY_CODE_MINUTES = 15;
+    // Caps guesses per issued email-verification/password-reset code: 6 digits is only 1,000,000 combinations, brute-forceable within the 15-minute window.
+    private static final int  MAX_CODE_ATTEMPTS = 5;
     private static final java.security.SecureRandom CODE_RANDOM = new java.security.SecureRandom();
 
     private final UserRepository userRepository;
@@ -75,6 +77,8 @@ public class AuthServiceImpl implements AuthService {
     private final AuditService auditService;
     private final NotificationPreferenceService notificationPreferenceService;
     private final SecurityUtil securityUtil;
+    private final LoginAttemptService loginAttemptService;
+    private final com.zuhoocms.shared.ratelimit.ClientIpResolver clientIpResolver;
 
     @Value("${jwt.refresh-expiration-ms:604800000}")
     private long refreshExpirationMs;
@@ -85,17 +89,18 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public UserResponse register(RegisterRequest request) {
-        if (userRepository.existsByEmail(request.getEmail())) {
+        // Case-insensitive and includes soft-deleted rows: "Foo@x.com" after "foo@x.com" otherwise passes here and dies on the unique index.
+        String normalizedEmail = request.getEmail().toLowerCase().trim();
+        if (userRepository.existsAnyByEmailIgnoreCase(normalizedEmail)) {
             throw new BadRequestException("An account with this email already exists");
         }
-        if (companyRepository.existsBySubdomain(request.getSubdomain())) {
+        String subdomain = request.getSubdomain().toLowerCase().trim();
+        com.zuhoocms.modules.company.ReservedSubdomains.requireAllowed(subdomain);
+        if (companyRepository.existsAnyBySubdomain(subdomain)) {
             throw new BadRequestException("This subdomain is already taken");
         }
 
-        // Previously this set emailVerified(true) immediately, which made the
-        // verifyEmail() guard below ("already verified") always fire and silently
-        // skip the trial-activation/welcome-email flow it was meant to run - no
-        // account ever actually completed verification through that path.
+        // Must start emailVerified(false): setting it true here makes verifyEmail()'s "already verified" guard fire and skip trial activation and the welcome email.
         String verificationCode = generateVerificationCode();
         User user = User.builder()
             .firstName(request.getFirstName())
@@ -122,9 +127,7 @@ public class AuthServiceImpl implements AuthService {
             .build();
         companyRepository.save(company);
 
-        // Every module that scopes "my work" (leads, leaves, timesheets, expenses, payroll...)
-        // looks up the current user's Employee record - without this, the owner immediately
-        // hits "Employee profile not found" the moment they touch any of those screens.
+        // Every "my work" scope (leads, leaves, timesheets, expenses, payroll) looks up an Employee record; without this the owner hits "Employee profile not found".
         Employee ownerEmployee = Employee.builder()
             .user(user)
             .company(company)
@@ -144,11 +147,30 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public LoginResponse login(LoginRequest request) {
-        authManager.authenticate(
-            new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
+        // Password brute-force guard: loginAttemptService locks the account after repeated failures, then isAccountNonLocked() fails the next attempt fast as a 403 LockedException.
+        // Must stay a separate bean so the counter write gets its own REQUIRES_NEW transaction - see its Javadoc.
+        try {
+            authManager.authenticate(
+                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
+        } catch (org.springframework.security.authentication.BadCredentialsException ex) {
+            loginAttemptService.registerFailedAttempt(request.getEmail());
+            throw ex;
+        }
 
         User user = userRepository.findByEmail(request.getEmail())
             .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Checked after the password so it reveals nothing to a caller who doesn't know it; without it an unverified sign-up gets a session and a TRIAL company with no end date that never expires.
+        if (user.getRole() == Role.COMPANY_OWNER && !user.isEmailVerified()) {
+            throw new com.zuhoocms.shared.exception.ApiException(
+                "Please verify your email address before logging in. Check your inbox for the code.",
+                org.springframework.http.HttpStatus.FORBIDDEN);
+        }
+
+        if (user.getFailedLoginAttempts() > 0 || user.getLockedUntil() != null) {
+            user.setFailedLoginAttempts(0);
+            user.setLockedUntil(null);
+        }
 
         Long companyId = resolveCompanyId(user);
 
@@ -166,10 +188,7 @@ public class AuthServiceImpl implements AuthService {
             user.getEmail(), user.getRole().name(), companyId);
         String refreshToken = jwtService.generateRefreshToken(user.getEmail());
 
-        // Deliberately NOT revoking existing refresh tokens here - each login issues its
-        // own independent refresh token so multiple concurrent sessions (a second tab,
-        // another device) keep working. Only resetPassword()/changePassword() revoke
-        // every refresh token, since those genuinely need to kill all other sessions.
+        // Deliberately does NOT revoke existing refresh tokens: concurrent sessions must keep working. Only resetPassword()/changePassword() revoke them all.
         persistToken(user, refreshToken, TokenType.REFRESH,
             LocalDateTime.now().plusSeconds(refreshExpirationMs / 1000));
 
@@ -189,14 +208,39 @@ public class AuthServiceImpl implements AuthService {
             .orElseThrow(() -> new BadRequestException("Invalid refresh token"));
 
         if (!stored.isValid()) {
+            // Reuse of a *revoked* token means the real client already rotated it away, so the presenter likely holds a stolen copy; revoke the whole chain rather than just this attempt.
+            if (stored.isRevoked()) {
+                revokeAllRefreshTokens(stored.getUser());
+                throw new BadRequestException(
+                    "This refresh token was already used. All sessions have been logged out for security - please log in again.");
+            }
             throw new BadRequestException(
                 "Refresh token has expired or been revoked. Please log in again.");
         }
 
         User user = stored.getUser();
-        stored.setRevoked(true);
+
+        // PlatformUserService.deactivate() only flips this flag - it revokes no tokens, so without this a deactivated user keeps minting access tokens from a still-valid refresh token.
+        if (!user.isActive()) {
+            stored.setRevoked(true);
+            throw new UnauthorizedException("Your account is inactive. Please contact admin.");
+        }
 
         Long companyId = resolveCompanyId(user);
+
+        // Mirrors login(): CompanyServiceImpl.changeStatus()'s token revocation is a best-effort sweep, so re-check here to close the race with a refresh landing mid-sweep.
+        if (user.isTenantUser() && companyId != null) {
+            Company company = companyRepository.findById(companyId).orElse(null);
+            if (company != null && (company.getStatus() == CompanyStatus.SUSPENDED
+                    || company.getStatus() == CompanyStatus.DEACTIVATED)) {
+                throw new UnauthorizedException(
+                    "This company account has been " + company.getStatus().name().toLowerCase()
+                        + ". Please contact support.");
+            }
+        }
+
+        stored.setRevoked(true);
+
         String newAccess  = jwtService.generateAccessToken(
             user.getEmail(), user.getRole().name(), companyId);
         String newRefresh = jwtService.generateRefreshToken(user.getEmail());
@@ -234,6 +278,7 @@ public class AuthServiceImpl implements AuthService {
                 || !user.getEmailVerificationCode().equals(request.getCode().trim())
                 || user.getEmailVerificationCodeExpiresAt() == null
                 || user.getEmailVerificationCodeExpiresAt().isBefore(LocalDateTime.now())) {
+            registerBadCode(user, true);
             throw new BadRequestException("Invalid or expired verification code");
         }
 
@@ -241,6 +286,7 @@ public class AuthServiceImpl implements AuthService {
         user.setEmailVerified(true);
         user.setEmailVerificationCode(null);
         user.setEmailVerificationCodeExpiresAt(null);
+        user.setEmailVerificationAttempts(0);
         userRepository.save(user);
 
         companyRepository.findByOwnerId(user.getId()).ifPresent(company -> {
@@ -257,13 +303,20 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public void resendVerification(ResendVerificationRequest request) {
-        // Use ifPresent (not orElseThrow) to prevent user enumeration:
-        // the response is always 200 OK regardless of whether the email exists.
-        userRepository.findByEmail(request.getEmail()).ifPresent(user -> {
+        // ifPresent, not orElseThrow: always 200 OK regardless of whether the email exists, to prevent user enumeration.
+        // Normalised like every other lookup in this class: registration stores the address lower-cased and trimmed,
+        // and login, verification and resolveUserFromResetCode all normalise before looking it up. These two did not,
+        // so "Pat@Example.com" matched nothing and no mail was sent. Both of these endpoints answer vaguely on
+        // purpose, so as not to reveal whether an address is registered - which means the user had no way to tell a
+        // silent miss from a delivered mail. Normalising one side of a pair and not the other is the same fault as
+        // the role name trimmed after its own uniqueness check.
+        userRepository.findByEmail(request.getEmail().toLowerCase().trim()).ifPresent(user -> {
             if (!user.isEmailVerified()) {
                 String newCode = generateVerificationCode();
                 user.setEmailVerificationCode(newCode);
                 user.setEmailVerificationCodeExpiresAt(LocalDateTime.now().plusMinutes(EMAIL_VERIFY_CODE_MINUTES));
+                // A fresh code resets the brute-force counter: guesses spent against the old code no longer apply.
+                user.setEmailVerificationAttempts(0);
                 userRepository.save(user);
                 emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), newCode);
             }
@@ -274,10 +327,7 @@ public class AuthServiceImpl implements AuthService {
         return String.format("%06d", CODE_RANDOM.nextInt(1_000_000));
     }
 
-    // companyEmail/companyPhone are optional but @Column(unique = true) - an empty
-    // string (the Angular form's default value when the field is left blank) is a
-    // real value to a unique constraint, so every registration after the first one
-    // that skips these fields would 409. Blank must become null.
+    // companyEmail/companyPhone are optional but @Column(unique = true): the Angular form sends "" for a blank field, which a unique constraint treats as a real value and 409s on the second registration.
     private String blankToNull(String value) {
         return (value == null || value.isBlank()) ? null : value;
     }
@@ -285,17 +335,26 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public void forgotPassword(ForgotPasswordRequest request) {
-        userRepository.findByEmail(request.getEmail()).ifPresent(user -> {
+        // Normalised like every other lookup in this class: registration stores the address lower-cased and trimmed,
+        // and login, verification and resolveUserFromResetCode all normalise before looking it up. These two did not,
+        // so "Pat@Example.com" matched nothing and no mail was sent. Both of these endpoints answer vaguely on
+        // purpose, so as not to reveal whether an address is registered - which means the user had no way to tell a
+        // silent miss from a delivered mail. Normalising one side of a pair and not the other is the same fault as
+        // the role name trimmed after its own uniqueness check.
+        userRepository.findByEmail(request.getEmail().toLowerCase().trim()).ifPresent(user -> {
             String resetCode = generateVerificationCode();
             user.setPasswordResetCode(resetCode);
             user.setPasswordResetCodeExpiresAt(LocalDateTime.now().plusMinutes(PASSWORD_RESET_MINS));
+            // Same reasoning as resendVerification(): a newly issued code starts with a clean attempt counter.
+            user.setPasswordResetAttempts(0);
             userRepository.save(user);
             emailService.sendPasswordResetEmail(user.getEmail(), user.getFirstName(), resetCode);
         });
     }
 
     @Override
-    @Transactional(readOnly = true)
+    // Not readOnly: resolveUserFromResetCode() persists the failed-attempt counter, and readOnly's MANUAL flush mode would silently drop that write.
+    @Transactional
     public void verifyResetCode(VerifyResetCodeRequest request) {
         resolveUserFromResetCode(request.getEmail(), request.getCode());
     }
@@ -314,15 +373,14 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         user.setPasswordResetCode(null);
         user.setPasswordResetCodeExpiresAt(null);
+        user.setPasswordResetAttempts(0);
         userRepository.save(user);
 
         revokeAllRefreshTokens(user);
 
     }
 
-    // The long-lived JWT link path - only ClientServiceImpl.invite() still issues
-    // these tokens (forgotPassword() below issues a code instead), for setting an
-    // initial portal password from an emailed "Set Your Password" link.
+    // Long-lived JWT link path, now only issued by ClientServiceImpl.invite() for the emailed "Set Your Password" link; forgotPassword() issues a code instead.
     private User resolveUserFromResetToken(String tokenStr) {
         if (!jwtService.isTokenValid(tokenStr) || jwtService.extractActionType(tokenStr) != TokenType.PASSWORD_RESET) {
             throw new BadRequestException("Invalid or expired reset link");
@@ -332,9 +390,7 @@ public class AuthServiceImpl implements AuthService {
             .orElseThrow(() -> new BadRequestException("User not found for this token"));
     }
 
-    // The numeric-code path used by the "forgot password" flow. Same deliberately
-    // generic error whether the user doesn't exist, the code doesn't match, or it
-    // expired - avoids leaking which emails are registered (mirrors verifyEmail()).
+    // "Forgot password" numeric-code path; the error is deliberately identical for unknown user, wrong code and expired code so registered emails aren't leaked (mirrors verifyEmail()).
     private User resolveUserFromResetCode(String email, String code) {
         if (email == null || code == null) {
             throw new BadRequestException("Invalid or expired reset code");
@@ -346,9 +402,30 @@ public class AuthServiceImpl implements AuthService {
                 || !user.getPasswordResetCode().equals(code)
                 || user.getPasswordResetCodeExpiresAt() == null
                 || user.getPasswordResetCodeExpiresAt().isBefore(LocalDateTime.now())) {
+            registerBadCode(user, false);
             throw new BadRequestException("Invalid or expired reset code");
         }
         return user;
+    }
+
+    // Shared brute-force counter for verification and reset codes: at MAX_CODE_ATTEMPTS the code is invalidated outright so the 6-digit space can't keep being probed.
+    private void registerBadCode(User user, boolean isEmailVerification) {
+        if (isEmailVerification) {
+            int attempts = user.getEmailVerificationAttempts() + 1;
+            user.setEmailVerificationAttempts(attempts);
+            if (attempts >= MAX_CODE_ATTEMPTS) {
+                user.setEmailVerificationCode(null);
+                user.setEmailVerificationCodeExpiresAt(null);
+            }
+        } else {
+            int attempts = user.getPasswordResetAttempts() + 1;
+            user.setPasswordResetAttempts(attempts);
+            if (attempts >= MAX_CODE_ATTEMPTS) {
+                user.setPasswordResetCode(null);
+                user.setPasswordResetCodeExpiresAt(null);
+            }
+        }
+        userRepository.save(user);
     }
 
     @Override
@@ -373,18 +450,14 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         userRepository.save(user);
 
-        // Revoke all refresh tokens so any other active session is logged out,
-        // consistent with resetPassword. The current session's access token stays
-        // valid until it expires; the frontend should redirect to login after success.
+        // Logs out every other session, as resetPassword does; the current access token stays valid until it expires, so the frontend must redirect to login.
         revokeAllRefreshTokens(user);
     }
 
 
     private Long resolveCompanyId(User user) {
         return switch (user.getRole()) {
-            // Platform staff have no home tenant - their token carries no companyId at all.
-            // (Previously hardcoded to the seeded "BusinessOS HQ" company, which made every
-            // platform login behave like a login into that tenant - see PLATFORM_ADMIN identity fix.)
+            // Platform staff have no home tenant, so their token must carry no companyId - a fixed one makes every platform login behave like a login into that tenant.
             case SUPER_ADMIN, SYSTEM_ADMIN, SUPPORT_AGENT, SUPPORT_MANAGER, MARKETING_MANAGER, PLATFORM_ACCOUNTANT, SALES_MANAGER -> null;
             case COMPANY_OWNER -> companyRepository.findByOwnerId(user.getId())
                 .map(Company::getId).orElse(null);
@@ -396,25 +469,18 @@ public class AuthServiceImpl implements AuthService {
     }
 
 
-    // Resolves the client IP address synchronously on the main request thread.
-    // Must NEVER be called from inside an @Async method — pass the result as a parameter instead.
-
+    // Must NEVER be called from inside an @Async method (no request context there) — pass the resolved value as a parameter instead.
     private String resolveClientIp() {
         try {
             ServletRequestAttributes attrs =
                 (ServletRequestAttributes) RequestContextHolder.currentRequestAttributes();
             HttpServletRequest request = attrs.getRequest();
-            String xff = request.getHeader("X-Forwarded-For");
-            if (xff != null && !xff.isBlank()) {
-                return xff.split(",")[0].trim();
-            }
-            return request.getRemoteAddr();
+            // Trusted-proxy aware: X-Forwarded-For only counts when the peer is a configured proxy.
+            return clientIpResolver.resolve(request);
         } catch (Exception e) {
             return "unknown";
         }
     }
-
-    // ── Google sign-in ────────────────────────────────────────────
 
     @Override
     @Transactional
@@ -424,8 +490,7 @@ public class AuthServiceImpl implements AuthService {
 
         User user = userRepository.findByEmail(identity.email()).orElse(null);
 
-        // No account with this email. The app collects a company and calls googleRegister();
-        // we cannot create the user here because a Google token carries no tenant.
+        // Cannot create the user here: a Google token carries no tenant, so the app collects a company and calls googleRegister().
         if (user == null) {
             return GoogleSignInResponse.needsRegistration(
                     identity.email(), identity.firstName(), identity.lastName());
@@ -438,8 +503,7 @@ public class AuthServiceImpl implements AuthService {
     @Transactional
     public LoginResponse googleRegister(GoogleRegisterRequest request) {
 
-        // Verified again on purpose — the earlier googleSignIn() call proves nothing about this
-        // request, so the email is taken from this token, not carried over by the client.
+        // Verified again on purpose: the earlier googleSignIn() proves nothing about this request, so the email comes from this token, not from the client.
         GoogleTokenVerifier.GoogleIdentity identity = googleTokenVerifier.verify(request.getIdToken());
 
         if (userRepository.existsByEmail(identity.email())) {
@@ -447,15 +511,12 @@ public class AuthServiceImpl implements AuthService {
                     "An account with this email already exists. Sign in instead.");
         }
 
-        // Reuse the ordinary public client registration so the company-active check, welcome
-        // email and notification defaults all behave identically to an email/password signup.
+        // Reuses ordinary public client registration so the company-active check, welcome email and notification defaults match an email/password signup.
         PublicClientRegisterRequest registration = new PublicClientRegisterRequest();
         registration.setFirstName(identity.firstName());
         registration.setLastName(identity.lastName());
         registration.setEmail(identity.email());
-        // The account is signed into with Google, so this password is never used. A random one
-        // is stored rather than leaving it null, and "forgot password" is the route to setting a
-        // real one if they ever want to log in without Google.
+        // Random, never used: the account signs in with Google, and "forgot password" is the route to setting a real one.
         registration.setPassword(UUID.randomUUID() + "Aa1!");
         registration.setPhone(request.getPhone());
         registration.setCompanyId(request.getCompanyId());
@@ -471,11 +532,7 @@ public class AuthServiceImpl implements AuthService {
         return issueSession(user);
     }
 
-    /**
-     * The tail end of login(): resolve the tenant, refuse suspended companies, mint and persist
-     * the token pair. Shared so a Google sign-in produces exactly the same session as a password
-     * one — same claims, same expiry, same refresh behaviour.
-     */
+    /** Tail end of login(), shared so a Google sign-in yields an identical session: same claims, expiry and refresh behaviour. */
     private LoginResponse issueSession(User user) {
 
         Long companyId = resolveCompanyId(user);

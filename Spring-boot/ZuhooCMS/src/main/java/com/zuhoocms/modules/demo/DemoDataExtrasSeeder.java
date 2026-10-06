@@ -39,6 +39,9 @@ import com.zuhoocms.modules.servicedesk.kb.KbArticleRepository;
 import com.zuhoocms.modules.servicedesk.kb.KbArticleStatus;
 import com.zuhoocms.modules.servicedesk.servicecategory.ServiceCategory;
 import com.zuhoocms.modules.servicedesk.servicecategory.ServiceCategoryRepository;
+import com.zuhoocms.modules.servicedesk.proposal.ProposalStatus;
+import com.zuhoocms.modules.servicedesk.proposal.ServiceProposal;
+import com.zuhoocms.modules.servicedesk.proposal.ServiceProposalRepository;
 import com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequest;
 import com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequestRepository;
 import com.zuhoocms.modules.servicedesk.workflow.stage.WorkflowStage;
@@ -61,15 +64,9 @@ import java.time.MonthDay;
 import java.util.List;
 
 /**
- * Second seeding pass for the demo tenant: everything beyond the core
- * HR/CRM/Finance data, so a demo visitor finds no dead pages.
- *
- * Separate from DemoDataSeeder (and @Order-ed after it) for one reason: the
- * core seeder skips entirely when the demo company already exists, and this
- * class must still be able to upgrade an existing demo tenant that was seeded
- * before these sections were written. The guard is a single marker - service
- * categories - because it is the first thing seeded here and cannot exist on
- * a tenant this pass has not visited.
+ * Second seeding pass for the demo tenant: everything beyond the core HR/CRM/Finance data.
+ * Separate from DemoDataSeeder and @Order-ed after it because that one skips entirely once the demo company exists, while this must still upgrade an older demo tenant.
+ * Its guard is the service-category marker: the first thing seeded here, so it cannot exist on a tenant this pass has not visited.
  */
 @Slf4j
 @Component
@@ -97,6 +94,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
     private final WorkflowTemplateRepository workflowTemplateRepository;
     private final CompanyServiceRepository companyServiceRepository;
     private final ServiceRequestRepository serviceRequestRepository;
+    private final ServiceProposalRepository serviceProposalRepository;
     private final KbArticleRepository kbArticleRepository;
     private final com.zuhoocms.modules.hrm.leave.companyleavePolicy.CompanyLeavePolicyRepository companyLeavePolicyRepository;
     private final com.zuhoocms.modules.hrm.performance.PerformanceReviewRepository performanceReviewRepository;
@@ -121,25 +119,31 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        company = companyRepository.findBySubdomain(DemoDataSeeder.DEMO_SUBDOMAIN).orElse(null);
-        if (company == null) return; // core seeder disabled or failed - nothing to extend
-
+        // Resolved through the demo owner, never by subdomain: another tenant may hold the "demo" subdomain.
         owner = userRepository.findByEmail(DemoDataSeeder.DEMO_OWNER_EMAIL).orElse(null);
+        if (owner == null) return; // core seeder disabled or failed - nothing to extend
+        company = companyRepository.findByOwnerId(owner.getId()).orElse(null);
+        if (company == null) return;
+
+        // Cheap already-seeded checks first: an up-to-date demo tenant costs two tiny queries per boot.
+        boolean waveOneDone = !serviceCategoryRepository
+                .findByCompanyIdOrderBySortOrderAsc(company.getId()).isEmpty();
+        if (waveOneDone && waveThreeDone()) {
+            return;
+        }
+
         staff = employeeRepository.findByCompanyIdAndActiveTrue(company.getId());
         staff.sort((a, b) -> a.getEmployeeNumber().compareTo(b.getEmployeeNumber()));
-        clients = clientRepository.findAll().stream()
-                .filter(c -> c.getCompany() != null && c.getCompany().getId().equals(company.getId()))
-                .sorted((a, b) -> a.getId().compareTo(b.getId()))
-                .toList();
-        if (owner == null || staff.isEmpty() || clients.isEmpty()) {
+        clients = clientRepository.findByCompanyId(company.getId(),
+                        org.springframework.data.domain.PageRequest.of(0, 500,
+                                org.springframework.data.domain.Sort.by("id")))
+                .getContent();
+        if (staff.isEmpty() || clients.isEmpty()) {
             log.warn("Demo extras skipped - core demo data incomplete");
             return;
         }
 
-        // Each wave carries its own emptiness guard rather than one shared
-        // check, because a tenant may have been seeded by an earlier version of
-        // this class that only knew about earlier waves - the newer waves must
-        // still be able to upgrade it.
+        // Each wave carries its own emptiness guard, so a tenant seeded by an earlier version of this class can still be upgraded.
         if (serviceCategoryRepository.findByCompanyIdOrderBySortOrderAsc(company.getId()).isEmpty()) {
             log.info("Seeding demo extras...");
             seedDesignations();
@@ -159,9 +163,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
 
     /** Third pass: accounting, receipts, recruitment paperwork and the rest. */
     private void seedWaveThree() {
-        if (!companyLeavePolicyRepository.findAll().stream()
-                .filter(p -> p.getCompany() != null && p.getCompany().getId().equals(company.getId()))
-                .toList().isEmpty()) {
+        if (waveThreeDone()) {
             return;
         }
         log.info("Seeding demo wave three...");
@@ -197,8 +199,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
     }
 
     private void seedPerformanceReviews() {
-        // Two finished reviews from the last cycle - one strong, one average -
-        // so the list, the score breakdown and the level label all read.
+        // Two finished reviews, one strong and one average, so the score breakdown and level label both read.
         int[][] scores = {{9, 9, 8, 9, 8, 9, 7, 9, 8}, {7, 6, 7, 7, 6, 8, 5, 6, 6}};
         Employee[] who = {staff.get(2), staff.get(5)}; // Rakibul, Tasnim
         for (int i = 0; i < 2; i++) {
@@ -276,11 +277,12 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
     }
 
     private void seedHrAssets() {
+        // Keep the holder consistent with the status: an ASSIGNED asset with nobody attached leaves the mobile asset card blank.
         Object[][] rows = {
-                {"MacBook Pro 14\"", "LPT-001", "Apple", "Laptop", 280_000, AssetStatus.ASSIGNED},
-                {"ThinkPad T14", "LPT-002", "Lenovo", "Laptop", 145_000, AssetStatus.ASSIGNED},
-                {"Dell U2723QE Monitor", "MON-001", "Dell", "Monitor", 62_000, AssetStatus.AVAILABLE},
-                {"iPhone 15 (support line)", "PHN-001", "Apple", "Phone", 130_000, AssetStatus.UNDER_MAINTENANCE},
+                {"MacBook Pro 14\"", "LPT-001", "Apple", "Laptop", 280_000, AssetStatus.ASSIGNED, 2},
+                {"ThinkPad T14", "LPT-002", "Lenovo", "Laptop", 145_000, AssetStatus.ASSIGNED, 3},
+                {"Dell U2723QE Monitor", "MON-001", "Dell", "Monitor", 62_000, AssetStatus.AVAILABLE, null},
+                {"iPhone 15 (support line)", "PHN-001", "Apple", "Phone", 130_000, AssetStatus.UNDER_MAINTENANCE, null},
         };
         for (Object[] r : rows) {
             com.zuhoocms.modules.hrm.asset.Asset a = new com.zuhoocms.modules.hrm.asset.Asset();
@@ -292,6 +294,11 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
             a.setPurchaseDate(LocalDate.now().minusMonths(8));
             a.setStatus((AssetStatus) r[5]);
             a.setCompany(company);
+            Integer holder = (Integer) r[6];
+            if (holder != null && holder < staff.size()) {
+                a.setAssignedTo(staff.get(holder));
+                a.setAssignedAt(LocalDate.now().minusMonths(6));
+            }
             hrAssetRepository.save(a);
         }
     }
@@ -320,8 +327,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
             coa.put((String) a[0], chartOfAccountRepository.save(acc));
         }
 
-        // One revenue recognition, one rent payment - as journal entries and as
-        // their mirrored GL rows.
+        // One revenue recognition, one rent payment - as journal entries and as their mirrored GL rows.
         journalEntry("DEMO-JE-0001", coa.get("1100"), coa.get("4000"), 450_000,
                 "Annual maintenance contract invoiced - Meghna Agro", 40);
         journalEntry("DEMO-JE-0002", coa.get("5100"), coa.get("1000"), 85_000,
@@ -405,10 +411,9 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         }
 
         // Bills from the seeded vendors.
-        List<com.zuhoocms.modules.finance.vendor.Vendor> vendors = vendorRepository.findAll().stream()
-                .filter(v -> v.getCompanyId().equals(company.getId()))
-                .sorted((a, b) -> a.getId().compareTo(b.getId()))
-                .toList();
+        List<com.zuhoocms.modules.finance.vendor.Vendor> vendors = vendorRepository.findByCompanyId(company.getId(),
+                org.springframework.data.domain.PageRequest.of(0, 100,
+                        org.springframework.data.domain.Sort.by("id"))).getContent();
         Object[][] bills = {
                 {"Dedicated internet - quarterly", 36_000, com.zuhoocms.modules.finance.vendor.VendorBillStatus.PAID, 0},
                 {"Workstation batch (4x Dell OptiPlex)", 340_000, com.zuhoocms.modules.finance.vendor.VendorBillStatus.APPROVED, 1},
@@ -457,13 +462,11 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         growth.setCompany(company);
         servicePackageRepository.save(growth);
 
-        // A finished request with a published five-star review, so Reviews and
-        // the request lifecycle's end state are both visible.
+        // A finished request with a published five-star review, so Reviews and the lifecycle end state are both visible.
         List<com.zuhoocms.modules.servicedesk.companyservice.CompanyService> services =
-                companyServiceRepository.findAll().stream()
-                        .filter(s -> s.getCompany() != null && s.getCompany().getId().equals(company.getId()))
-                        .sorted((a, b) -> a.getId().compareTo(b.getId()))
-                        .toList();
+                companyServiceRepository.findByCompanyId(company.getId(),
+                        org.springframework.data.domain.PageRequest.of(0, 100,
+                                org.springframework.data.domain.Sort.by("id"))).getContent();
         if (services.isEmpty()) return;
 
         ServiceRequest done = new ServiceRequest();
@@ -496,7 +499,15 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
     }
 
     private List<com.zuhoocms.modules.finance.invoice.ClientInvoice> invoiceRepositoryAll() {
-        return clientInvoiceRepository.findAll();
+        return clientInvoiceRepository.findByCompanyId(company.getId(),
+                org.springframework.data.domain.PageRequest.of(0, 500,
+                        org.springframework.data.domain.Sort.by("id"))).getContent();
+    }
+
+    /** Wave three's marker: leave policies exist for the demo tenant (one-row page, not findAll). */
+    private boolean waveThreeDone() {
+        return companyLeavePolicyRepository.findByCompanyId(company.getId(),
+                org.springframework.data.domain.PageRequest.of(0, 1)).hasContent();
     }
 
     private void seedDesignations() {
@@ -697,8 +708,8 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         jb.setLicenseKey("DEMO-JB-2026");
         jb.setLicenseType(LicenseTypeSafe.subscription());
         jb.setTotalSeatsLicensed(5);
-        jb.setSeatsUsed(4);
-        jb.setSeatsAvailable(1);
+        // Seat usage derives from software_license_seats rows; the demo creates none, so the cached counters start at 0 used.
+        jb.applySeatCounts(0);
         jb.setLicensePurchaseDate(LocalDate.now().minusMonths(5));
         jb.setLicenseCost(BigDecimal.valueOf(45_000));
         softwareLicenseRepository.save(jb);
@@ -710,8 +721,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         figma.setLicenseKey("DEMO-FIGMA-2026");
         figma.setLicenseType(LicenseTypeSafe.subscription());
         figma.setTotalSeatsLicensed(3);
-        figma.setSeatsUsed(2);
-        figma.setSeatsAvailable(1);
+        figma.applySeatCounts(0);
         figma.setLicensePurchaseDate(LocalDate.now().minusMonths(2));
         figma.setLicenseCost(BigDecimal.valueOf(12_000));
         softwareLicenseRepository.save(figma);
@@ -748,8 +758,9 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         service("Annual Maintenance Contract", support, flow,
                 120_000, "Yearly SLA: monitoring, fixes, and priority support", 365);
 
-        request("Distributor order tracking portal", clients.get(0), webApp,
-                ServiceRequestStatus.IN_PROGRESS, 1);
+        ServiceRequest tracking = request("Distributor order tracking portal",
+                clients.get(0), webApp, ServiceRequestStatus.IN_PROGRESS, 1);
+        seedProposal(tracking);
         request("Production-floor attendance kiosks", clients.get(1), mobile,
                 ServiceRequestStatus.PENDING, 0);
         request("Patient portal phase 2", clients.get(2), webApp,
@@ -806,7 +817,7 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
         return companyServiceRepository.save(s);
     }
 
-    private void request(String title, Client client, CompanyService service,
+    private ServiceRequest request(String title, Client client, CompanyService service,
                          ServiceRequestStatus status, int stageIndex) {
         ServiceRequest r = new ServiceRequest();
         r.setTitle(title);
@@ -823,6 +834,26 @@ public class DemoDataExtrasSeeder implements ApplicationRunner {
             r.setAssignedAt(LocalDateTime.now().minusDays(5));
         }
         serviceRequestRepository.save(r);
+        return r;
+    }
+
+    /** SENT rather than DRAFT: the only state showing both halves at once - staff see it frozen, the client sees Accept / Request changes. */
+    private void seedProposal(ServiceRequest sr) {
+        ServiceProposal p = ServiceProposal.builder()
+                .title("Distributor order tracking - phase 1")
+                .techStack("Flutter (Android/iOS), Spring Boot, PostgreSQL")
+                .timeline("10-12 weeks, two milestones")
+                .estimatedBudget("BDT 4,50,000 - 6,00,000")
+                .summary("Order capture for 40 distributors, live stock visibility for the "
+                        + "depot team, and a delivery-confirmation flow the riders can use "
+                        + "offline. Excludes accounting integration, which phase 2 covers.")
+                .status(ProposalStatus.SENT)
+                .sentAt(LocalDateTime.now().minusDays(3))
+                .serviceRequest(sr)
+                .createdBy(owner)
+                .company(company)
+                .build();
+        serviceProposalRepository.save(p);
     }
 
     /** LicenseType values are unverified in this codebase corner; resolved reflectively with a fallback. */

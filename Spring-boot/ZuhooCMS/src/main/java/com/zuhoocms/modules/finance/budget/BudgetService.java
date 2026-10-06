@@ -55,6 +55,11 @@ public class BudgetService {
     public BudgetDtos.BudgetResponse update(Long id, BudgetDtos.BudgetRequest request) {
         authorizationService.checkPermission(PermissionCode.BUDGET_MANAGE);
         Budget budget = findInTenant(id);
+        // The duplicate guard must run on update too: editing a budget's category or fiscal year onto an existing one double-counts the same spend, and the DB unique constraint only catches exact casing.
+        if (budgetRepository.existsByCompanyIdAndCategoryIgnoreCaseAndFiscalYearAndIdNot(
+                budget.getCompanyId(), request.getCategory().trim(), request.getFiscalYear(), budget.getId())) {
+            throw new BadRequestException("A budget for this category and fiscal year already exists");
+        }
         budget.setCategory(request.getCategory().trim());
         budget.setFiscalYear(request.getFiscalYear());
         budget.setAmount(request.getAmount());
@@ -82,9 +87,7 @@ public class BudgetService {
                 .collect(Collectors.toList());
     }
 
-    /** Deliberately NOT gated by BUDGET_VIEW - this doubles as a cross-module picker
-     * so the Expense form can suggest matching category names, for anyone who can
-     * log an expense but may not otherwise have budget visibility. */
+    /** Deliberately NOT gated by BUDGET_VIEW: it doubles as a cross-module picker so the Expense form can suggest category names to users without budget visibility. */
     @Transactional(readOnly = true)
     public List<String> listCategories() {
         return budgetRepository.findDistinctCategoriesByCompanyId(requireCompanyId());
@@ -116,12 +119,7 @@ public class BudgetService {
                 .build();
     }
 
-    /**
-     * Non-blocking budget check used when an expense is approved: returns a human
-     * warning if approving `amountBeingAdded` in this category would cross 80% of, or
-     * exceed, the category's budget for the fiscal year containing `date`. Null when
-     * there's no budget for the category or spending is comfortably inside it.
-     */
+    /** Non-blocking check at expense approval: warns when `amountBeingAdded` would cross 80% of, or exceed, the category's budget for the fiscal year containing `date`; null otherwise. */
     @Transactional(readOnly = true)
     public String warningFor(Long companyId, String category, LocalDate date, BigDecimal amountBeingAdded) {
         if (category == null || category.isBlank() || date == null) return null;
@@ -153,17 +151,9 @@ public class BudgetService {
     }
 
     /**
-     * A budget's category is a free-text string matched against Expense.category;
-     * VendorBill has no such field, but does carry an optional expenseAccount -
-     * matched here by account name, the closest bridge between the two without a
-     * schema change. Bills posted to the generic fallback account (no
-     * expenseAccount set) can't be attributed to any one budget category, same as
-     * before this fix - they simply don't count toward any budget, not a
-     * regression.
-     *
-     * Previously omitted entirely: a "Software" budget could be blown past by
-     * approved vendor bills against the same GL account while the Budgets page
-     * kept showing only the (much smaller) Expense-claim total.
+     * A budget category is free text matched against Expense.category; VendorBill has no such field, so it is matched by expenseAccount name - the closest bridge without a schema change.
+     * Bills on the generic fallback account (no expenseAccount) cannot be attributed and count toward no budget.
+     * Without this, approved vendor bills on the same GL account blew past a budget while the Budgets page showed only the Expense-claim total.
      */
     private BigDecimal vendorBillSpend(Long companyId, String category, LocalDate start, LocalDate end) {
         BigDecimal sum = vendorBillRepository.sumByExpenseAccountNameAndDateRange(companyId, category, start, end);

@@ -6,13 +6,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 
-/**
- * A user as seen from inside a company's admin screens.
- *
- * Deliberately not {@link UserResponse}: this one adds how the user is attached
- * to the company ({@code membership}) and their custom role name, and it never
- * carries anything the owner has no business seeing.
- */
+/** Deliberately not {@link UserResponse}: adds {@code membership} and the custom role name, and carries nothing the company owner has no business seeing. */
 @Data
 @Builder
 public class CompanyUserResponse {

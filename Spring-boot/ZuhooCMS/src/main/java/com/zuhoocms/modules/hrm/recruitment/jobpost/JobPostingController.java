@@ -21,7 +21,10 @@ public class JobPostingController {
     private final JobPostingService jobPostingService;
 
     @PostMapping
-    public ResponseEntity<JobPostingResponse> create(@RequestBody JobPostingRequest request) {
+    // @Valid on create only: title/vacancies/salary/skill-length constraints otherwise reach the DB unchecked.
+    // Deliberately NOT on update below - JobPostingServiceImpl.update treats every null field as "leave unchanged",
+    // so validating the same DTO there would reject every partial edit that omits the title.
+    public ResponseEntity<JobPostingResponse> create(@jakarta.validation.Valid @RequestBody JobPostingRequest request) {
         return new ResponseEntity<>(jobPostingService.create(request), HttpStatus.CREATED);
     }
 

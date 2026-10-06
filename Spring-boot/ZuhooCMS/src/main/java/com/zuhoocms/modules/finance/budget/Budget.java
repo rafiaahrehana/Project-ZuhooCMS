@@ -9,10 +9,7 @@ import org.hibernate.annotations.ParamDef;
 
 import java.math.BigDecimal;
 
-/**
- * A spending target for one expense category in one fiscal year. Actual spend is
- * computed live from approved/paid expenses in that category - see BudgetService.
- */
+/** A spending target for one expense category in one fiscal year; actual spend is computed live from approved/paid expenses - see BudgetService. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
@@ -20,7 +17,7 @@ import java.math.BigDecimal;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Budget extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @Column(nullable = false)
     private String category; // Matches Expense.category (free text, case-insensitive)

@@ -110,7 +110,9 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         Long companyId = requireCompanyId();
         User currentUser = securityUtil.getCurrentUser();
 
-        Client client = clientRepository.findByUserId(currentUser.getId())
+        // Scoped: the client is persisted on a request stamped with companyId and flows on into invoicing and
+        // notifications, so a client record from another tenant must not be accepted here.
+        Client client = clientRepository.findByUserIdAndCompanyId(currentUser.getId(), companyId)
             .orElseThrow(() -> new BadRequestException(
                 "Only clients can submit service requests"));
 
@@ -123,13 +125,24 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
             throw new BadRequestException("This service is currently unavailable");
         }
 
+        // maximumOrders caps open (non-terminal) orders; the service row is locked so concurrent orders can't both see "one slot left".
+        if (service.getMaximumOrders() != null) {
+            companyServiceRepository.findByIdAndCompanyIdForUpdate(service.getId(), companyId);
+            long open = serviceRequestRepository.countOpenByService(companyId, service.getId(), TERMINAL_STATUSES);
+            if (open >= service.getMaximumOrders()) {
+                throw new BadRequestException("'" + service.getName()
+                    + "' is fully booked (maximum " + service.getMaximumOrders()
+                    + " open orders). Please try again later.");
+            }
+        }
+
         validatePrerequisites(companyId, client.getId(), service);
 
         PackageSubscription subscription = null;
+        boolean overageConsumed = false;
         BigDecimal agreedPrice;
 
         if (request.getSubscriptionId() != null) {
-            // Validate the subscription belongs to this client and tenant
             subscription = subscriptionRepository
                 .findByIdAndCompanyId(request.getSubscriptionId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -143,16 +156,16 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                 throw new BadRequestException(
                     "Subscription is not active. Status: " + subscription.getStatus());
             }
-            // Verify the requested service is included in the package
             if (!subscription.getServicePackage().includesService(service.getId())) {
                 throw new BadRequestException(
                     "Service '" + service.getName() +
                     "' is not included in your subscription package");
             }
-            // Consume quota — throws if exhausted
-            packageService.consumeQuota(subscription.getId());
+            // Record whether THIS unit went past quota, so completion bills this request once instead of re-reading the live counter.
+            PackageSubscription consumed = packageService.consumeQuota(subscription.getId());
+            overageConsumed = consumed.getRequestQuota() != null
+                && consumed.getRequestsUsed() > consumed.getRequestQuota();
 
-            // Included in package — no extra charge
             agreedPrice = BigDecimal.ZERO;
 
         } else {
@@ -161,20 +174,24 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                 : service.getPrice();
         }
 
-        // Validate the client's answers against the service's dynamic form
-        // definition (required fields must be present, keyed by field id),
-        // then persist them as JSON on the request.
         String formDataJson = validateAndSerializeFormData(
             companyId, service.getId(), request.getFormData());
+
+        ServiceRequestPriority priority = request.getPriority() != null
+            ? request.getPriority() : service.getDefaultPriority();
+        // SLA is server-side: request.getSlaDeadline() is ignored so a client cannot pick their own deadline (DTO field kept only for payload binding).
+        int slaHours = computeInitialSlaHours(service, priority);
 
         ServiceRequest sr = ServiceRequest.builder()
             .title(request.getTitle())
             .description(request.getDescription())
             .status(ServiceRequestStatus.PENDING)
-            .priority(request.getPriority() != null
-                ? request.getPriority() : service.getDefaultPriority())
+            .priority(priority)
             .agreedPrice(agreedPrice)
-            .slaDeadline(request.getSlaDeadline())
+            .slaHours(slaHours)
+            .slaDeadline(LocalDateTime.now().plusHours(slaHours))
+            .breachCount(0)
+            .overageConsumed(overageConsumed)
             .formDataJson(formDataJson)
             .company(companyRef(companyId))
             .client(client)
@@ -186,8 +203,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         recordStatusChange(sr, null, ServiceRequestStatus.PENDING,
             "Request submitted", currentUser, companyId);
 
-        // Staff otherwise never learn a new request exists until someone happens to
-        // open the Service Requests list - alert whoever can actually handle it.
+        // Without this, staff only learn of a new request by opening the Service Requests list.
         try {
             notifyAssignableStaff(companyId, NotificationType.REQUEST_SUBMITTED, "New Service Request",
                 client.getClientCompanyName() + " submitted a new request: \"" + sr.getTitle() + "\"", sr.getId());
@@ -208,7 +224,8 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
 
         ServiceRequestResponse response = toResponse(sr);
 
-        if (agreedPrice.compareTo(BigDecimal.ZERO) > 0) {
+        // Quotation services are invoiced in acceptQuotation() - invoicing here too billed the client twice.
+        if (agreedPrice.compareTo(BigDecimal.ZERO) > 0 && !service.isRequiresQuotation()) {
             ClientInvoiceItemRequest item = ClientInvoiceItemRequest.builder()
                 .description("Service Request: " + sr.getTitle())
                 .quantity(new BigDecimal("1"))
@@ -220,6 +237,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                 .serviceRequestId(sr.getId())
                 .invoiceDate(java.time.LocalDate.now())
                 .dueDate(java.time.LocalDate.now().plusDays(3))
+                .currency(service.getCurrency())
                 .notes("Invoice for Service Request: " + sr.getTitle())
                 .items(List.of(item))
                 .build();
@@ -307,9 +325,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     @Override
     @Transactional
     public ServiceRequestResponse changeStatus(Long id, ChangeRequestStatusRequest request) {
-        // Terminal transitions (completing/rejecting/cancelling) require the
-        // dedicated "close" permission; everything else that advances a request
-        // through its lifecycle only needs the (lighter) "approve" permission.
+        // Terminal transitions need the "close" permission; other lifecycle moves only need the lighter "approve" one.
         ServiceRequestStatus targetStatus = request.getStatus();
         boolean isTerminal = targetStatus == ServiceRequestStatus.COMPLETED
             || targetStatus == ServiceRequestStatus.REJECTED
@@ -324,31 +340,45 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         ServiceRequestStatus newStatus = request.getStatus();
         User currentUser = securityUtil.getCurrentUser();
 
+        guardTransition(oldStatus, newStatus);
+
         if ((oldStatus == ServiceRequestStatus.PENDING || oldStatus == ServiceRequestStatus.QUOTATION_PENDING)
                 && (newStatus == ServiceRequestStatus.ASSIGNED || newStatus == ServiceRequestStatus.IN_PROGRESS)) {
             validateRequiredDocuments(sr);
         }
 
+        // Every cancellation path goes through closeRequest(), which does quota release, invoice cancel/refund and permanentlyClosed.
+        if (newStatus == ServiceRequestStatus.CANCELLED || newStatus == ServiceRequestStatus.REJECTED) {
+            closeRequest(sr, newStatus, request.getReason(), currentUser, requireCompanyId(), false);
+            return toResponse(sr);
+        }
+
+        applySlaPause(sr, oldStatus, newStatus);
         sr.setStatus(newStatus);
         if (newStatus == ServiceRequestStatus.COMPLETED) {
-            // 1. Check for incomplete tasks
             boolean hasIncompleteTasks = sr.getTasks().stream()
                 .anyMatch(task -> task.getStatus() != TaskStatus.COMPLETED && task.getStatus() != TaskStatus.CANCELLED);
             if (hasIncompleteTasks) {
                 throw new BadRequestException("Cannot complete service request with active, incomplete tasks");
             }
 
-            // 2. Check for pending stage approvals
-            boolean hasPendingApprovals = stageApprovalRepository.findByServiceRequestId(sr.getId()).stream()
-                .anyMatch(approval -> approval.getStatus() == ApprovalStatus.PENDING);
-            if (hasPendingApprovals) {
-                throw new BadRequestException("Cannot complete service request with pending workflow stage approvals");
+            // Each approval stage needs an explicit APPROVED row: checking only "no PENDING row" let REJECTED and never-reached stages pass.
+            if (sr.getCompanyService() != null && sr.getCompanyService().getWorkflowTemplate() != null) {
+                List<WorkflowStage> stages = workflowStageRepository
+                    .findByWorkflowTemplateIdOrderByStageOrderAsc(sr.getCompanyService().getWorkflowTemplate().getId());
+                boolean anyStageNotApproved = stages.stream()
+                    .filter(stage -> Boolean.TRUE.equals(stage.getRequiresApproval()))
+                    .anyMatch(stage -> !stageApprovalRepository.existsByServiceRequestIdAndWorkflowStageIdAndStatus(
+                        sr.getId(), stage.getId(), ApprovalStatus.APPROVED));
+                if (anyStageNotApproved) {
+                    throw new BadRequestException(
+                        "Cannot complete service request: one or more workflow stages requiring approval have not been approved");
+                }
             }
 
             sr.setCompletedAt(LocalDateTime.now());
             sr.setPermanentlyClosed(true);
-            automationEventPublisher.publishServiceRequestCompleted(
-                this, requireCompanyId(), sr.getId(),
+            publishCompletedAfterCommit(requireCompanyId(), sr.getId(),
                 sr.getClient() != null ? sr.getClient().getId() : null);
         }
         if (newStatus == ServiceRequestStatus.ASSIGNED && sr.getAssignedAt() == null)
@@ -377,13 +407,14 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         }
 
         if (sr.getAssignedEmployee() != null && sr.getAssignedEmployee().getId().equals(employeeId)) {
-            // Already assigned to this employee, no need to duplicate history or emails
+            // Already assigned to this employee: don't duplicate history or emails
             return toResponse(sr);
         }
 
         ServiceRequestStatus old = sr.getStatus();
         sr.setAssignedEmployee(emp);
         sr.setAssignedAt(LocalDateTime.now());
+        applySlaPause(sr, old, ServiceRequestStatus.ASSIGNED);
         sr.setStatus(ServiceRequestStatus.ASSIGNED);
 
         recordStatusChange(sr, old, ServiceRequestStatus.ASSIGNED,
@@ -417,56 +448,60 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         guardNotClosed(sr);
 
         User currentUser = securityUtil.getCurrentUser();
-        // Once staff has been assigned, a client can no longer self-cancel - staff
-        // is already working the request, so it needs to go through support instead.
-        // Staff themselves keep unrestricted cancel (e.g. to force-cancel a stuck one).
+        // A client cannot self-cancel once staff is assigned and already working it; staff keep unrestricted cancel.
         if (currentUser.getRole() == Role.CLIENT && sr.getAssignedEmployee() != null) {
             throw new BadRequestException(
                 "Cannot cancel after a team member has been assigned. Please contact support.");
         }
 
-        Long companyId = requireCompanyId();
-        ServiceRequestStatus oldStatus = sr.getStatus();
-        sr.setStatus(ServiceRequestStatus.CANCELLED);
-        sr.setPermanentlyClosed(true);
-        // Previously hardcoded regardless of why the caller actually cancelled -
-        // changeStatus() (the other cancellation path) already captures the
-        // real reason via request.getReason().
-        recordStatusChange(sr, oldStatus, ServiceRequestStatus.CANCELLED,
+        guardTransition(sr.getStatus(), ServiceRequestStatus.CANCELLED);
+        closeRequest(sr, ServiceRequestStatus.CANCELLED,
             (reason != null && !reason.isBlank()) ? reason : "Cancelled by platform user",
-            currentUser, companyId);
-
-        if (sr.getSubscription() != null) {
-            packageService.releaseQuota(sr.getSubscription().getId());
-        }
-
-        if (sr.getInvoiceId() != null) {
-            invoiceService.cancelOrRefundForServiceRequest(companyId, sr.getInvoiceId());
-        }
+            currentUser, requireCompanyId(), false);
     }
 
     @Override
     @Transactional
-    public void systemCancelForNonPayment(Long id) {
+    public void systemCancelForNonPayment(Long id, long deadlineHours) {
         ServiceRequest sr = serviceRequestRepository.findById(id)
             .orElseThrow(() -> new ResourceNotFoundException("Service request not found: " + id));
-        if (sr.isPermanentlyClosed()) return;
+        if (sr.isPermanentlyClosed() || TERMINAL_STATUSES.contains(sr.getStatus())) return;
 
-        Long companyId = sr.getCompany().getId();
+        // actor null: a scheduled sweep has no signed-in user, and the history row is stamped "System" for it.
+        closeRequest(sr, ServiceRequestStatus.CANCELLED,
+            "Automatically cancelled - payment not received within " + deadlineHours + " hours",
+            null, sr.getCompany().getId(), true);
+    }
+
+    /** The single cancellation/rejection path: closes permanently, records history, releases quota, cancels/refunds the invoice, notifies the client; explicit companyId so it works without a security context. */
+    private void closeRequest(ServiceRequest sr, ServiceRequestStatus terminalStatus, String reason,
+                              User actor, Long companyId, boolean nonPayment) {
         ServiceRequestStatus oldStatus = sr.getStatus();
-        sr.setStatus(ServiceRequestStatus.CANCELLED);
+        sr.setStatus(terminalStatus);
         sr.setPermanentlyClosed(true);
-        recordStatusChange(sr, oldStatus, ServiceRequestStatus.CANCELLED,
-            "Automatically cancelled - payment not received within 72 hours", null, companyId);
+        sr.setSlaPausedAt(null);
+        recordStatusChange(sr, oldStatus, terminalStatus, reason, actor, companyId);
 
         if (sr.getSubscription() != null) {
-            packageService.releaseQuota(sr.getSubscription().getId());
+            packageService.releaseQuotaForCompany(companyId, sr.getSubscription().getId());
         }
         if (sr.getInvoiceId() != null) {
             invoiceService.cancelOrRefundForServiceRequest(companyId, sr.getInvoiceId());
         }
 
-        if (sr.getClient() != null && sr.getClient().getUser() != null) {
+        // Tell the client - unless they closed it themselves.
+        boolean clientIsActor = actor != null && sr.getClient() != null && sr.getClient().getUser() != null
+            && sr.getClient().getUser().getId().equals(actor.getId());
+        if (!clientIsActor) {
+            try {
+                notifyClientOnStatusChange(sr, terminalStatus);
+            } catch (Exception ex) {
+                log.warn("Close notification failed for service request {} (still {}): {}",
+                    sr.getId(), terminalStatus, ex.getMessage());
+            }
+        }
+
+        if (nonPayment && sr.getClient() != null && sr.getClient().getUser() != null) {
             try {
                 Company fullCompany = companyRepository.findById(companyId)
                     .orElseThrow(() -> new ResourceNotFoundException("Company not found"));
@@ -480,8 +515,6 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         }
     }
 
-    // ── Comments ──────────────────────────────────────────────────
-
     @Override
     @Transactional
     public RequestCommentResponse addComment(Long requestId, AddCommentRequest request) {
@@ -489,16 +522,18 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         ServiceRequest sr = findInTenant(requestId);
         User currentUser = securityUtil.getCurrentUser();
 
-        // Default visibility is role-aware: clients post PUBLIC comments (visible to staff),
-        // employees/admins default to INTERNAL (not visible to client by default).
+        // Clients default to CLIENT-visible comments, staff default to INTERNAL.
         CommentVisibility defaultVisibility = isClientRole(currentUser)
                 ? CommentVisibility.CLIENT : CommentVisibility.INTERNAL;
+        // A client can never write a staff-only INTERNAL note, whatever visibility they send.
+        CommentVisibility visibility = isClientRole(currentUser)
+                ? CommentVisibility.CLIENT
+                : (request.getVisibility() != null ? request.getVisibility() : defaultVisibility);
 
         RequestComment comment = RequestComment.builder()
             .content(request.getContent())
-            .visibility(request.getVisibility() != null
-                ? request.getVisibility() : defaultVisibility)
-            .attachmentUrl(request.getAttachmentUrl())
+            .visibility(visibility)
+            .attachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl()))
             .serviceRequest(sr)
             .company(companyRef(companyId))
             .author(currentUser)
@@ -507,9 +542,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         commentRepository.save(comment);
         RequestCommentResponse response = ServiceRequestMapper.toCommentResponse(comment);
 
-        // Notify whoever's on the OTHER side of the conversation, not the author -
-        // this used to always notify the client, even when the client themself was
-        // the one writing the comment.
+        // Notify the OTHER side of the conversation, not the author (this used to notify the client even when the client wrote the comment).
         try {
             if (isClientRole(currentUser)) {
                 Employee assigned = sr.getAssignedEmployee();
@@ -524,8 +557,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                     ));
                     pushChatMessage(requestId, agentId, response);
                 } else {
-                    // Not assigned yet - nobody specific to hand it to, so alert
-                    // whoever can pick it up, same as on initial submission.
+                    // Not assigned yet - alert whoever can pick it up, same as on initial submission.
                     List<Long> staffRecipients = notifyAssignableStaff(companyId, NotificationType.REQUEST_UPDATED,
                         "New Message", "A client sent a message on \"" + sr.getTitle() + "\".", requestId);
                     staffRecipients.forEach(id -> pushChatMessage(requestId, id, response));
@@ -551,9 +583,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     @Transactional(readOnly = true)
     public Page<RequestCommentResponse> getComments(Long requestId, Pageable pageable) {
         findInTenant(requestId);
-        // CLIENT callers must never see INTERNAL (staff-only) notes on their own
-        // request - guardAccess() in findInTenant() already confirms this is their
-        // request, but visibility within that thread still needs enforcing here.
+        // findInTenant()'s guardAccess() only proves ownership; INTERNAL notes must still be filtered out for CLIENT callers here.
         User currentUser = securityUtil.getCurrentUser();
         Page<RequestComment> comments = isClientRole(currentUser)
             ? commentRepository.findByServiceRequestIdAndVisibilityOrderByCreatedAtDesc(
@@ -561,8 +591,6 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
             : commentRepository.findByServiceRequestIdOrderByCreatedAtDesc(requestId, pageable);
         return comments.map(ServiceRequestMapper::toCommentResponse);
     }
-
-    // ── Status history ────────────────────────────────────────────
 
     @Override
     @Transactional(readOnly = true)
@@ -573,9 +601,37 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
             .stream().map(ServiceRequestMapper::toHistoryResponse).toList();
     }
 
+    /*
+     * Deliberately NOT @Transactional, and nothing here nests: the approval gate used to run a REQUIRES_NEW
+     * TransactionTemplate inside this method's own transaction, so every advance held two pooled connections at
+     * once and the pool starved under concurrency. The gate now runs as its own transaction that COMMITS before
+     * the advance transaction starts, so one request needs one connection at a time. Behaviour is unchanged: the
+     * pending approval row still survives the BadRequestException thrown right after it, because that exception
+     * is raised after the gate transaction has committed rather than inside it.
+     *
+     * Both callers (the controller and StageApprovalServiceImpl.approve(), itself non-transactional) invoke this
+     * with no transaction in progress, so the two steps below really are separate transactions.
+     */
     @Override
-    @Transactional
     public ServiceRequestResponse advanceStage(Long id) {
+        String stageAwaitingApproval = newTransaction().execute(status -> reserveStageApproval(id));
+        if (stageAwaitingApproval != null) {
+            throw new BadRequestException("Stage \"" + stageAwaitingApproval
+                + "\" requires approval. An approval request is pending in the approvals queue.");
+        }
+        return newTransaction().execute(status -> applyStageAdvance(id));
+    }
+
+    private org.springframework.transaction.support.TransactionTemplate newTransaction() {
+        return new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+    }
+
+    /**
+     * Step 1, in its own committing transaction: validates the advance and, when the next stage needs an approval
+     * that isn't granted yet, records the pending approval and returns the stage name so the caller can refuse.
+     * Returns null when the advance may proceed. Validation failures throw here and roll back, writing nothing.
+     */
+    private String reserveStageApproval(Long id) {
         ServiceRequest sr = findInTenant(id);
         guardNotClosed(sr);
 
@@ -586,22 +642,63 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         }
 
         WorkflowStage next = stages.get(current); // currentStage counts completed stages
+        if (!Boolean.TRUE.equals(next.getRequiresApproval())
+            || stageApprovalRepository.existsByServiceRequestIdAndWorkflowStageIdAndStatus(
+                sr.getId(), next.getId(), ApprovalStatus.APPROVED)) {
+            return null;
+        }
+
+        boolean alreadyPending = stageApprovalRepository
+            .existsByServiceRequestIdAndWorkflowStageIdAndStatus(sr.getId(), next.getId(), ApprovalStatus.PENDING);
+        if (!alreadyPending) {
+            stageApprovalRepository.save(StageApproval.builder()
+                .serviceRequest(sr)
+                .workflowStage(next)
+                .approverRole(next.getAssigneeRole())
+                .requestedBy(securityUtil.getCurrentUser())
+                .company(sr.getCompany())
+                .build());
+        }
+        return next.getName();
+    }
+
+    /** Step 2, in its own transaction: performs the advance. Re-validates, since step 1 committed and released its lock. */
+    private ServiceRequestResponse applyStageAdvance(Long id) {
+        ServiceRequest sr = findInTenant(id);
+        guardNotClosed(sr);
+
+        List<WorkflowStage> stages = loadWorkflowStages(sr);
+        int current = sr.getCurrentStage() != null ? sr.getCurrentStage() : 0;
+        if (current >= stages.size()) {
+            throw new BadRequestException("Request is already at the final workflow stage");
+        }
+
+        WorkflowStage next = stages.get(current); // currentStage counts completed stages
+        // Step 1 cleared this gate; re-checked in case the approval was revoked in between. No write here, so
+        // this transaction stays clean to roll back.
         if (Boolean.TRUE.equals(next.getRequiresApproval())
             && !stageApprovalRepository.existsByServiceRequestIdAndWorkflowStageIdAndStatus(
                 sr.getId(), next.getId(), ApprovalStatus.APPROVED)) {
-
-            ensurePendingStageApproval(sr, next);
             throw new BadRequestException("Stage \"" + next.getName()
                 + "\" requires approval. An approval request is pending in the approvals queue.");
         }
 
         sr.setCurrentStage(current + 1);
 
-        // Stage-level SLA: entering a stage with slaHours refreshes the deadline
+        // Stage SLA refreshes the deadline; slaBreach describes only the CURRENT deadline, so it is cleared while firstBreachedAt/breachCount keep the history.
         if (next.getSlaHours() != null && next.getSlaHours() > 0) {
+            // Deadline already missed but the 30-min breach sweep hasn't caught it - record it before the deadline is replaced.
+            if (!sr.isSlaBreach() && sr.getSlaPausedAt() == null && sr.getSlaDeadline() != null
+                    && sr.getSlaDeadline().isBefore(LocalDateTime.now())) {
+                sr.markSlaBreached(LocalDateTime.now());
+            }
             sr.setSlaHours(next.getSlaHours());
             sr.setSlaDeadline(LocalDateTime.now().plusHours(next.getSlaHours()));
             sr.setSlaBreach(false);
+            // Re-stamp the pause so pause time accrued before the new deadline isn't added to it on resume.
+            if (sr.getSlaPausedAt() != null) {
+                sr.setSlaPausedAt(LocalDateTime.now());
+            }
         }
 
         if (sr.getAssignedEmployee() != null && sr.getAssignedEmployee().getUser() != null) {
@@ -614,11 +711,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                 sr.getId()));
         }
 
-        // Milestone billing: the stage that just completed asks for an
-        // installment. This only notifies + posts a visible comment with the
-        // amount - collecting it (Record Payment / a new partial invoice
-        // line) stays a manual staff action, since agreedPrice may not be set
-        // yet and we shouldn't silently invent an invoice.
+        // Milestone billing only notifies and posts the amount; collection stays manual because agreedPrice may not be set yet.
         if (Boolean.TRUE.equals(next.getRequiresPayment())
                 && sr.getClient() != null && sr.getClient().getUser() != null) {
             String amountText;
@@ -707,9 +800,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         return null;
     }
 
-    // Reads + mapping run in aiTx.load(), which commits before the provider call
-    // so no DB connection is held across it - see AiTransactionBoundary. Every
-    // lazy association (client, assignedEmployee.user) is read in the callback.
+    // aiTx.load() commits reads before the provider call so no DB connection is held across it - see AiTransactionBoundary; all lazy associations are read inside the callback.
     @Override
     public ServiceRequestResponse summarise(Long id) {
         PreparedPrompt<ServiceRequestResponse> prepared = aiTx.load(() -> {
@@ -745,17 +836,16 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         return response;
     }
 
-    // Same aiTx.load() pattern as summarise() above - reads commit before the
-    // provider call runs. Tagged under the same SERVICE_REQUEST_SUMMARY feature
-    // for audit purposes since this is the same "ground a reply in the request's
-    // real state" idea, just producing a reply instead of a status summary.
+    // Same aiTx.load() pattern as summarise(); tagged under SERVICE_REQUEST_SUMMARY deliberately so audit groups both.
     @Override
     public ServiceRequestReplyDraftResponse draftReply(Long id, ServiceRequestReplyDraftRequest request) {
         PreparedPrompt<Void> prepared = aiTx.load(() -> {
             ServiceRequest sr = findInTenant(id);
 
+            // Client-visible comments only: the draft is sent to the client, so INTERNAL notes must not leak into it or reach the AI provider.
             String recentComments = commentRepository
-                .findByServiceRequestIdOrderByCreatedAtDesc(sr.getId(), PageRequest.of(0, 5))
+                .findByServiceRequestIdAndVisibilityOrderByCreatedAtDesc(
+                    sr.getId(), com.zuhoocms.enums.CommentVisibility.CLIENT, PageRequest.of(0, 5))
                 .stream()
                 .map(RequestComment::getContent)
                 .reduce((a, b) -> a + "\n- " + b)
@@ -774,14 +864,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         return new ServiceRequestReplyDraftResponse(reply.trim());
     }
 
-    /**
-     * Notifies whoever can actually handle a request when there's no single assigned
-     * employee to hand it to yet: the company owner plus any active employee whose
-     * CustomRole holds SERVICE_REQUEST_ASSIGN. Used both when a request is first
-     * submitted and when a client messages a request that hasn't been picked up yet.
-     * Returns the notified user ids so callers can also push a live chat update to
-     * the same people.
-     */
+    /** Notifies the company owner plus active employees whose CustomRole holds SERVICE_REQUEST_ASSIGN, and returns their user ids so callers can push live chat to the same people. */
     private List<Long> notifyAssignableStaff(Long companyId, NotificationType type, String title,
                                               String message, Long requestId) {
         List<Long> recipients = new ArrayList<>();
@@ -812,18 +895,112 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         return recipients;
     }
 
-    /**
-     * Live-pushes a chat message to each recipient's personal queue so an open chat
-     * screen updates instantly, instead of waiting on the 60s notification-bell poll.
-     * Uses convertAndSendToUser (per-principal, not a public /topic) so a message on
-     * one client's ticket can never be received by another client's open socket.
-     */
+    /** Pushes to each recipient's personal queue instead of the 60s bell poll; convertAndSendToUser (not a public /topic) keeps one client's ticket off another client's socket. */
     private void pushChatMessage(Long requestId, Long recipientUserId, RequestCommentResponse message) {
         try {
             messagingTemplate.convertAndSendToUser(
                 recipientUserId.toString(), "/queue/service-requests/" + requestId + "/messages", message);
         } catch (Exception ex) {
             log.debug("Live chat push failed for user {} on request {}: {}", recipientUserId, requestId, ex.getMessage());
+        }
+    }
+
+    static final List<ServiceRequestStatus> TERMINAL_STATUSES = List.of(
+        ServiceRequestStatus.COMPLETED, ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED);
+
+    /** Legal manual transitions for changeStatus()/cancel(); quotation endpoints move PENDING &lt;-&gt; QUOTATION_PENDING on their own. */
+    private static final Map<ServiceRequestStatus, java.util.Set<ServiceRequestStatus>> ALLOWED_TRANSITIONS;
+    static {
+        Map<ServiceRequestStatus, java.util.Set<ServiceRequestStatus>> m = new java.util.EnumMap<>(ServiceRequestStatus.class);
+        m.put(ServiceRequestStatus.PENDING, java.util.EnumSet.of(
+            ServiceRequestStatus.QUOTATION_PENDING, ServiceRequestStatus.ASSIGNED, ServiceRequestStatus.IN_PROGRESS,
+            ServiceRequestStatus.WAITING_CLIENT, ServiceRequestStatus.UNDER_REVIEW,
+            ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.QUOTATION_PENDING, java.util.EnumSet.of(
+            ServiceRequestStatus.PENDING, ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.ASSIGNED, java.util.EnumSet.of(
+            ServiceRequestStatus.PENDING, ServiceRequestStatus.IN_PROGRESS, ServiceRequestStatus.WAITING_CLIENT,
+            ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.IN_PROGRESS, java.util.EnumSet.of(
+            ServiceRequestStatus.WAITING_CLIENT, ServiceRequestStatus.UNDER_REVIEW,
+            ServiceRequestStatus.COMPLETED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.WAITING_CLIENT, java.util.EnumSet.of(
+            ServiceRequestStatus.ASSIGNED, ServiceRequestStatus.IN_PROGRESS, ServiceRequestStatus.UNDER_REVIEW,
+            ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.UNDER_REVIEW, java.util.EnumSet.of(
+            ServiceRequestStatus.IN_PROGRESS, ServiceRequestStatus.WAITING_CLIENT,
+            ServiceRequestStatus.COMPLETED, ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.RESUBMITTED, java.util.EnumSet.of(
+            ServiceRequestStatus.PENDING, ServiceRequestStatus.ASSIGNED, ServiceRequestStatus.IN_PROGRESS,
+            ServiceRequestStatus.REJECTED, ServiceRequestStatus.CANCELLED));
+        m.put(ServiceRequestStatus.COMPLETED, java.util.EnumSet.noneOf(ServiceRequestStatus.class));
+        m.put(ServiceRequestStatus.REJECTED, java.util.EnumSet.noneOf(ServiceRequestStatus.class));
+        m.put(ServiceRequestStatus.CANCELLED, java.util.EnumSet.noneOf(ServiceRequestStatus.class));
+        ALLOWED_TRANSITIONS = java.util.Collections.unmodifiableMap(m);
+    }
+
+    private void guardTransition(ServiceRequestStatus from, ServiceRequestStatus to) {
+        if (to == null) {
+            throw new BadRequestException("Target status is required");
+        }
+        java.util.Set<ServiceRequestStatus> allowed = ALLOWED_TRANSITIONS.getOrDefault(from, java.util.Set.of());
+        if (!allowed.contains(to)) {
+            String allowedText = allowed.isEmpty()
+                ? "none - " + from + " is a final status"
+                : allowed.stream().map(Enum::name).sorted().collect(java.util.stream.Collectors.joining(", "));
+            throw new BadRequestException("Cannot change status from " + from + " to " + to
+                + ". Allowed from " + from + ": " + allowedText);
+        }
+    }
+
+    /** WAITING_CLIENT pauses the SLA clock: entering stamps slaPausedAt, leaving pushes the deadline out by the waited time. */
+    private void applySlaPause(ServiceRequest sr, ServiceRequestStatus from, ServiceRequestStatus to) {
+        LocalDateTime now = LocalDateTime.now();
+        if (to == ServiceRequestStatus.WAITING_CLIENT && from != ServiceRequestStatus.WAITING_CLIENT) {
+            if (sr.getSlaPausedAt() == null && sr.getSlaDeadline() != null && !sr.isSlaBreach()) {
+                sr.setSlaPausedAt(now);
+            }
+        } else if (from == ServiceRequestStatus.WAITING_CLIENT && to != ServiceRequestStatus.WAITING_CLIENT) {
+            if (sr.getSlaPausedAt() != null) {
+                if (sr.getSlaDeadline() != null) {
+                    sr.setSlaDeadline(sr.getSlaDeadline().plus(java.time.Duration.between(sr.getSlaPausedAt(), now)));
+                }
+                sr.setSlaPausedAt(null);
+            }
+        }
+    }
+
+    /** First workflow stage's slaHours when configured, else a default by priority. */
+    private int computeInitialSlaHours(CompanyService service, ServiceRequestPriority priority) {
+        if (service.getWorkflowTemplate() != null) {
+            List<WorkflowStage> stages = workflowStageRepository
+                .findByWorkflowTemplateIdOrderByStageOrderAsc(service.getWorkflowTemplate().getId());
+            if (!stages.isEmpty() && stages.get(0).getSlaHours() != null && stages.get(0).getSlaHours() > 0) {
+                return stages.get(0).getSlaHours();
+            }
+        }
+        if (priority == null) return 72;
+        return switch (priority) {
+            case URGENT -> 8;
+            case HIGH -> 24;
+            case NORMAL -> 72;
+            case LOW -> 168;
+        };
+    }
+
+    /** Published after commit so async usage billing never runs for a completion that rolls back or reads the request before COMPLETED is visible. */
+    private void publishCompletedAfterCommit(Long companyId, Long requestId, Long clientId) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        automationEventPublisher.publishServiceRequestCompleted(
+                            ServiceRequestServiceImpl.this, companyId, requestId, clientId);
+                    }
+                });
+        } else {
+            automationEventPublisher.publishServiceRequestCompleted(this, companyId, requestId, clientId);
         }
     }
 
@@ -852,13 +1029,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
             throw new BadRequestException("This request is permanently closed");
     }
 
-    /**
-     * Staff (COMPANY_OWNER/SYSTEM_ADMIN/EMPLOYEE) can access any request in their
-     * company - listAll() already exposes the full company queue to EMPLOYEE, so
-     * restricting individual-request access to "already assigned" would contradict
-     * that and block staff from triaging unassigned requests. Only CLIENT is
-     * restricted to requests they own.
-     */
+    /** Only CLIENT is restricted to their own requests: listAll() already exposes the whole company queue to staff, who must be able to triage unassigned requests. */
     private void guardAccess(ServiceRequest sr) {
         User user = securityUtil.getCurrentUser();
         if (user == null || user.getRole() == null) return;
@@ -878,12 +1049,15 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     private void recordStatusChange(ServiceRequest sr, ServiceRequestStatus oldStatus,
                                      ServiceRequestStatus newStatus, String reason,
                                      User changedBy, Long companyId) {
+        // changedBy is null for the scheduler's own cancellations; the row is then stamped "System" so the timeline
+        // names an actor either way.
         historyRepository.save(RequestStatusHistory.builder()
             .serviceRequest(sr)
             .oldStatus(oldStatus)
             .newStatus(newStatus)
             .reason(reason)
             .changedBy(changedBy)
+            .changedByName(changedBy != null ? changedBy.getFullName() : RequestStatusHistory.SYSTEM_ACTOR_NAME)
             .companyId(companyId)
             .build());
     }
@@ -937,11 +1111,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         return response;
     }
 
-    /**
-     * Checks required dynamic form fields for the service are answered and
-     * returns the answers serialized as JSON (null when there is nothing to store).
-     * Answers are keyed by ServiceFormField id so renamed labels don't orphan data.
-     */
+    /** Validates required dynamic form fields and serializes answers to JSON, keyed by ServiceFormField id so renamed labels don't orphan data. */
     private String validateAndSerializeFormData(
             Long companyId, Long serviceId, Map<String, String> formData) {
         List<ServiceFormField> fields = serviceFormFieldRepository
@@ -951,13 +1121,11 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
             .toList();
         for (ServiceFormField field : fields) {
             String value = formData == null ? null : formData.get(String.valueOf(field.getId()));
-            
-            // 1. Required Check
+
             if (field.isRequired() && (value == null || value.isBlank())) {
                 throw new BadRequestException("'" + field.getLabel() + "' is required");
             }
             
-            // 2. Format Checks (if value is provided)
             if (value != null && !value.isBlank()) {
                 FormFieldType type = field.getFieldType();
                 if (type == FormFieldType.NUMBER) {
@@ -981,8 +1149,11 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                         throw new BadRequestException("'" + field.getLabel() + "' must be a valid phone number");
                     }
                 } else if (type == FormFieldType.FILE_UPLOAD) {
-                    if (!value.matches("^https?://.*$")) {
-                        throw new BadRequestException("'" + field.getLabel() + "' must be a valid file URL (http:// or https://)");
+                    // Same rule as comment attachments: "starts with http" accepted any external URL, so a client could store a link to a file this app never held.
+                    try {
+                        com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(value);
+                    } catch (BadRequestException ex) {
+                        throw new BadRequestException("'" + field.getLabel() + "': " + ex.getMessage());
                     }
                 }
             }
@@ -1000,8 +1171,19 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     public ServiceRequestResponse submitQuotation(Long id, SubmitQuotationRequest request) {
         Long companyId = requireCompanyId();
         ServiceRequest sr = findInTenant(id);
+        // Without these guards, submitting a quotation reopened COMPLETED/closed requests via QUOTATION_PENDING.
+        guardNotClosed(sr);
+        if (sr.getStatus() != ServiceRequestStatus.PENDING
+                && sr.getStatus() != ServiceRequestStatus.QUOTATION_PENDING) {
+            throw new BadRequestException("A quotation can only be submitted while the request is PENDING or "
+                + "QUOTATION_PENDING (current status: " + sr.getStatus() + ")");
+        }
 
-        sr.submitQuotation(request.getAmount(), request.getCurrency(), request.getNotes(), request.getValidUntil());
+        // Default to the service's currency, not the entity's hard-coded "USD", so the invoice is raised in the right currency.
+        String currency = request.getCurrency() != null && !request.getCurrency().isBlank()
+            ? request.getCurrency()
+            : (sr.getCompanyService() != null ? sr.getCompanyService().getCurrency() : null);
+        sr.submitQuotation(request.getAmount(), currency, request.getNotes(), request.getValidUntil());
         sr = serviceRequestRepository.save(sr);
 
         if (sr.getClient() != null && sr.getClient().getUser() != null) {
@@ -1022,6 +1204,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     public ServiceRequestResponse acceptQuotation(Long id) {
         Long companyId = requireCompanyId();
         ServiceRequest sr = findInTenant(id);
+        guardNotClosed(sr);
 
         if (sr.getQuotationStatus() != com.zuhoocms.enums.QuotationStatus.PENDING) {
             throw new BadRequestException("Only pending quotations can be accepted.");
@@ -1041,6 +1224,12 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         ServiceRequestResponse response = toResponse(sr);
 
         if (sr.getAgreedPrice() != null && sr.getAgreedPrice().compareTo(BigDecimal.ZERO) > 0) {
+            // Overwriting invoiceId orphaned any existing invoice - still owed, invisible to every cancel/refund path - so void or refund it first.
+            if (sr.getInvoiceId() != null) {
+                // VOIDED, not CANCELLED: the old invoice is replaced by the one raised below.
+                invoiceService.voidSupersededForServiceRequest(companyId, sr.getInvoiceId());
+            }
+
             ClientInvoiceItemRequest item = ClientInvoiceItemRequest.builder()
                 .description("Service Request (Quotation Accepted): " + sr.getTitle())
                 .quantity(new BigDecimal("1"))
@@ -1052,6 +1241,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
                 .serviceRequestId(sr.getId())
                 .invoiceDate(java.time.LocalDate.now())
                 .dueDate(java.time.LocalDate.now().plusDays(3))
+                .currency(sr.getQuotationCurrency())
                 .notes("Invoice for Service Request: " + sr.getTitle())
                 .items(List.of(item))
                 .build();
@@ -1072,6 +1262,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
     public ServiceRequestResponse rejectQuotation(Long id, RejectQuotationRequest request) {
         Long companyId = requireCompanyId();
         ServiceRequest sr = findInTenant(id);
+        guardNotClosed(sr);
 
         if (sr.getQuotationStatus() != com.zuhoocms.enums.QuotationStatus.PENDING) {
             throw new BadRequestException("Only pending quotations can be rejected.");
@@ -1095,44 +1286,7 @@ public class ServiceRequestServiceImpl implements ServiceRequestService {
         ));
     }
 
-    /**
-     * Creates the pending StageApproval that advanceStage() promises in its error
-     * message, in a transaction of its own. advanceStage() throws right after
-     * calling this to send the caller to the approvals queue - if the save lived
-     * in that same @Transactional method, Spring's default rollback-on-exception
-     * would undo it along with everything else, and the queue would stay empty
-     * forever despite the message saying otherwise. REQUIRES_NEW via
-     * TransactionTemplate (not a second @Transactional method on this class) is
-     * required here specifically because self-invocation doesn't go through the
-     * Spring proxy that propagation annotations rely on.
-     */
-    private void ensurePendingStageApproval(ServiceRequest sr, WorkflowStage next) {
-        org.springframework.transaction.support.TransactionTemplate requiresNew =
-            new org.springframework.transaction.support.TransactionTemplate(transactionManager);
-        requiresNew.setPropagationBehavior(
-            org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        requiresNew.executeWithoutResult(status -> {
-            boolean alreadyPending = stageApprovalRepository
-                .existsByServiceRequestIdAndWorkflowStageIdAndStatus(sr.getId(), next.getId(), ApprovalStatus.PENDING);
-            if (!alreadyPending) {
-                stageApprovalRepository.save(StageApproval.builder()
-                    .serviceRequest(sr)
-                    .workflowStage(next)
-                    .approverRole(next.getAssigneeRole())
-                    .requestedBy(securityUtil.getCurrentUser())
-                    .company(sr.getCompany())
-                    .build());
-            }
-        });
-    }
-
-    /**
-     * Blocks ordering a service before a mandatory prerequisite has been
-     * completed - e.g. Trade License Registration requires a completed
-     * Company Incorporation first. "Completed" means the client has at least
-     * one COMPLETED request for that prerequisite service with this company;
-     * an in-progress or rejected attempt doesn't satisfy it.
-     */
+    /** Blocks ordering until the client has at least one COMPLETED request for each mandatory prerequisite service; in-progress or rejected attempts don't count. */
     private void validatePrerequisites(Long companyId, Long clientId, CompanyService service) {
         List<com.zuhoocms.modules.servicedesk.companyservice.ServicePrerequisite> prerequisites =
             servicePrerequisiteRepository.findByServiceIdOrderByIdAsc(service.getId());

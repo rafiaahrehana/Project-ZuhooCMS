@@ -9,15 +9,9 @@ import lombok.*;
 import java.math.BigDecimal;
 
 /**
- * One company's payroll policy: how a day's pay is derived, what absence costs,
- * whether overtime is paid, and the default split of a salary into components.
- *
- * Exists as its own table rather than more columns on Company because these are
- * HR policy rather than company identity, and they carry their own permission.
- *
- * Every default here reproduces the behaviour that was hardcoded before this
- * entity existed, so an existing tenant sees no change to its payroll until an
- * owner deliberately edits something.
+ * One company's payroll policy: per-day basis, absence cost, overtime and default salary component split.
+ * Its own table rather than columns on Company: HR policy, not company identity, and it carries its own permission.
+ * Every default reproduces the previously hardcoded behaviour, so an existing tenant's payroll is unchanged until an owner edits it.
  */
 @Entity
 @Table(name = "payroll_settings")
@@ -27,8 +21,6 @@ public class PayrollSettings extends BaseEntity {
     /** One row per company. */
     @Column(nullable = false, unique = true)
     private Long companyId;
-
-    // ── Absence ──────────────────────────────────────────────
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -40,21 +32,11 @@ public class PayrollSettings extends BaseEntity {
     @Builder.Default
     private SalaryBase absenceDeductionBase = SalaryBase.GROSS;
 
-    // ── Overtime ─────────────────────────────────────────────
-
-    /**
-     * Off by default: salaried engineers in most IT companies are not paid
-     * overtime, they take time off in lieu. Tenants running shift-based roles
-     * turn it on.
-     */
+    /** Off by default: salaried staff take time off in lieu; shift-based tenants turn it on. */
     @Builder.Default
     private boolean overtimeEnabled = false;
 
-    /**
-     * Premium applied to the ordinary hourly rate. The Bangladesh Labour Act
-     * 2006 (s.108) requires twice the ordinary rate, hence the default; a
-     * tenant under different rules can lower it.
-     */
+    /** Premium on the ordinary hourly rate; defaults to 2.00 per Bangladesh Labour Act 2006 s.108, lowerable by tenants under other rules. */
     @Column(precision = 4, scale = 2)
     @Builder.Default
     private BigDecimal overtimeMultiplier = new BigDecimal("2.00");
@@ -69,10 +51,7 @@ public class PayrollSettings extends BaseEntity {
     @Builder.Default
     private BigDecimal standardHoursPerDay = new BigDecimal("8.00");
 
-    // ── Salary component defaults ────────────────────────────
-    // Percentages OF BASIC, used to pre-fill a new salary structure. They are
-    // defaults, not rules: the per-employee SalaryStructure stores real amounts,
-    // so a company can still pay one grade 40% house rent and another 20%.
+    // Percentages OF BASIC that pre-fill a new salary structure; SalaryStructure stores the real per-employee amounts, so grades may differ.
 
     @Column(precision = 5, scale = 2)
     @Builder.Default

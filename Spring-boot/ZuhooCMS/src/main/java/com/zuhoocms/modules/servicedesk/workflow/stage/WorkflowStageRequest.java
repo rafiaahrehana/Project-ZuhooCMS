@@ -6,21 +6,6 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-/**
- * BUG-FIX SUMMARY
- * ───────────────
- * assigneeRole changed from Role enum to String — WorkflowStage.assigneeRole is annotated
- * @Column(length = 100) and declared as String. Storing a Role enum here is wrong because:
- *   a) The column is a plain VARCHAR — no @Enumerated annotation on the base field.
- *   b) WorkflowStage is a workflow configuration object; the assignee role is a flexible
- *      label (e.g. "ADMIN", "STAFF", "REVIEWER") that may not map 1:1 to the Role enum,
- *      especially as the system evolves.
- *   c) The mapper does stage.setAssigneeRole(request.getAssigneeRole()) — if request has
- *      Role and base has String, this is a compile error.
- *
- * Keeping it as String preserves the existing database schema and gives maximum flexibility.
- * The Angular frontend can validate against a fixed list on its end.
- */
 @Data
 public class WorkflowStageRequest {
 
@@ -41,11 +26,19 @@ public class WorkflowStageRequest {
     @Min(value = 1, message = "SLA hours must be at least 1")
     private Integer slaHours;
 
-    private Boolean requiresApproval = false;
+    /**
+     * Boxed AND left uninitialised, which is the whole point. Initialised to false it could never arrive null, so
+     * it read as a guarded field while behaving like a primitive: updateStage assigned it unconditionally, and an
+     * update that omitted the key turned the approval gate off and answered 200. Absent must mean "not mentioned";
+     * create treats absent as false explicitly.
+     */
+    private Boolean requiresApproval;
 
-    private String assigneeRole;        // fixed: was Role enum — base stores String
+    // String, not the Role enum: WorkflowStage stores a plain VARCHAR label that need not map 1:1 to Role.
+    private String assigneeRole;
 
-    private Boolean requiresPayment = false;
+    /** Uninitialised for the same reason as requiresApproval: an omitted key silently turned milestone billing off. */
+    private Boolean requiresPayment;
 
     @Min(value = 1, message = "Payment percent must be at least 1")
     @jakarta.validation.constraints.Max(value = 100, message = "Payment percent cannot exceed 100")

@@ -28,6 +28,7 @@ public class VendorBillService {
 
     private final VendorBillRepository billRepository;
     private final VendorRepository vendorRepository;
+    private final com.zuhoocms.modules.finance.generalledger.DocumentNumberService documentNumberService;
     private final GeneralLedgerService glService;
     private final DefaultAccountResolver accountResolver;
     private final SecurityUtil securityUtil;
@@ -78,15 +79,12 @@ public class VendorBillService {
         return VendorBillDtos.toResponse(bill);
     }
 
-    /**
-     * Approving a bill is when the expense and the liability become real:
-     * Dr Operating Expenses (full total incl. tax - input tax credit handling is out of
-     * scope) / Cr Accounts Payable, dated the bill's own date. Maker-checker enforced.
-     */
+    /** Approval makes the expense and liability real: Dr Operating Expenses (full total incl. tax, no input tax credit handling) / Cr Accounts Payable on the bill's own date, maker-checker enforced. */
     @Transactional
     public VendorBillDtos.VendorBillResponse approve(Long id) {
         authorizationService.checkPermission(PermissionCode.VENDOR_BILL_APPROVE);
-        VendorBill bill = findInTenant(id);
+        // Locked read + status re-check: two approve calls both saw DRAFT and both posted the Dr Expense / Cr AP batch, doubling the liability.
+        VendorBill bill = lockInTenant(id);
         if (bill.getStatus() != VendorBillStatus.DRAFT) {
             throw new BadRequestException("Only DRAFT bills can be approved");
         }
@@ -120,7 +118,8 @@ public class VendorBillService {
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("Payment amount must be positive");
         }
-        VendorBill bill = findInTenant(id);
+        // Locked read + status/outstanding re-check: concurrent payments read the same paidAmount, both passed the outstanding-balance check, and the vendor was paid twice.
+        VendorBill bill = lockInTenant(id);
         if (bill.getStatus() != VendorBillStatus.APPROVED && bill.getStatus() != VendorBillStatus.PARTIALLY_PAID
                 && bill.getStatus() != VendorBillStatus.OVERDUE) {
             throw new BadRequestException("Only approved bills can be paid");
@@ -152,7 +151,8 @@ public class VendorBillService {
     @Transactional
     public VendorBillDtos.VendorBillResponse cancel(Long id) {
         authorizationService.checkPermission(PermissionCode.VENDOR_BILL_CANCEL);
-        VendorBill bill = findInTenant(id);
+        // Locked read + status re-check, so a cancel racing an approval or payment sees committed state rather than reversing a posting still being made.
+        VendorBill bill = lockInTenant(id);
         if (bill.getStatus() == VendorBillStatus.CANCELLED) {
             throw new BadRequestException("Bill is already cancelled");
         }
@@ -160,7 +160,9 @@ public class VendorBillService {
             throw new BadRequestException("Cannot cancel a bill that already has payments recorded against it");
         }
 
-        boolean wasPosted = bill.getStatus() == VendorBillStatus.APPROVED;
+        // OVERDUE is APPROVED past its due date (the sweep posts nothing), so its Dr Expense / Cr AP batch is still on the books and must be reversed, or a phantom payable never clears.
+        boolean wasPosted = bill.getStatus() == VendorBillStatus.APPROVED
+                || bill.getStatus() == VendorBillStatus.OVERDUE;
         bill.setStatus(VendorBillStatus.CANCELLED);
         bill = billRepository.save(bill);
 
@@ -241,17 +243,37 @@ public class VendorBillService {
                 .build();
     }
 
+    /**
+     * Routed through DocumentNumberService, exactly as ExpenseServiceImpl.generateExpenseNumber already is.
+     *
+     * <p>What it replaces was an unlocked MAX+1: two creates in one company at the same moment read the same maximum
+     * and built the same number, and because VendorBill carries UNIQUE (company_id, bill_number) the loser got a
+     * constraint-violation 500 with nothing usable in it - where the expense path hands both callers a clean number.
+     *
+     * <p>The seed query is native and counts soft-deleted rows, which is the half that mattered more: the JPQL
+     * version could not see a soft-deleted bill whose row still held the constraint, so once one existed every later
+     * create in that company would propose its number and fail for ever, with no way out through the API. No route
+     * soft-deletes a bill today, so that was latent - but the expense repository's counterpart is named
+     * findMaxExpenseSequenceIncludingDeleted precisely because somebody already met this there.
+     */
     private String generateBillNumber(Long companyId) {
         int year = LocalDate.now().getYear();
         String prefix = "BILL-" + year + "-";
-        String maxNumber = billRepository.findMaxBillNumberByCompanyAndPrefix(companyId, prefix)
-                .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId,
+                com.zuhoocms.modules.finance.generalledger.DocumentNumberService.VENDOR_BILL, year, prefix, () -> {
+            Long max = billRepository.findMaxBillSequenceIncludingDeleted(companyId, prefix, prefix.length() + 1);
+            return max == null ? 1L : max + 1L;
+        });
     }
 
     private VendorBill findInTenant(Long id) {
         return billRepository.findByIdAndCompanyId(id, requireCompanyId())
+                .orElseThrow(() -> new ResourceNotFoundException("Vendor bill not found: " + id));
+    }
+
+    /** findInTenant holding a PESSIMISTIC_WRITE row lock, so approve/pay/cancel's read-check-post sequence can't interleave for the same bill; VendorBill's @Version backs up paths that skip the lock. */
+    private VendorBill lockInTenant(Long id) {
+        return billRepository.lockByIdAndCompanyId(id, requireCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Vendor bill not found: " + id));
     }
 

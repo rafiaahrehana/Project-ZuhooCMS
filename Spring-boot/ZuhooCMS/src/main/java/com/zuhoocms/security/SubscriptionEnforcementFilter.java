@@ -23,13 +23,16 @@ public class SubscriptionEnforcementFilter extends OncePerRequestFilter {
     private final SecurityUtil securityUtil;
     private final CompanyRepository companyRepository;
     private final ObjectMapper objectMapper;
+    private final com.zuhoocms.modules.demo.DemoAccount demoAccount;
 
     public SubscriptionEnforcementFilter(SecurityUtil securityUtil, 
                                          CompanyRepository companyRepository, 
-                                         @Lazy ObjectMapper objectMapper) {
+                                         @Lazy ObjectMapper objectMapper,
+                                         @Lazy com.zuhoocms.modules.demo.DemoAccount demoAccount) {
         this.securityUtil = securityUtil;
         this.companyRepository = companyRepository;
         this.objectMapper = objectMapper;
+        this.demoAccount = demoAccount;
     }
 
     @Override
@@ -41,40 +44,33 @@ public class SubscriptionEnforcementFilter extends OncePerRequestFilter {
         String method = request.getMethod();
         String uri = request.getRequestURI();
 
-        // 1. Skip safe methods
-        if (HttpMethod.GET.matches(method) || 
+        if (HttpMethod.GET.matches(method) ||
             HttpMethod.OPTIONS.matches(method) || 
             HttpMethod.HEAD.matches(method)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // 2. Skip public endpoints (they shouldn't require subscription checks anyway)
         if (uri.startsWith("/api/auth/") || uri.startsWith("/api/companies/public/")) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // 3. Extract platformuser & company
         User user = securityUtil.getCurrentUser();
         Long companyId = securityUtil.getCurrentCompanyId();
 
         if (user != null && companyId != null) {
             Company company = companyRepository.findById(companyId).orElse(null);
 
-            // Previously this only checked subscriptionEnd date - an admin
-            // suspending a tenant for a ToS/fraud hold (Company.status =
-            // SUSPENDED/DEACTIVATED) had zero effect here: every write endpoint
-            // kept working until their unrelated billing date happened to expire.
+            // Status must be checked as well as subscriptionEnd, or a ToS/fraud suspension has no effect until the unrelated billing date expires.
             boolean adminSuspended = company != null
                     && (company.getStatus() == CompanyStatus.SUSPENDED
                         || company.getStatus() == CompanyStatus.DEACTIVATED);
 
-            if (company != null && (adminSuspended || company.isTrialExpired())) {
-                // 4. Check exceptions for expired companies. An admin-suspended
-                // company gets none of them - those exist so a company can pay
-                // its way out of a *billing* lapse; a suspension for cause
-                // shouldn't be escapable by hitting the payment endpoint.
+            // isTrialExpired() also covers a TRIAL that never started (no end date); the demo tenant is exempt because it is read-only anyway.
+            boolean expired = company != null && company.isTrialExpired() && !demoAccount.isDemoCompany(company);
+            if (company != null && (adminSuspended || expired)) {
+                // These exceptions let a company pay its way out of a billing lapse, so an admin-suspended company gets none of them - a suspension for cause must not be escapable via the payment endpoint.
                 boolean isAllowedEndpoint = !adminSuspended && (
                                             uri.matches("^/api/support/tickets.*") ||
                                             uri.matches("^/api/invoices.*") ||
@@ -82,7 +78,6 @@ public class SubscriptionEnforcementFilter extends OncePerRequestFilter {
                                             uri.matches("^/api/wallet.*"));
 
                 if (!isAllowedEndpoint) {
-                    // Block the request
                     response.setStatus(HttpServletResponse.SC_FORBIDDEN);
                     response.setContentType("application/json");
 

@@ -3,10 +3,7 @@ package com.zuhoocms.modules.ai.prompt;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 
-/**
- * Builds the prompt for the AI business-insights feature on the dashboard.
- * Metrics is a plain-text digest of the company's dashboard summary.
- */
+
 @Setter
 @Accessors(chain = true)
 public class BusinessInsightsPromptBuilder {

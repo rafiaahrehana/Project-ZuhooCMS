@@ -1,12 +1,8 @@
 package com.zuhoocms.modules.hrm.performance;
 
 /**
- * The approval chain a performance review walks through.
- *
- * This sits alongside ReviewStatus rather than replacing it: ReviewStatus
- * (DRAFT/SUBMITTED/ACKNOWLEDGED) describes the employee-facing state, while the
- * stage tracks who still has to sign off. Reaching COMPLETED is what sets the
- * review's `finalised` flag, so there is exactly one way a review becomes final.
+ * The approval chain a performance review walks through, alongside ReviewStatus: ReviewStatus is the employee-facing state, the stage tracks who still has to sign off.
+ * Reaching COMPLETED is what sets `finalised`, so there is exactly one way a review becomes final.
  */
 public enum PerformanceStage {
     SELF_ASSESSMENT,

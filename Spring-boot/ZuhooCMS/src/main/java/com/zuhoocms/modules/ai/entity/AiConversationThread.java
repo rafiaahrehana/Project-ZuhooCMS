@@ -10,13 +10,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * Groups a run of AiConversation messages into one resumable chat, and (for
- * the agent loop) carries the one pending write-action awaiting the
- * employee's confirmation. Messages themselves still live on AiConversation
- * (thread is a nullable FK there) so every pre-existing generateRaw() caller
- * that never threads its calls keeps working unchanged.
- */
+/** Groups AiConversation messages into one resumable chat and carries the pending write-action; thread is a nullable FK on AiConversation so unthreaded generateRaw() callers still work. */
 @Getter
 @Setter
 @NoArgsConstructor
@@ -37,14 +31,11 @@ public class AiConversationThread extends BaseEntity {
     @Column(nullable = false, length = 30)
     private AiFeature feature;
 
-    // First ~60 chars of the thread's first message - set once, never edited,
-    // so the thread list has something readable without re-fetching messages.
+    // First ~60 chars of the first message, set once, so the thread list is readable without re-fetching messages.
     @Column(length = 80)
     private String title;
 
-    // Non-null only while a write-tool proposal is awaiting the employee's
-    // next "yes"/"no" - JSON of {tool, args}. Cleared after every agent turn
-    // whether confirmed, cancelled, or superseded by a new question.
+    // JSON of {tool, args}, non-null only while a write-tool proposal awaits a yes/no; cleared after every agent turn however it ends.
     @Column(name = "pending_action", columnDefinition = "TEXT")
     private String pendingAction;
 

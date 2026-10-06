@@ -12,16 +12,8 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 
 /**
- * Single place where the Firebase Admin SDK is started.
- *
- * Two features now need it — push notifications (FcmPushService) and Google sign-in
- * (GoogleAuthService). Both used to be able to race to initialise it; making them depend on this
- * bean instead means Spring guarantees the ordering, and there is one answer to "is Firebase
- * configured?" rather than two.
- *
- * Firebase stays optional: with no service-account path the app starts normally, push is skipped
- * and Google sign-in returns a clear error instead of failing at startup. A developer without
- * credentials must still be able to run everything else.
+ * Single place where the Firebase Admin SDK is started: FcmPushService and GoogleAuthService depend on this bean instead of racing to initialise it themselves.
+ * Firebase stays optional - with no service-account path the app starts normally, push is skipped and Google sign-in returns a clear error.
  */
 @Component
 @Slf4j

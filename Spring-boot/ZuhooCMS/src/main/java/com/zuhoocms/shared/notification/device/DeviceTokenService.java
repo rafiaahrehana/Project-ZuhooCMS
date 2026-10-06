@@ -2,6 +2,7 @@ package com.zuhoocms.shared.notification.device;
 
 import com.zuhoocms.auth.user.User;
 import com.zuhoocms.security.SecurityUtil;
+import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -18,12 +19,7 @@ public class DeviceTokenService {
     private final DeviceTokenRepository repository;
     private final SecurityUtil securityUtil;
 
-    /**
-     * Upsert rather than insert. FCM reissues tokens, and the same token can end up belonging to
-     * a different account after a reinstall or account switch on the same handset — so an
-     * existing row is reassigned to the current user instead of being duplicated or left
-     * pointing at the previous owner.
-     */
+    /** Upsert, not insert: FCM reissues tokens and the same token can belong to another account after a reinstall, so an existing row is reassigned to the current user. */
     @Transactional
     public void register(RegisterDeviceTokenRequest request) {
 
@@ -42,14 +38,14 @@ public class DeviceTokenService {
         repository.save(deviceToken);
     }
 
-    /**
-     * Called on sign-out. Deliberately does not check ownership: the caller is handing back a
-     * token they hold, and refusing to unregister it would be worse than the alternative —
-     * a device that keeps receiving a signed-out user's notifications.
-     */
+    /** Sign-out: someone else's token is reported exactly like a missing one (404), so tokens can't be probed or used to silence another user's device. */
     @Transactional
     public void unregister(String token) {
-        repository.deleteByToken(token);
+        Long userId = securityUtil.getCurrentUser().getId();
+        DeviceToken deviceToken = repository.findByToken(token)
+                .filter(t -> t.getUser() != null && userId.equals(t.getUser().getId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Device token not found"));
+        repository.delete(deviceToken);
     }
 
     @Transactional(readOnly = true)

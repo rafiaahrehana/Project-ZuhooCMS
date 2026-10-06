@@ -6,12 +6,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 
-/**
- * Note there is deliberately no userId field — the owner is always taken from the JWT. Accepting
- * one from the client would let any authenticated caller register a device against someone else's
- * account and receive their notifications (the same class of hole that was closed in the support
- * module's sentByUserId).
- */
+/** No userId field on purpose: the owner comes from the JWT, or any caller could register a device against someone else's account and receive their notifications. */
 @Getter
 @Setter
 public class RegisterDeviceTokenRequest {

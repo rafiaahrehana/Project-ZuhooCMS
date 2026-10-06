@@ -54,9 +54,7 @@ public class NotificationPreferenceServiceImpl implements NotificationPreference
     public NotificationPreferenceResponse resetToDefaults() {
         User user = securityUtil.getCurrentUser();
 
-        // Fix from Phase 2 review: use builder() so @Builder.Default values apply.
-        // new NotificationPreference() sets all booleans to false (Java default),
-        // bypassing @Builder.Default which sets them to true.
+        // builder(), not new NotificationPreference(): the constructor bypasses @Builder.Default and leaves every boolean false.
         NotificationPreference prefs = preferenceRepository.findByUserId(user.getId())
             .orElseGet(() -> NotificationPreference.builder().user(user).build());
 

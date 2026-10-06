@@ -17,4 +17,10 @@ public class ClientSummaryResponse {
     // Invoices (scoped to the logged-in client)
     long unpaidInvoices;
     BigDecimal outstandingInvoiceAmount;
+
+    /**
+     * As on the tenant dashboard: "servicedesk" and/or "finance" when the counts above are zero only because the
+     * query behind them failed. Empty when everything answered.
+     */
+    java.util.List<String> unavailableSections;
 }

@@ -43,9 +43,7 @@ public class LocationController {
         return ResponseEntity.ok(locationService.getNodeById(id));
     }
 
-    // Mutating endpoints require platform-admin auth even though GETs on this
-    // path are public (see SecurityConfig - only GET /api/locations/** is
-    // permitAll, these three are not covered by that rule).
+    // Mutations need platform-admin auth: SecurityConfig permitAlls only GET /api/locations/**.
     @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @PostMapping
     @Operation(summary = "Create a new location node")

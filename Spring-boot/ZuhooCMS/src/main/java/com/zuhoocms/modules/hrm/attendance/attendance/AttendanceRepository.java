@@ -16,25 +16,13 @@ import java.util.Optional;
 @Repository
 public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
 
-    /**
-     * Tenant-scoped lookup — used for all single-record operations to prevent
-     * cross-tenant data access.
-     */
+    /** Tenant-scoped lookup - used for all single-record operations to prevent cross-tenant data access. */
     Optional<Attendance> findByIdAndCompanyId(Long id, Long companyId);
 
-    /**
-     * Duplicate check — ensures only one attendance record per employee per day.
-     */
     List<Attendance> findByEmployeeIdAndAttendanceDate(Long employeeId, LocalDate date);
 
-    /**
-     * Employee's own attendance history (paginated).
-     */
     Page<Attendance> findByCompanyIdAndEmployeeId(Long companyId, Long employeeId, Pageable pageable);
 
-    /**
-     * Admin: all attendance in the company (paginated).
-     */
     @Query(value = "SELECT a FROM Attendance a LEFT JOIN FETCH a.employee e WHERE a.companyId = :companyId AND a.deleted = false",
            countQuery = "SELECT COUNT(a) FROM Attendance a WHERE a.companyId = :companyId AND a.deleted = false")
     Page<Attendance> findByCompanyId(@Param("companyId") Long companyId, Pageable pageable);
@@ -100,9 +88,6 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
             @Param("search") String search,
             Pageable pageable);
 
-    /**
-     * Admin: all attendance in the company for a date range (paginated).
-     */
     @Query(value = "SELECT a FROM Attendance a LEFT JOIN FETCH a.employee e WHERE a.companyId = :companyId AND a.attendanceDate BETWEEN :start AND :end AND a.deleted = false",
            countQuery = "SELECT COUNT(a) FROM Attendance a WHERE a.companyId = :companyId AND a.attendanceDate BETWEEN :start AND :end AND a.deleted = false")
     Page<Attendance> findByCompanyIdAndAttendanceDateBetween(
@@ -112,9 +97,6 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
         Pageable pageable
     );
 
-    /**
-     * Admin: all attendance in the company for a date range (list for reports).
-     */
     @Query("SELECT a FROM Attendance a LEFT JOIN FETCH a.employee e WHERE a.companyId = :companyId AND a.attendanceDate BETWEEN :start AND :end AND a.deleted = false")
     List<Attendance> findListByCompanyIdAndAttendanceDateBetween(
         @Param("companyId") Long companyId,
@@ -140,22 +122,13 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
             @Param("end") LocalDate end,
             Pageable pageable);
 
-    /**
-     * Admin: filter by attendance status.
-     */
     Page<Attendance> findByCompanyIdAndStatus(Long companyId, AttendanceStatus status, Pageable pageable);
 
-    /**
-     * Admin: employees with ABSENT status on a specific date.
-     */
     List<Attendance> findByCompanyIdAndStatusAndAttendanceDateBetween(
         Long companyId, AttendanceStatus status, LocalDate start, LocalDate end
     );
 
-    /**
-     * Admin: employees who were late on a specific date.
-     * Uses JPQL enum comparison (not string literal) for type safety.
-     */
+    /** Uses JPQL enum comparison, not a string literal, for type safety. */
     @Query("""
         SELECT a FROM Attendance a
         WHERE a.companyId = :companyId
@@ -169,23 +142,24 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
     );
 
     /**
-     * Employee date range query — used in reports.
+     * Scoped on company_id as well as the employee: the id alone leaned entirely on Hibernate's tenantFilter, which is
+     * absent on any thread without an authenticated tenant user (schedulers, the payroll and report paths reached from
+     * one), so a stray employee id could mix another tenant's attendance into this company's totals.
      */
     @Query("""
         SELECT a FROM Attendance a
-        WHERE a.employee.id = :employeeId
+        WHERE a.companyId = :companyId
+          AND a.employee.id = :employeeId
           AND a.attendanceDate BETWEEN :start AND :end
           AND a.deleted = false
         """)
     List<Attendance> findByEmployeeAndDateRange(
+        @Param("companyId") Long companyId,
         @Param("employeeId") Long employeeId,
         @Param("start") LocalDate start,
         @Param("end") LocalDate end
     );
 
-    /**
-     * Dashboard: count attendance records by status for a specific company and date.
-     */
     @Query("""
         SELECT COUNT(a) FROM Attendance a
         WHERE a.companyId = :companyId
@@ -199,19 +173,11 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
         @Param("date") LocalDate date
     );
 
-    /**
-     * Employee-level count — used in summary reports (e.g. how many days present in a month).
-     */
     long countByEmployeeIdAndStatusAndAttendanceDateBetween(
         Long employeeId, AttendanceStatus status, LocalDate start, LocalDate end
     );
 
-    /**
-     * Total overtime hours recorded for an employee in a period.
-     *
-     * COALESCE because overtimeHours is nullable on rows that predate overtime
-     * tracking, and SUM over no rows returns null rather than zero.
-     */
+    /** COALESCE because overtimeHours is nullable on rows predating overtime tracking, and SUM over no rows returns null rather than zero. */
     @Query("""
             SELECT COALESCE(SUM(a.overtimeHours), 0) FROM Attendance a
             WHERE a.employee.id = :employeeId
@@ -222,10 +188,7 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
                                 @Param("start") LocalDate start,
                                 @Param("end") LocalDate end);
 
-    /**
-     * Bulk update: mark all employees with no attendance record for today as ABSENT.
-     * Used by the DailyAbsenteeScheduler.
-     */
+    /** Bulk-marks employees with no record for today as ABSENT; used by DailyAbsenteeScheduler. */
     @Modifying
     @Query("""
         UPDATE Attendance a SET a.status = :absent
@@ -241,9 +204,7 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long> {
         @Param("unmarked") AttendanceStatus unmarked
     );
 
-    // Approving a backdated leave request must not leave a stale ABSENT row behind
-    // for the same days - otherwise payroll's absence deduction and attendance %
-    // reports keep counting an unexcused absence the leave approval just excused.
+    // Approving backdated leave must clear stale ABSENT rows, or payroll's absence deduction and attendance % keep counting an absence the approval just excused.
     @Modifying
     @Query("""
         UPDATE Attendance a SET a.status = :onLeave

@@ -29,6 +29,9 @@ public final class ServiceRequestMapper {
         r.setAgreedPrice(req.getAgreedPrice());
         r.setSlaDeadline(req.getSlaDeadline());
         r.setSlaBreach(req.isSlaBreach());
+        r.setSlaBreachCount(req.getBreachCount() != null ? req.getBreachCount() : 0);
+        r.setFirstSlaBreachedAt(req.getFirstBreachedAt());
+        r.setSlaPausedAt(req.getSlaPausedAt());
         r.setAssignedAt(req.getAssignedAt());
         r.setCompletedAt(req.getCompletedAt());
         r.setResubmitCount(req.getResubmitCount());
@@ -51,7 +54,6 @@ public final class ServiceRequestMapper {
         r.setCreatedAt(req.getCreatedAt());
         r.setUpdatedAt(req.getUpdatedAt());
 
-        // Quotation mappings
         r.setQuotationAmount(req.getQuotationAmount());
         r.setQuotationCurrency(req.getQuotationCurrency());
         r.setQuotationNotes(req.getQuotationNotes());
@@ -84,7 +86,14 @@ public final class ServiceRequestMapper {
         r.setNewStatus(history.getNewStatus());
         r.setReason(history.getReason());
         r.setChangedById(changedBy != null ? changedBy.getId() : null);
-        r.setChangedByName(changedBy != null ? changedBy.getFullName() : null);
+        // The stamped label wins; rows written before that column existed fall back to the associated user, and a
+        // row with neither is a system-originated change, which the timeline must name rather than leave blank.
+        String stampedName = history.getChangedByName();
+        if (stampedName != null && !stampedName.isBlank()) {
+            r.setChangedByName(stampedName);
+        } else {
+            r.setChangedByName(changedBy != null ? changedBy.getFullName() : RequestStatusHistory.SYSTEM_ACTOR_NAME);
+        }
         r.setChangedAt(history.getChangedAt());
         return r;
     }

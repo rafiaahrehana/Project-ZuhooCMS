@@ -5,6 +5,7 @@ import com.zuhoocms.enums.ApplicationSource;
 import com.zuhoocms.enums.JobPostingStatus;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
+import com.zuhoocms.modules.ai.tool.AiToolValidator;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.modules.hrm.recruitment.RecruitmentService;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRequest;
@@ -23,6 +24,7 @@ import java.util.Map;
 public class ReferCandidateTool implements AiTool {
 
     private final RecruitmentService recruitmentService;
+    private final AiToolValidator validator;
     private final JobPostingRepository jobPostingRepository;
     private final EmployeeRepository employeeRepository;
 
@@ -96,6 +98,10 @@ public class ReferCandidateTool implements AiTool {
         request.setReferredByEmployeeId(referringEmployeeId);
 
         try {
+            String invalid = validator.problems(request);
+            if (invalid != null) {
+                return AiToolResult.failure("That doesn't look right - " + invalid + ".");
+            }
             JobApplicationResponse response = recruitmentService.apply(posting.getId(), request);
             return AiToolResult.ok(
                 "Referred " + request.getApplicantName() + " for \"" + posting.getTitle()

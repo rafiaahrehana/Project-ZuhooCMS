@@ -22,6 +22,15 @@ public interface JobPostingRepository extends JpaRepository <JobPosting, Long> {
     /** Unpaged - used by RecruitmentKpiServiceImpl to join against the full application set in Java. */
     List<JobPosting> findByCompanyId(Long companyId);
 
+    /** KPI report: postings with their recruiter and the recruiter's user, in one query. */
+    @org.springframework.data.jpa.repository.Query("""
+        SELECT p FROM JobPosting p
+        LEFT JOIN FETCH p.assignedRecruiter r
+        LEFT JOIN FETCH r.user
+        WHERE p.company.id = :companyId
+        """)
+    List<JobPosting> findAllForKpis(@org.springframework.data.repository.query.Param("companyId") Long companyId);
+
     Page<JobPosting> findByCompanyIdAndStatus(Long companyId, JobPostingStatus status, Pageable pageable);
 
     List<JobPosting> findByCompanyIdAndStatus(Long companyId, JobPostingStatus status);

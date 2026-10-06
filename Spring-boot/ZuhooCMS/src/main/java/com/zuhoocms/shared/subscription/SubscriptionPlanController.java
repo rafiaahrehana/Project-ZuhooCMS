@@ -12,8 +12,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** Super Admin-managed plan catalog - the Company Owner's upgrade picker and the
- * self-service checkout (SslCommerzServiceImpl) both price off these rows. */
+/** Plan catalog: the owner's upgrade picker and the self-service checkout (SslCommerzServiceImpl) both price off these rows. */
 @RestController
 @RequestMapping("/api/subscription-plans")
 @RequiredArgsConstructor
@@ -51,8 +50,7 @@ public class SubscriptionPlanController {
     @PatchMapping("/{id}")
     public ResponseEntity<SubscriptionPlanDefinition> update(
             @PathVariable Long id, @Valid @RequestBody SubscriptionPlanRequest request) {
-        // code is immutable once created - it's the identifier Company.subscriptionPlan
-        // and SubscriptionHistory.fromPlan/toPlan already reference.
+        // code is immutable: Company.subscriptionPlan and SubscriptionHistory.fromPlan/toPlan already reference it.
         SubscriptionPlanDefinition plan = repository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Plan not found: " + id));
         plan.setName(request.getName().trim());

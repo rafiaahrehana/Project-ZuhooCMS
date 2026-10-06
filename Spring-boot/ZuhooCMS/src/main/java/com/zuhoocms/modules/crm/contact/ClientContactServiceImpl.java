@@ -32,8 +32,12 @@ public class ClientContactServiceImpl implements ClientContactService {
         Client client = clientRepository.findByIdAndCompanyId(clientId, companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Client not found"));
 
-        if (request.getEmail() != null && !request.getEmail().isBlank()
-            && clientContactRepository.existsByEmailAndClientIdAndCompanyIdAndDeletedFalse(request.getEmail(), clientId, companyId)) {
+        // Normalised before the check and the write, so duplicate detection's case-insensitive email and digits-only phone lookups both find it.
+        String email = com.zuhoocms.modules.crm.support.EmailMatching.normalise(request.getEmail());
+        String phone = com.zuhoocms.modules.crm.support.PhoneMatching.normaliseForStorage(request.getPhone());
+
+        if (email != null
+            && clientContactRepository.existsByEmailForClient(email, clientId, companyId, null)) {
             throw new BadRequestException("A contact with this email already exists for this client");
         }
 
@@ -44,8 +48,8 @@ public class ClientContactServiceImpl implements ClientContactService {
 
         ClientContact contact = ClientContact.builder()
             .fullName(request.getFullName())
-            .email(request.getEmail())
-            .phone(request.getPhone())
+            .email(email)
+            .phone(phone)
             .jobTitle(request.getJobTitle())
             .department(request.getDepartment())
             .primaryContact(primary)
@@ -76,15 +80,19 @@ public class ClientContactServiceImpl implements ClientContactService {
     public Page<ClientContactResponse> listAll(String keyword, Pageable pageable) {
         authorizationService.checkPermission(PermissionCode.CONTACT_VIEW);
         Long companyId = requireCompanyId();
+        // fullName is not unique, so without the id ASC tiebreaker Postgres orders ties differently per page request and a contact appears twice or not at all.
+        Pageable paged = com.zuhoocms.modules.crm.support.CrmSortWhitelist.withIdTiebreaker(pageable);
         Page<ClientContact> page = keyword != null && !keyword.isBlank()
-                ? clientContactRepository.searchContacts(companyId, escapeLikeKeyword(keyword.trim()), pageable)
-                : clientContactRepository.findByCompanyId(companyId, pageable);
+                ? clientContactRepository.searchContacts(companyId, escapeLikeKeyword(keyword.trim()), paged)
+                : clientContactRepository.findByCompanyId(companyId, paged);
         return page.map(ClientContactMapper::toResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public ClientContactResponse getById(Long clientId, Long id) {
+        // Its list siblings check CONTACT_VIEW; unguarded, this single-row read was the way around them.
+        authorizationService.checkPermission(PermissionCode.CONTACT_VIEW);
         return ClientContactMapper.toResponse(findOwned(clientId, id));
     }
 
@@ -92,16 +100,27 @@ public class ClientContactServiceImpl implements ClientContactService {
     public ClientContactResponse update(Long clientId, Long id, ClientContactRequest request) {
         authorizationService.checkPermission(PermissionCode.CONTACT_UPDATE);
         ClientContact contact = findOwned(clientId, id);
+        Long companyId = requireCompanyId();
 
+        String email = com.zuhoocms.modules.crm.support.EmailMatching.normalise(request.getEmail());
+        String phone = com.zuhoocms.modules.crm.support.PhoneMatching.normaliseForStorage(request.getPhone());
+
+        // update() skipped the email uniqueness create() enforces, so one client could hold two contacts with the same email and duplicate detection picked either.
+        if (email != null && !email.equalsIgnoreCase(contact.getEmail())
+            && clientContactRepository.existsByEmailForClient(email, contact.getClient().getId(), companyId, id)) {
+            throw new BadRequestException("A contact with this email already exists for this client");
+        }
+
+        // Null-skipped: assigned unconditionally, a fullName-only PATCH from the contact list erased the email duplicate detection matches on.
         if (request.getFullName() != null) contact.setFullName(request.getFullName());
-        contact.setEmail(request.getEmail());
-        contact.setPhone(request.getPhone());
-        contact.setJobTitle(request.getJobTitle());
-        contact.setDepartment(request.getDepartment());
-        contact.setNotes(request.getNotes());
+        if (email != null) contact.setEmail(email);
+        if (phone != null) contact.setPhone(phone);
+        if (request.getJobTitle() != null) contact.setJobTitle(request.getJobTitle());
+        if (request.getDepartment() != null) contact.setDepartment(request.getDepartment());
+        if (request.getNotes() != null) contact.setNotes(request.getNotes());
 
         if (Boolean.TRUE.equals(request.getPrimaryContact()) && !contact.isPrimaryContact()) {
-            clientContactRepository.clearPrimaryContact(contact.getClient().getId(), requireCompanyId());
+            clientContactRepository.clearPrimaryContact(contact.getClient().getId(), companyId);
             contact.setPrimaryContact(true);
         }
 
@@ -142,8 +161,7 @@ public class ClientContactServiceImpl implements ClientContactService {
         return companyId;
     }
 
-    // '!' is the LIKE escape character used by ClientContactRepository's ESCAPE '!'
-    // queries. Mirrors GlobalSearchServiceImpl.escapeLikeKeyword.
+    // '!' is the escape character in ClientContactRepository's ESCAPE '!' queries; mirrors GlobalSearchServiceImpl.escapeLikeKeyword.
     private String escapeLikeKeyword(String keyword) {
         if (keyword == null) return null;
         return keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_");

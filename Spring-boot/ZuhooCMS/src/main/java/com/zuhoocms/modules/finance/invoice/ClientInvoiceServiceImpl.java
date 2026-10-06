@@ -8,6 +8,7 @@ import com.zuhoocms.modules.crm.client.Client;
 import com.zuhoocms.modules.crm.client.ClientRepository;
 import com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccount;
 import com.zuhoocms.modules.finance.chartofaccounts.DefaultAccountResolver;
+import com.zuhoocms.modules.finance.generalledger.DocumentNumberService;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerService;
 import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.generalledger.LedgerLine;
@@ -22,7 +23,11 @@ import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.shared.notification.CreateNotificationRequest;
 import com.zuhoocms.shared.notification.NotificationService;
 import com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequestRepository;
+import com.zuhoocms.enums.WalletTransactionType;
+import com.zuhoocms.shared.payment.wallet.WalletRepository;
+import com.zuhoocms.shared.payment.wallet.WalletService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -41,7 +46,16 @@ import com.zuhoocms.enums.RefundStatus;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ClientInvoiceServiceImpl implements ClientInvoiceService {
+
+    /** DocumentNumberService counter keys for the documents this service numbers. */
+    static final String DOC_TYPE_INVOICE = "CLIENT_INVOICE";
+    static final String DOC_TYPE_CREDIT_NOTE = "CREDIT_NOTE";
+
+    /** Invoices that are closed: nothing may be sent, paid, reversed or cancelled on them. */
+    private static final java.util.Set<InvoiceStatus> CLOSED_STATUSES =
+            java.util.EnumSet.of(InvoiceStatus.CANCELLED, InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED);
 
     private final ClientInvoiceRepository invoiceRepository;
     private final ClientRepository clientRepository;
@@ -58,6 +72,9 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
     private final InvoicePdfService invoicePdfService;
     private final AiService aiService;
     private final AiTransactionBoundary aiTx;
+    private final DocumentNumberService documentNumberService;
+    private final WalletService walletService;
+    private final WalletRepository walletRepository;
 
     private Long requireCompanyId() {
         Long id = securityUtil.getCurrentCompanyId();
@@ -83,29 +100,52 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return createInternal(companyId, request);
     }
 
-    // Shared by the staff-facing create() (INVOICE_CREATE-gated) and
-    // createForServiceRequest() - a client submitting their own paid service request
-    // triggers this as a side effect of an action they're already authorized to take,
-    // not a direct "create an invoice" call, so it must not require staff's INVOICE_CREATE.
+    @Override
+    @Transactional
+    public ClientInvoiceResponse createForCompany(Long companyId, ClientInvoiceRequest request) {
+        if (companyId == null) {
+            throw new BadRequestException("No company context");
+        }
+        return createInternal(companyId, request);
+    }
+
+    // Shared by create() (INVOICE_CREATE-gated) and createForServiceRequest(), which is a side effect of a client action and must not require staff's INVOICE_CREATE.
     private ClientInvoiceResponse createInternal(Long companyId, ClientInvoiceRequest request) {
-        Client client = clientRepository.findById(request.getClientId())
+        if (companyId == null) {
+            throw new BadRequestException("No company context");
+        }
+        if (request.getClientId() == null) {
+            throw new BadRequestException("Client ID is required");
+        }
+        // Tenant-scoped: a plain findById let one company invoice another company's client.
+        Client client = clientRepository.findByIdAndCompanyId(request.getClientId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Client not found"));
+
+        // Same scoping as the client above: getReferenceById wrote the FK without checking, so a bogus, soft-deleted
+        // or another tenant's id only surfaced as a 500 when the mapper read getServiceRequest().getTitle().
+        // Resolved before the invoice number is drawn, so a 404 doesn't burn a counter value.
+        com.zuhoocms.modules.servicedesk.servicerequest.ServiceRequest serviceRequest =
+                request.getServiceRequestId() == null ? null
+                        : serviceRequestRepository.findByIdAndCompanyId(request.getServiceRequestId(), companyId)
+                                .orElseThrow(() -> new ResourceNotFoundException(
+                                        "Service request not found: " + request.getServiceRequestId()));
 
         String currency = request.getCurrency() != null && !request.getCurrency().isBlank()
                 ? request.getCurrency().trim().toUpperCase() : "BDT";
         BigDecimal exchangeRate = resolveExchangeRate(client, currency, request.getExchangeRate());
 
-        String invoiceNumber = generateInvoiceNumber(companyId);
+        LocalDate invoiceDate = request.getInvoiceDate() != null ? request.getInvoiceDate() : LocalDate.now();
+        LocalDate dueDate = resolveDueDate(invoiceDate, request.getPaymentTerms(), request.getDueDate());
+
+        String invoiceNumber = generateInvoiceNumber(companyId, invoiceDate);
 
         ClientInvoice invoice = ClientInvoice.builder()
                 .companyId(companyId)
                 .invoiceNumber(invoiceNumber)
                 .client(client)
-                .serviceRequest(request.getServiceRequestId() != null
-                        ? serviceRequestRepository.getReferenceById(request.getServiceRequestId())
-                        : null)
-                .invoiceDate(request.getInvoiceDate())
-                .dueDate(request.getDueDate())
+                .serviceRequest(serviceRequest)
+                .invoiceDate(invoiceDate)
+                .dueDate(dueDate)
                 .taxAmount(request.getTaxAmount() != null ? request.getTaxAmount() : BigDecimal.ZERO)
                 .taxRatePercent(request.getTaxRatePercent())
                 .discountAmount(request.getDiscountAmount() != null ? request.getDiscountAmount() : BigDecimal.ZERO)
@@ -117,7 +157,6 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                 .status(InvoiceStatus.DRAFT)
                 .build();
 
-        // Add items
         if (request.getItems() != null && !request.getItems().isEmpty()) {
             List<ClientInvoiceItem> items = request.getItems().stream()
                     .map(itemRequest -> {
@@ -141,13 +180,30 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return ClientInvoiceMapper.toResponse(savedInvoice);
     }
 
+    /** Explicit due date wins; otherwise non-CUSTOM terms derive it from the invoice date (DUE_ON_RECEIPT = same day, NET_n = +n days). */
+    static LocalDate resolveDueDate(LocalDate invoiceDate, PaymentTerms terms, LocalDate explicitDueDate) {
+        if (explicitDueDate != null) {
+            return explicitDueDate;
+        }
+        if (terms == null || terms == PaymentTerms.CUSTOM) {
+            throw new BadRequestException("Due date is required unless payment terms other than CUSTOM are chosen");
+        }
+        LocalDate base = invoiceDate != null ? invoiceDate : LocalDate.now();
+        return switch (terms) {
+            case DUE_ON_RECEIPT -> base;
+            case NET_15 -> base.plusDays(15);
+            case NET_30 -> base.plusDays(30);
+            case NET_45 -> base.plusDays(45);
+            case NET_60 -> base.plusDays(60);
+            case NET_90 -> base.plusDays(90);
+            case CUSTOM -> throw new BadRequestException("Due date is required for CUSTOM payment terms");
+        };
+    }
+
     @Override
     @Transactional(readOnly = true)
     public ClientInvoiceResponse getById(Long id) {
-        // Same shape as generatePdf() below: staff need INVOICE_VIEW and can read any invoice in
-        // the tenant; a client has no such permission and is narrowed to their own invoice
-        // instead. Without this the client app can't open an invoice it is already allowed to
-        // download as a PDF, and has to scan /me to find one it already has the id for.
+        // Same shape as generatePdf(): staff need INVOICE_VIEW for any tenant invoice, a client is narrowed to their own.
         ClientInvoice invoice = findInTenant(id);
         if (!authorizationService.hasPermission(PermissionCode.INVOICE_VIEW)) {
             requireOwnInvoice(invoice);
@@ -155,10 +211,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return ClientInvoiceMapper.toResponse(invoice);
     }
 
-    // No @Transactional here on purpose: the reads run inside aiTx.load(), which
-    // commits before the provider call so no DB connection is held across it -
-    // see AiTransactionBoundary. The lazy client/user/serviceRequest/items
-    // associations must all be read inside the callback.
+    // No @Transactional on purpose: reads run inside aiTx.load(), which commits before the provider call so no connection is held across it - see AiTransactionBoundary.
     @Override
     public InvoiceSummaryDraftResponse draftSummaryWithAi(Long id) {
         authorizationService.checkPermission(PermissionCode.INVOICE_VIEW);
@@ -259,9 +312,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                 .orElseThrow(() -> new ResourceNotFoundException("Client profile not found"));
         Page<ClientInvoiceResponse> page = findByClientUnchecked(client.getId(), pageable);
 
-        // Surface the latest refund's status (if any) so the client can see
-        // "Refund Requested" / "Refund Rejected" without a separate call - a
-        // processed refund is already visible via the invoice's own REFUNDED status.
+        // Surface the latest refund's status so the client sees "Refund Requested"/"Refund Rejected" without a separate call.
         List<Long> invoiceIds = page.getContent().stream()
                 .map(ClientInvoiceResponse::getId)
                 .collect(Collectors.toList());
@@ -286,8 +337,9 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
             throw new com.zuhoocms.shared.exception.BadRequestException("Only DRAFT invoices can be updated");
         }
 
-        invoice.setInvoiceDate(request.getInvoiceDate());
-        invoice.setDueDate(request.getDueDate());
+        LocalDate invoiceDate = request.getInvoiceDate() != null ? request.getInvoiceDate() : invoice.getInvoiceDate();
+        invoice.setInvoiceDate(invoiceDate);
+        invoice.setDueDate(resolveDueDate(invoiceDate, request.getPaymentTerms(), request.getDueDate()));
         invoice.setTaxAmount(request.getTaxAmount());
         invoice.setTaxRatePercent(request.getTaxRatePercent());
         invoice.setDiscountAmount(request.getDiscountAmount() != null ? request.getDiscountAmount() : BigDecimal.ZERO);
@@ -338,16 +390,39 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         sendInvoiceInternal(id);
     }
 
+    @Override
+    @Transactional
+    public void sendInvoiceForCompany(Long companyId, Long id) {
+        ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(id, companyId)
+            .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + id));
+        issueInvoice(invoice);
+    }
+
     private void sendInvoiceInternal(Long id) {
-        ClientInvoice invoice = findInTenant(id);  // tenant-scoped
-        invoice.setStatus(InvoiceStatus.ISSUED);
+        issueInvoice(findInTenant(id));  // tenant-scoped
+    }
+
+    private void issueInvoice(ClientInvoice invoice) {
+        if (invoice.getStatus() == InvoiceStatus.PAID || CLOSED_STATUSES.contains(invoice.getStatus())) {
+            throw new BadRequestException("Cannot send a " + invoice.getStatus() + " invoice");
+        }
+
+        // Read before the status changes below - isRevenuePosted() looks at the status.
+        boolean alreadyPosted = isRevenuePosted(invoice);
+
+        // Only a DRAFT moves to ISSUED; re-sending just re-emails, since resetting to ISSUED hid a part payment or overdue state.
+        if (invoice.getStatus() == InvoiceStatus.DRAFT) {
+            invoice.setStatus(InvoiceStatus.ISSUED);
+        }
         invoice.setSentDate(LocalDate.now());
+
+        // Revenue is booked exactly once: posting Dr AR / Cr Revenue on every send doubled revenue and receivable.
+        if (!alreadyPosted) {
+            postInvoiceToLedger(invoice);
+            invoice.setRevenuePosted(Boolean.TRUE);
+        }
         invoiceRepository.save(invoice);
 
-        postInvoiceToLedger(invoice);
-
-        // "Send Invoice" previously only flipped a status flag - the client was
-        // never actually told an invoice existed.
         try {
             Client client = invoice.getClient();
             if (client != null && client.getUser() != null && client.getCompany() != null) {
@@ -355,16 +430,16 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                 emailService.sendInvoiceEmail(client.getUser().getEmail(), client.getUser().getFirstName(), branding);
             }
         } catch (Exception ex) {
-            // Email failure must not roll back the status change and GL posting.
-            // Log and continue - the invoice is already legally issued.
+            // Email failure must not roll back the status change and GL posting - the invoice is already legally issued.
         }
     }
 
-    /**
-     * subtotal - discountAmount, floored at zero - what's actually recognized as
-     * revenue once a discount is applied. totalAmount = this + taxAmount, so using
-     * it (instead of raw subtotal) keeps every GL posting below balanced.
-     */
+    /** Whether the issue-time revenue posting exists: the flag is authoritative, and pre-flag invoices left DRAFT only via issueInvoice(), which always posted. */
+    private boolean isRevenuePosted(ClientInvoice invoice) {
+        return Boolean.TRUE.equals(invoice.getRevenuePosted()) || invoice.getStatus() != InvoiceStatus.DRAFT;
+    }
+
+    /** subtotal - discount, floored at zero: totalAmount = this + taxAmount, so using it instead of raw subtotal keeps GL postings balanced. */
     private BigDecimal recognizedRevenue(ClientInvoice invoice) {
         BigDecimal discount = invoice.getDiscountAmount() != null ? invoice.getDiscountAmount() : BigDecimal.ZERO;
         return invoice.getSubtotal().subtract(discount).max(BigDecimal.ZERO);
@@ -383,12 +458,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return requestedRate;
     }
 
-    /**
-     * Converts an invoice-currency amount into the company's base currency for GL
-     * posting - the ledger is single-currency; foreign invoices carry their issue-time
-     * rate. (FX gain/loss on payment-date rate differences is out of scope: payments
-     * convert at the invoice's own rate.)
-     */
+    /** Converts to base currency for GL posting: the ledger is single-currency and payments convert at the invoice's issue-time rate (no FX gain/loss). */
     private BigDecimal toBase(ClientInvoice invoice, BigDecimal amount) {
         if (amount == null) return BigDecimal.ZERO;
         BigDecimal rate = invoice.getExchangeRate() != null ? invoice.getExchangeRate() : BigDecimal.ONE;
@@ -396,27 +466,18 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return amount.multiply(rate).setScale(2, java.math.RoundingMode.HALF_UP);
     }
 
-    /**
-     * Revenue recognition: without this, invoices never touched the General Ledger at
-     * all, so Profit & Loss / Balance Sheet showed no revenue even for fully paid
-     * invoices - the two systems were completely disconnected.
-     * Dr Accounts Receivable (full total) / Cr Sales Revenue (subtotal - discount) +
-     * Cr Tax Payable (tax, if any) - stays balanced since revenue + tax = totalAmount.
-     */
+    /** Revenue recognition: Dr AR (full total) / Cr Sales Revenue (subtotal - discount) + Cr Tax Payable, balanced since revenue + tax = totalAmount. */
     private void postInvoiceToLedger(ClientInvoice invoice) {
         Long companyId = invoice.getCompanyId();
         String clientName = invoice.getClient() != null ? invoice.getClient().getClientCompanyName() : "client";
         String description = "Invoice " + invoice.getInvoiceNumber() + " issued to " + clientName;
-        // Revenue is recognized as of the invoice's own date, not whenever staff happened
-        // to click Send - otherwise a backdated invoice's revenue lands in the wrong period.
+        // Revenue is recognized as of the invoice's own date, not the Send click, or a backdated invoice lands in the wrong period.
         LocalDate transactionDate = invoice.getInvoiceDate() != null ? invoice.getInvoiceDate() : LocalDate.now();
 
         ChartOfAccount ar = accountResolver.accountsReceivable(companyId);
         ChartOfAccount revenue = accountResolver.salesRevenue(companyId);
 
-        // Convert each credit leg, then make the AR debit their exact sum - rounding
-        // totalAmount independently could drift a cent from revenue+tax and trip the
-        // balanced-batch check.
+        // Convert each credit leg, then make the AR debit their exact sum: rounding totalAmount independently could drift a cent and trip the balanced-batch check.
         BigDecimal revenueBase = toBase(invoice, recognizedRevenue(invoice));
         BigDecimal taxBase = invoice.getTaxAmount() != null && invoice.getTaxAmount().compareTo(BigDecimal.ZERO) > 0
                 ? toBase(invoice, invoice.getTaxAmount()) : BigDecimal.ZERO;
@@ -456,8 +517,9 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(id, companyId)
             .orElseThrow(() -> new com.zuhoocms.shared.exception.ResourceNotFoundException("Invoice not found: " + id));
 
-        if (invoice.getStatus() == InvoiceStatus.CANCELLED) {
-            throw new com.zuhoocms.shared.exception.BadRequestException("Cannot record payment for a cancelled invoice");
+        if (CLOSED_STATUSES.contains(invoice.getStatus())) {
+            throw new com.zuhoocms.shared.exception.BadRequestException(
+                    "Cannot record payment for a " + invoice.getStatus().name().toLowerCase() + " invoice");
         }
 
         BigDecimal credited = invoice.getCreditedAmount() != null ? invoice.getCreditedAmount() : BigDecimal.ZERO;
@@ -479,12 +541,8 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         invoice.calculateTotals();
         invoiceRepository.save(invoice);
 
-        // Cash received against a receivable: Dr Cash / Cr Accounts Receivable
-        // (converted at the invoice's issue-time rate for foreign-currency invoices).
-        // Posted on the source document's own date (e.g. the payment receipt's
-        // paymentDate), not today - otherwise a payment received last month but
-        // confirmed today posted into today's period, so the period-lock check
-        // protected the wrong date entirely.
+        // Cash received against a receivable: Dr Cash / Cr AR, converted at the invoice's issue-time rate.
+        // Posted on the source document's own paymentDate, not today, or the period-lock check protects the wrong date.
         String description = "Payment received for invoice " + invoice.getInvoiceNumber();
         BigDecimal amountBase = toBase(invoice, amount);
         ChartOfAccount cash = accountResolver.cash(companyId);
@@ -500,7 +558,8 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
     public List<ClientInvoiceResponse> getOverdueInvoices() {
         authorizationService.checkPermission(PermissionCode.INVOICE_VIEW);
         Long companyId = requireCompanyId();
-        List<InvoiceStatus> paidStatuses = List.of(InvoiceStatus.PAID, InvoiceStatus.CANCELLED);
+        List<InvoiceStatus> paidStatuses = List.of(InvoiceStatus.PAID, InvoiceStatus.CANCELLED,
+                InvoiceStatus.VOIDED, InvoiceStatus.REFUNDED);
         return invoiceRepository.findOverdueInvoices(companyId, paidStatuses)
                 .stream()
                 .map(ClientInvoiceMapper::toResponse)
@@ -516,32 +575,39 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         if (invoice.getStatus() == InvoiceStatus.CANCELLED) {
             throw new com.zuhoocms.shared.exception.BadRequestException("Invoice is already cancelled");
         }
+        if (invoice.getStatus() == InvoiceStatus.VOIDED || invoice.getStatus() == InvoiceStatus.REFUNDED) {
+            throw new com.zuhoocms.shared.exception.BadRequestException(
+                    "Cannot cancel a " + invoice.getStatus().name().toLowerCase() + " invoice");
+        }
         if (invoice.getStatus() == InvoiceStatus.PAID) {
             throw new com.zuhoocms.shared.exception.BadRequestException(
                     "Cannot cancel a fully paid invoice - issue a refund/credit note instead");
         }
+        // Cancelling a part-paid invoice would credit Cash for the paid amount as if it had been handed back, so the payment must be dealt with first.
+        if (hasPayments(invoice)) {
+            throw new com.zuhoocms.shared.exception.BadRequestException(
+                    "Cannot cancel an invoice that has received payments (" + invoice.getPaidAmount()
+                            + " paid) - refund the payment first, or issue a credit note for the unpaid balance");
+        }
 
-        // DRAFT invoices were never posted to the ledger, so there's nothing to reverse.
-        boolean wasPosted = invoice.getStatus() != InvoiceStatus.DRAFT;
-        BigDecimal alreadyPaid = invoice.getPaidAmount();
+        // Invoices never posted to the ledger (DRAFT) have nothing to reverse.
+        boolean wasPosted = isRevenuePosted(invoice);
 
         invoice.setStatus(InvoiceStatus.CANCELLED);
         invoiceRepository.save(invoice);
 
         if (wasPosted) {
-            reverseInvoiceLedger(invoice, alreadyPaid);
+            reverseInvoiceLedger(invoice);
         }
     }
 
-    /**
-     * Undoes exactly what postInvoiceToLedger() (and any recorded payments) posted:
-     * Cr Accounts Receivable / Dr Sales Revenue + Dr Tax Payable for the full invoice,
-     * and if any payment had already been received, Cr Cash / Dr Accounts Receivable
-     * for that portion too - otherwise a cancelled invoice leaves permanently-wrong
-     * AR/Revenue/Cash balances in the books.
-     */
-    private void reverseInvoiceLedger(ClientInvoice invoice, BigDecimal alreadyPaid) {
-        reverseInvoiceLedger(invoice, alreadyPaid, GlReferenceType.INVOICE_CANCEL, "cancelled");
+    private static boolean hasPayments(ClientInvoice invoice) {
+        return invoice.getPaidAmount() != null && invoice.getPaidAmount().compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    /** Cancellation reversal: Cr AR / Dr Sales Revenue + Dr Tax Payable, net of credit notes. No cash leg - see cancelInvoice, which refuses once money is received. */
+    private void reverseInvoiceLedger(ClientInvoice invoice) {
+        reverseInvoiceLedger(invoice, BigDecimal.ZERO, GlReferenceType.INVOICE_CANCEL, "cancelled");
     }
 
     private void reverseInvoiceLedger(ClientInvoice invoice, BigDecimal alreadyPaid,
@@ -572,8 +638,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
             lines.add(LedgerLine.debit(ar.getId(), paidBase));
         }
 
-        // Undo whatever credit note(s) already posted (Dr Revenue / Cr AR) - otherwise
-        // the blanket totalAmount reversal above double-reduces AR for that portion.
+        // Undo credit notes already posted (Dr Revenue / Cr AR), else the blanket totalAmount reversal double-reduces AR for that portion.
         BigDecimal credited = invoice.getCreditedAmount() != null ? invoice.getCreditedAmount() : BigDecimal.ZERO;
         if (credited.compareTo(BigDecimal.ZERO) > 0) {
             BigDecimal creditedBase = toBase(invoice, credited);
@@ -588,11 +653,26 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
     @Override
     @Transactional
     public void cancelOrRefundForServiceRequest(Long companyId, Long invoiceId) {
+        closeForServiceRequest(companyId, invoiceId, InvoiceStatus.CANCELLED);
+    }
+
+    @Override
+    @Transactional
+    public void voidSupersededForServiceRequest(Long companyId, Long invoiceId) {
+        closeForServiceRequest(companyId, invoiceId, InvoiceStatus.VOIDED);
+    }
+
+    /** Shared by the service-request cancel path (-> CANCELLED) and the quotation-replacement path (-> VOIDED) so reports can tell them apart; the ledger reversal is identical. */
+    private void closeForServiceRequest(Long companyId, Long invoiceId, InvoiceStatus closedStatus) {
         ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(invoiceId, companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + invoiceId));
 
-        if (invoice.getStatus() == InvoiceStatus.PAID) {
-            // Money already collected - needs staff review, not an instant reversal.
+        if (CLOSED_STATUSES.contains(invoice.getStatus())) {
+            return; // nothing to do
+        }
+
+        if (hasPayments(invoice)) {
+            // Money already collected needs staff review, not an instant reversal that credits Cash for money never handed back.
             if (refundRepository.existsByClientInvoiceIdAndCompanyIdAndStatus(invoiceId, companyId, RefundStatus.REQUESTED)) {
                 return; // already has a pending refund request
             }
@@ -601,22 +681,68 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                     .clientInvoice(invoice)
                     .requestedAmount(invoice.getPaidAmount())
                     .status(RefundStatus.REQUESTED)
+                    .refundToWallet(Boolean.FALSE)
                     .build();
             refundRepository.save(refund);
             return;
         }
 
-        if (invoice.getStatus() == InvoiceStatus.CANCELLED || invoice.getStatus() == InvoiceStatus.VOIDED
-                || invoice.getStatus() == InvoiceStatus.REFUNDED) {
-            return; // nothing to do
-        }
-
-        boolean wasPosted = invoice.getStatus() != InvoiceStatus.DRAFT;
-        BigDecimal alreadyPaid = invoice.getPaidAmount();
-        invoice.setStatus(InvoiceStatus.CANCELLED);
+        boolean wasPosted = isRevenuePosted(invoice);
+        invoice.setStatus(closedStatus);
         invoiceRepository.save(invoice);
         if (wasPosted) {
-            reverseInvoiceLedger(invoice, alreadyPaid);
+            reverseInvoiceLedger(invoice, BigDecimal.ZERO, GlReferenceType.INVOICE_CANCEL,
+                    closedStatus == InvoiceStatus.VOIDED ? "voided (superseded)" : "cancelled");
+        }
+    }
+
+    @Override
+    @Transactional
+    public RefundResponse requestRefund(Long invoiceId, RefundCreateRequest request) {
+        authorizationService.checkPermission(PermissionCode.INVOICE_REFUND);
+        Long companyId = requireCompanyId();
+        ClientInvoice invoice = findInTenant(invoiceId);
+
+        if (CLOSED_STATUSES.contains(invoice.getStatus()) || invoice.getStatus() == InvoiceStatus.DRAFT
+                || !hasPayments(invoice)) {
+            throw new BadRequestException("A refund can only be requested against a paid or partially paid invoice");
+        }
+        BigDecimal amount = request.getAmount();
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Refund amount must be positive");
+        }
+        if (amount.compareTo(invoice.getPaidAmount()) > 0) {
+            throw new BadRequestException("Refund amount exceeds the amount paid on this invoice ("
+                    + invoice.getPaidAmount() + ")");
+        }
+        if (refundRepository.existsByClientInvoiceIdAndCompanyIdAndStatus(invoiceId, companyId, RefundStatus.REQUESTED)) {
+            throw new BadRequestException("This invoice already has a pending refund request - process or reject it first");
+        }
+        boolean toWallet = Boolean.TRUE.equals(request.getToWallet());
+        if (toWallet) {
+            requireWalletCurrency(companyId, invoice);
+        }
+
+        Refund refund = refundRepository.save(Refund.builder()
+                .companyId(companyId)
+                .clientInvoice(invoice)
+                .requestedAmount(amount)
+                .reason(request.getReason())
+                .status(RefundStatus.REQUESTED)
+                .refundToWallet(toWallet)
+                .build());
+        return RefundMapper.toResponse(refund);
+    }
+
+    /** The wallet holds a single currency; crediting invoice-currency units into it would mix currencies. */
+    private void requireWalletCurrency(Long companyId, ClientInvoice invoice) {
+        String walletCurrency = walletRepository.findByContextTypeAndContextId("COMPANY", companyId)
+                .map(w -> w.getCurrency())
+                .orElse("BDT");
+        String invoiceCurrency = invoice.getCurrency() != null ? invoice.getCurrency() : "BDT";
+        if (walletCurrency == null || !walletCurrency.equalsIgnoreCase(invoiceCurrency)) {
+            throw new BadRequestException("Cannot refund to the wallet: the invoice is in " + invoiceCurrency
+                    + " but the wallet holds " + walletCurrency + " - refund it externally instead");
         }
     }
 
@@ -643,15 +769,44 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
             throw new BadRequestException("Only a requested refund can be processed");
         }
 
-        ClientInvoice invoice = refund.getClientInvoice();
-        if (invoice.getStatus() != InvoiceStatus.PAID) {
+        ClientInvoice invoice = invoiceRepository.findByIdAndCompanyId(refund.getClientInvoice().getId(), companyId)
+                .orElseThrow(() -> new ResourceNotFoundException("Invoice not found"));
+        if (CLOSED_STATUSES.contains(invoice.getStatus()) || invoice.getStatus() == InvoiceStatus.DRAFT
+                || !hasPayments(invoice)) {
             throw new BadRequestException("Invoice is no longer in a paid state");
         }
+        BigDecimal amount = refund.getRequestedAmount();
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Refund amount must be positive");
+        }
+        if (amount.compareTo(invoice.getPaidAmount()) > 0) {
+            throw new BadRequestException("Refund amount " + amount + " exceeds the amount now paid on the invoice ("
+                    + invoice.getPaidAmount() + ")");
+        }
+        boolean toWallet = Boolean.TRUE.equals(refund.getRefundToWallet());
+        if (toWallet) {
+            requireWalletCurrency(companyId, invoice);
+        }
 
-        // Same reversal postInvoiceToLedger()/recordPaymentForCompany() posted, undone
-        // here so the money genuinely leaves the company's books.
-        reverseInvoiceLedger(invoice, invoice.getPaidAmount(), GlReferenceType.INVOICE_REFUND, "refunded");
-        invoice.setStatus(InvoiceStatus.REFUNDED);
+        if (amount.compareTo(invoice.getPaidAmount()) == 0) {
+            // Everything received goes back: reverse revenue/AR/tax plus Cash for the paid amount, and close as REFUNDED.
+            reverseInvoiceLedger(invoice, invoice.getPaidAmount(), GlReferenceType.INVOICE_REFUND, "refunded");
+            invoice.setStatus(InvoiceStatus.REFUNDED);
+        } else {
+            // Invoice stays open and the refunded part is written down, not re-owed: paid -= amount, credited += amount leaves balance and status unchanged. Dr Sales Revenue / Cr Cash.
+            BigDecimal amountBase = toBase(invoice, amount);
+            ChartOfAccount revenue = accountResolver.salesRevenue(companyId);
+            ChartOfAccount cash = accountResolver.cash(companyId);
+            glService.recordBalancedTransaction(companyId, List.of(
+                            LedgerLine.debit(revenue.getId(), amountBase),
+                            LedgerLine.credit(cash.getId(), amountBase)),
+                    "Partial refund on invoice " + invoice.getInvoiceNumber(),
+                    GlReferenceType.INVOICE_REFUND, invoice.getId(), invoice.getInvoiceNumber(), LocalDate.now());
+            invoice.setPaidAmount(invoice.getPaidAmount().subtract(amount));
+            BigDecimal credited = invoice.getCreditedAmount() != null ? invoice.getCreditedAmount() : BigDecimal.ZERO;
+            invoice.setCreditedAmount(credited.add(amount));
+            invoice.calculateTotals();
+        }
         invoiceRepository.save(invoice);
 
         refund.setStatus(RefundStatus.PROCESSED);
@@ -659,9 +814,17 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         refund.setProcessedAt(LocalDateTime.now());
         refundRepository.save(refund);
 
+        // A wallet refund additionally credits the company wallet, keyed by refund id so it can never be credited twice.
+        if (toWallet) {
+            walletService.creditOnce("COMPANY", companyId, amount, WalletTransactionType.REFUND_CREDIT,
+                    "REFUND-" + refund.getId(),
+                    "Refund for invoice " + invoice.getInvoiceNumber());
+        }
+
         notifyClientOfRefundDecision(invoice, NotificationType.REFUND_PROCESSED, "Refund Processed",
                 "Your refund of " + refund.getRequestedAmount() + " for invoice "
-                        + invoice.getInvoiceNumber() + " has been processed.");
+                        + invoice.getInvoiceNumber() + " has been processed"
+                        + (toWallet ? " as wallet credit." : "."));
     }
 
     @Override
@@ -706,7 +869,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                 .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + request.getClientInvoiceId()));
 
         if (invoice.getStatus() == InvoiceStatus.DRAFT || invoice.getStatus() == InvoiceStatus.CANCELLED
-                || invoice.getStatus() == InvoiceStatus.VOIDED) {
+                || invoice.getStatus() == InvoiceStatus.VOIDED || invoice.getStatus() == InvoiceStatus.REFUNDED) {
             throw new BadRequestException("Cannot issue a credit note against a " + invoice.getStatus() + " invoice");
         }
 
@@ -717,25 +880,21 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
                     + outstanding + ")");
         }
 
+        LocalDateTime issuedAt = LocalDateTime.now();
         CreditNote creditNote = CreditNote.builder()
                 .companyId(companyId)
-                .creditNoteNumber(generateCreditNoteNumber(companyId))
+                .creditNoteNumber(generateCreditNoteNumber(companyId, issuedAt.toLocalDate()))
                 .clientInvoice(invoice)
                 .amount(request.getAmount())
                 .reason(request.getReason())
                 .issuedBy(securityUtil.getCurrentUser())
-                .issuedAt(LocalDateTime.now())
+                .issuedAt(issuedAt)
                 .build();
         creditNoteRepository.save(creditNote);
 
         invoice.setCreditedAmount(alreadyCredited.add(request.getAmount()));
         invoice.calculateTotals();
-        // calculateTotals() correctly zeroes balanceAmount but never touched status -
-        // the overdue scheduler only checks status, not balance, so a fully-credited
-        // $0-owed invoice kept flipping to OVERDUE and generating a false "money is
-        // due" owner notification. Same PAID condition recordPayment() already uses
-        // (paid + credited >= total), since PAID means "balance resolved" regardless
-        // of whether that resolution was cash or a credit note.
+        // calculateTotals() zeroes balanceAmount but not status, and the overdue scheduler checks only status, so a fully-credited invoice kept flipping to OVERDUE.
         if (invoice.getBalanceAmount().compareTo(BigDecimal.ZERO) <= 0
                 && invoice.getStatus() != InvoiceStatus.PAID) {
             invoice.setStatus(InvoiceStatus.PAID);
@@ -743,8 +902,7 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         }
         invoiceRepository.save(invoice);
 
-        // Dr Sales Revenue / Cr Accounts Receivable - the company recognizes less
-        // revenue and the client owes less, but no cash moves either direction.
+        // Dr Sales Revenue / Cr Accounts Receivable: less revenue recognized and less owed, but no cash moves.
         String description = "Credit note " + creditNote.getCreditNoteNumber() + " for invoice " + invoice.getInvoiceNumber();
         BigDecimal creditBase = toBase(invoice, request.getAmount());
         ChartOfAccount revenue = accountResolver.salesRevenue(companyId);
@@ -768,18 +926,14 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
         return page.map(CreditNoteMapper::toResponse);
     }
 
-    /**
-     * Same per-company, per-year sequential scheme as generateInvoiceNumber().
-     * Format: CN-YYYY-NNNNNN
-     */
-    private String generateCreditNoteNumber(Long companyId) {
-        int year = LocalDate.now().getYear();
+    /** CN-YYYY-NNNNNN from the locked DocumentNumberService counter, seeded from the highest number already used, soft-deleted credit notes included. */
+    private String generateCreditNoteNumber(Long companyId, LocalDate issueDate) {
+        int year = issueDate.getYear();
         String prefix = "CN-" + year + "-";
-        String maxNumber = creditNoteRepository
-            .findMaxCreditNoteNumberByCompanyAndPrefix(companyId, prefix)
-            .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId, DOC_TYPE_CREDIT_NOTE, year, prefix, () -> {
+            Long max = creditNoteRepository.findMaxCreditNoteSequenceIncludingDeleted(companyId, prefix, prefix.length() + 1);
+            return max == null ? 1L : max + 1L;
+        });
     }
 
     @Override
@@ -799,26 +953,20 @@ public class ClientInvoiceServiceImpl implements ClientInvoiceService {
     @Transactional
     public void markAsOverdue(Long id) {
         ClientInvoice invoice = findInTenant(id);
-        if (invoice.getStatus() != InvoiceStatus.PAID && invoice.getStatus() != InvoiceStatus.CANCELLED) {
+        // Same eligibility as InvoiceOverdueScheduler: only open, issued invoices can become overdue.
+        if (invoice.getStatus() == InvoiceStatus.ISSUED || invoice.getStatus() == InvoiceStatus.PARTIALLY_PAID) {
             invoice.setStatus(InvoiceStatus.OVERDUE);
             invoiceRepository.save(invoice);
         }
     }
 
-    /**
-     * Generates a unique, per-company, per-year invoice number.
-     * Format: INV-YYYY-NNNNNN (e.g., INV-2026-000042)
-     *
-     * Uses MAX on existing numbers instead of COUNT to be safe against
-     * concurrent inserts and soft-deleted records skewing the count.
-     */
-    private String generateInvoiceNumber(Long companyId) {
-        int year = LocalDate.now().getYear();
+    /** INV-YYYY-NNNNNN from the locked DocumentNumberService counter: read-MAX-then-insert raced and missed soft-deleted invoices still holding their number under the unique constraint. */
+    private String generateInvoiceNumber(Long companyId, LocalDate invoiceDate) {
+        int year = invoiceDate.getYear();
         String prefix = "INV-" + year + "-";
-        String maxNumber = invoiceRepository
-            .findMaxInvoiceNumberByCompanyAndPrefix(companyId, prefix)
-            .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId, DOC_TYPE_INVOICE, year, prefix, () -> {
+            Long max = invoiceRepository.findMaxInvoiceSequenceIncludingDeleted(companyId, prefix, prefix.length() + 1);
+            return max == null ? 1L : max + 1L;
+        });
     }
 }

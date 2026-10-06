@@ -13,6 +13,8 @@ public class CrmActivityMapper {
         response.setActivityDate(activity.getActivityDate());
         response.setScheduledAt(activity.getScheduledAt());
         response.setCompleted(activity.isCompleted());
+        response.setFollowUpAt(activity.getFollowUpAt());
+        response.setFollowUpDone(activity.isFollowUpDone());
         response.setSystemGenerated(activity.isSystemGenerated());
         response.setClientId(activity.getClient() != null ? activity.getClient().getId() : null);
         if (activity.getOpportunity() != null) {

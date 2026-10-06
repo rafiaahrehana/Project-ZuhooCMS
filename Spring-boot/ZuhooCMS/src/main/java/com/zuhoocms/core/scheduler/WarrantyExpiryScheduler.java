@@ -17,14 +17,7 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
-/**
- * Mirrors LicenseExpiryScheduler for hardware: nobody should have to remember
- * to check each asset's warranty date by hand. Runs daily and notifies the
- * company owner exactly once per asset per state (expiring soon / expired),
- * using warrantyExpiringSoonAlertedAt/warrantyExpiredAlertedAt as the
- * already-notified marker since AssetStatus has no warranty-specific states
- * to auto-transition the way SoftwareLicense's status does.
- */
+/** Notifies the owner once per asset per warranty state, marked by warrantyExpiringSoonAlertedAt/warrantyExpiredAlertedAt since AssetStatus has no warranty-specific states to transition. */
 @Component
 @RequiredArgsConstructor
 public class WarrantyExpiryScheduler {

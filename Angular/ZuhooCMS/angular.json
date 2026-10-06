@@ -63,6 +63,12 @@
           },
           "configurations": {
             "production": {
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.prod.ts"
+                }
+              ],
               "budgets": [
                 {
                   "type": "initial",
@@ -86,6 +92,17 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true
+            },
+            "gateway": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.gateway.ts"
+                }
+              ]
             }
           },
           "defaultConfiguration": "production"
@@ -98,6 +115,9 @@
             },
             "development": {
               "buildTarget": "ZUHOO:build:development"
+            },
+            "gateway": {
+              "buildTarget": "ZUHOO:build:gateway"
             }
           },
           "defaultConfiguration": "development"

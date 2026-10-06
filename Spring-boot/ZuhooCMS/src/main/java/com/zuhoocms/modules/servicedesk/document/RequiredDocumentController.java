@@ -24,11 +24,10 @@ public class RequiredDocumentController {
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PutMapping("/{id}")
     public ResponseEntity<RequiredDocumentResponse> update(@PathVariable Long serviceId, @PathVariable Long id, @Valid @RequestBody RequiredDocumentRequest request) {
-        return ResponseEntity.ok(requiredDocumentService.update(id, request));
+        return ResponseEntity.ok(requiredDocumentService.update(serviceId, id, request));
     }
 
-    // No role gate - a client filling out a request needs to see the checklist
-    // to know what to upload (mirrors ServiceFormFieldController.listByService).
+    // No role gate: a client filling out a request must see what to upload (mirrors ServiceFormFieldController.listByService).
     @GetMapping
     public ResponseEntity<List<RequiredDocumentResponse>> listByService(@PathVariable Long serviceId) {
         return ResponseEntity.ok(requiredDocumentService.listByService(serviceId));
@@ -37,7 +36,7 @@ public class RequiredDocumentController {
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long serviceId, @PathVariable Long id) {
-        requiredDocumentService.delete(id);
+        requiredDocumentService.delete(serviceId, id);
         return ResponseEntity.ok().build();
     }
 }

@@ -7,13 +7,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 
-/**
- * The spec's employee_salary_component: a catalog component attached to one
- * employee's salary structure with a concrete amount - internet allowance,
- * a loan EMI, health insurance, and so on. Earnings raise the payroll's
- * other-earnings total; deductions raise other-deductions. Employer
- * contributions are informational (they never touch net pay).
- */
+/** A catalog component attached to one employee's structure with a concrete amount; earnings feed other-earnings, deductions other-deductions, employer contributions never touch net pay. */
 @Entity
 @Table(name = "employee_salary_components")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

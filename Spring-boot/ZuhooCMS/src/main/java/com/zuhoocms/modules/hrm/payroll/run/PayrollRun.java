@@ -14,21 +14,23 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
- * The payroll batch header from the spec: one run per company per period,
- * grouping the per-employee Payroll rows, carrying frozen totals and the
- * approval workflow. Once a run passes PENDING_APPROVAL its lines lock -
- * see PayrollServiceImpl.assertLineEditable.
- *
- * DRAFT -> CALCULATED -> PENDING_APPROVAL -> APPROVED -> PAID
- * plus REJECTED (from pending) and CANCELLED (before approval).
+ * One run per company per period, grouping the Payroll rows with frozen totals; lines lock once it passes PENDING_APPROVAL - see PayrollServiceImpl.assertLineEditable.
+ * DRAFT -> CALCULATED -> PENDING_APPROVAL -> APPROVED -> PAID, plus REJECTED (from pending) and CANCELLED (before approval).
  */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
 @Table(name = "payroll_runs",
-    uniqueConstraints = @UniqueConstraint(columnNames = {"company_id", "pay_month", "pay_year"}))
+    uniqueConstraints = {
+        @UniqueConstraint(columnNames = {"company_id", "pay_month", "pay_year"}),
+        @UniqueConstraint(name = "uk_payroll_runs_company_run_number", columnNames = {"company_id", "run_number"})})
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class PayrollRun extends BaseEntity {
+
+    // Optimistic lock: concurrent approve/pay/settle must fail fast, not overwrite; columnDefinition backfills existing rows under ddl-auto=update.
+    @Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
+    private Long version;
 
     public enum RunStatus { DRAFT, CALCULATED, PENDING_APPROVAL, APPROVED, PAID, REJECTED, CANCELLED }
 
@@ -37,7 +39,7 @@ public class PayrollRun extends BaseEntity {
     @JoinColumn(name = "company_id", nullable = false)
     private Company company;
 
-    @Column(nullable = false, length = 30)
+    @Column(name = "run_number", nullable = false, length = 30)
     private String runNumber;
 
     @Column(name = "pay_month", nullable = false)

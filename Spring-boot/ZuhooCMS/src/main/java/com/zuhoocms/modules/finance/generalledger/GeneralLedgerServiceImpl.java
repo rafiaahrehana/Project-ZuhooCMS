@@ -15,7 +15,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -28,64 +31,7 @@ public class GeneralLedgerServiceImpl implements GeneralLedgerService {
     private final AuthorizationService authorizationService;
     private final PeriodLockChecker periodLockChecker;
 
-    @Override
-    @Transactional
-    public void recordTransaction(Long accountId, BigDecimal debitAmount, BigDecimal creditAmount,
-                                  String description, GlReferenceType referenceType, Long referenceId,
-                                  String referenceNumber) {
-        recordTransaction(securityUtil.getCurrentCompanyId(), accountId, debitAmount, creditAmount,
-                description, referenceType, referenceId, referenceNumber, LocalDate.now());
-    }
-
-    @Override
-    @Transactional
-    public void recordTransaction(Long companyId, Long accountId, BigDecimal debitAmount, BigDecimal creditAmount,
-                                  String description, GlReferenceType referenceType, Long referenceId,
-                                  String referenceNumber) {
-        recordTransaction(companyId, accountId, debitAmount, creditAmount,
-                description, referenceType, referenceId, referenceNumber, LocalDate.now());
-    }
-
-    @Override
-    @Transactional
-    public void recordTransaction(Long companyId, Long accountId, BigDecimal debitAmount, BigDecimal creditAmount,
-                                  String description, GlReferenceType referenceType, Long referenceId,
-                                  String referenceNumber, LocalDate transactionDate) {
-        LocalDate date = transactionDate != null ? transactionDate : LocalDate.now();
-
-        // The year-end close is the one entry type allowed to post into the period it's
-        // finalizing - every other poster is blocked from backdating into a closed period.
-        if (referenceType != GlReferenceType.YEAR_END_CLOSE && periodLockChecker.isDateInClosedPeriod(companyId, date)) {
-            throw new BadRequestException(
-                    "Cannot post to " + date + " - that accounting period is closed. Reopen it first if this entry truly belongs there.");
-        }
-
-        ChartOfAccount account = coaRepository.findByIdAndCompanyId(accountId, companyId)
-                .orElseThrow(() -> new ResourceNotFoundException("Chart of Account not found"));
-
-        var currentUser = securityUtil.getCurrentUser();
-        GeneralLedger entry = GeneralLedger.builder()
-                .companyId(companyId)
-                .transactionDate(date)
-                .account(account)
-                .debitAmount(debitAmount != null ? debitAmount : BigDecimal.ZERO)
-                .creditAmount(creditAmount != null ? creditAmount : BigDecimal.ZERO)
-                .description(description)
-                .referenceType(referenceType.name())
-                .referenceId(referenceId)
-                .referenceNumber(referenceNumber)
-                .posted(true)
-                // No authenticated user for system entry points (e.g. payment gateway callbacks).
-                .postedBy(currentUser != null ? currentUser.getUsername() : "System")
-                .postedDate(LocalDate.now())
-                .build();
-
-        glRepository.save(entry);
-
-        // Update account balance
-        updateAccountBalance(account, debitAmount, creditAmount);
-    }
-
+    /** The only entry point into the ledger: validates the whole batch before writing, then posts every line under pessimistic row locks taken in id-ascending order. */
     @Override
     @Transactional
     public void recordBalancedTransaction(Long companyId, List<LedgerLine> lines, String description,
@@ -95,28 +41,114 @@ public class GeneralLedgerServiceImpl implements GeneralLedgerService {
             throw new BadRequestException("A transaction needs at least one line");
         }
 
-        BigDecimal totalDebits = lines.stream()
-                .map(l -> l.debitAmount() != null ? l.debitAmount() : BigDecimal.ZERO)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalCredits = lines.stream()
-                .map(l -> l.creditAmount() != null ? l.creditAmount() : BigDecimal.ZERO)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalDebits = BigDecimal.ZERO;
+        BigDecimal totalCredits = BigDecimal.ZERO;
+        for (LedgerLine line : lines) {
+            BigDecimal debit = nz(line.debitAmount());
+            BigDecimal credit = nz(line.creditAmount());
+            if (line.accountId() == null) {
+                throw new BadRequestException("Every ledger line needs an account");
+            }
+            if (debit.signum() < 0 || credit.signum() < 0) {
+                throw new BadRequestException("Line amounts cannot be negative");
+            }
+            if (debit.signum() > 0 && credit.signum() > 0) {
+                throw new BadRequestException("A line can be a debit or a credit, not both");
+            }
+            totalDebits = totalDebits.add(debit);
+            totalCredits = totalCredits.add(credit);
+        }
 
-        if (totalDebits.subtract(totalCredits).abs().compareTo(new BigDecimal("0.01")) > 0) {
+        // Exactly, not "within a cent": amounts here are scale-2, so a tolerance only ever let a real one-cent posting bug through and skewed the books.
+        if (totalDebits.compareTo(totalCredits) != 0) {
             throw new BadRequestException("Transaction does not balance: debits " + totalDebits
                     + " vs credits " + totalCredits + " - rejected before posting anything");
         }
 
+        // A zero/zero line is a no-op, so drop it; an ENTIRELY zero batch (year-end close of a year with no movement) keeps its first line as the marker row, or the year can never be recorded as closed.
+        List<LedgerLine> postable = lines.stream()
+                .filter(l -> nz(l.debitAmount()).signum() != 0 || nz(l.creditAmount()).signum() != 0)
+                .collect(Collectors.toList());
+        if (postable.isEmpty()) {
+            postable = List.of(lines.get(0));
+        }
+        lines = postable;
+
+        LocalDate date = transactionDate != null ? transactionDate : LocalDate.now();
+
+        // The year-end close is the one entry type allowed to post into the period it finalizes; everything else is blocked from backdating into a closed period.
+        if (referenceType != GlReferenceType.YEAR_END_CLOSE && periodLockChecker.isDateInClosedPeriod(companyId, date)) {
+            throw new BadRequestException(
+                    "Cannot post to " + date + " - that accounting period is closed. Reopen it first if this entry truly belongs there.");
+        }
+
+        // Load each target account once, locked FOR UPDATE, so concurrent postings can't both read the same starting balance and lose an update; id-ascending order prevents deadlocks on overlapping account sets.
+        List<Long> accountIds = lines.stream()
+                .map(LedgerLine::accountId)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+        List<ChartOfAccount> locked = coaRepository.lockByIdsAndCompanyId(accountIds, companyId);
+        Map<Long, ChartOfAccount> byId = new LinkedHashMap<>();
+        locked.forEach(a -> byId.put(a.getId(), a));
+
+        for (Long accountId : accountIds) {
+            ChartOfAccount account = byId.get(accountId);
+            if (account == null) {
+                throw new ResourceNotFoundException("Chart of Account not found");
+            }
+            requirePostable(account);
+        }
+
+        var currentUser = securityUtil.getCurrentUser();
+        String postedBy = currentUser != null ? currentUser.getUsername() : "System";
+        LocalDate postedDate = LocalDate.now();
+
+        List<GeneralLedger> entries = new ArrayList<>();
         for (LedgerLine line : lines) {
-            boolean bothZero = isZero(line.debitAmount()) && isZero(line.creditAmount());
-            if (bothZero) continue; // a genuinely empty line is a no-op, not an error
-            recordTransaction(companyId, line.accountId(), line.debitAmount(), line.creditAmount(),
-                    description, referenceType, referenceId, referenceNumber, transactionDate);
+            ChartOfAccount account = byId.get(line.accountId());
+            BigDecimal debit = nz(line.debitAmount());
+            BigDecimal credit = nz(line.creditAmount());
+
+            entries.add(GeneralLedger.builder()
+                    .companyId(companyId)
+                    .transactionDate(date)
+                    .account(account)
+                    .debitAmount(debit)
+                    .creditAmount(credit)
+                    .description(description)
+                    .referenceType(referenceType.name())
+                    .referenceId(referenceId)
+                    .referenceNumber(referenceNumber)
+                    .posted(true)
+                    // No authenticated user for system entry points (e.g. payment gateway callbacks).
+                    .postedBy(postedBy)
+                    .postedDate(postedDate)
+                    .build());
+
+            applyToBalance(account, debit, credit);
+        }
+
+        glRepository.saveAll(entries);
+        coaRepository.saveAll(byId.values());
+    }
+
+    /** Mirrors JournalEntryServiceImpl's rule on every posting path: header/rollup, non-directly-postable and deactivated accounts must never receive ledger entries. */
+    private void requirePostable(ChartOfAccount account) {
+        if (account.isHeaderAccount() || !account.isAllowDirectPosting()) {
+            throw new BadRequestException(
+                    "\"" + account.getAccountName() + "\" (" + account.getAccountCode()
+                            + ") does not allow direct posting - it's a header/rollup account. Post to one of its child accounts instead.");
+        }
+        if (!account.isActive()) {
+            throw new BadRequestException(
+                    "\"" + account.getAccountName() + "\" (" + account.getAccountCode()
+                            + ") is inactive - reactivate it before posting to it.");
         }
     }
 
-    private static boolean isZero(BigDecimal value) {
-        return value == null || value.compareTo(BigDecimal.ZERO) == 0;
+    private static BigDecimal nz(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
     }
 
     @Override
@@ -185,26 +217,27 @@ public class GeneralLedgerServiceImpl implements GeneralLedgerService {
         return account.getBalance();
     }
 
-    /**
-     * Debit-normal accounts (ASSET, CONTRA_LIABILITY, EXPENSE, CONTRA_REVENUE) increase
-     * with a debit and decrease with a credit. Credit-normal accounts (LIABILITY,
-     * CONTRA_ASSET, EQUITY, REVENUE) are the opposite - a credit increases them.
-     * Classification lives on AccountType.isCreditNormal() - the single source of truth.
-     */
-    private void updateAccountBalance(ChartOfAccount account, BigDecimal debitAmount, BigDecimal creditAmount) {
-        BigDecimal currentBalance = account.getBalance();
-        boolean isCreditNormalType = account.getType().isCreditNormal();
+    @Override
+    @Transactional(readOnly = true)
+    public BigDecimal getAccountBalanceAsOf(Long companyId, Long accountId, LocalDate asOfDate) {
+        ChartOfAccount account = coaRepository.findByIdAndCompanyId(accountId, companyId)
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
+        BigDecimal signed = glRepository.sumSignedUpToDate(companyId, accountId, asOfDate);
+        BigDecimal net = signed != null ? signed : BigDecimal.ZERO;
+        // sumSignedUpToDate returns debits - credits; flip it for credit-normal accounts to match ChartOfAccount.balance's normal-side convention.
+        return account.getType().isCreditNormal() ? net.negate() : net;
+    }
 
-        BigDecimal debit = debitAmount != null ? debitAmount : BigDecimal.ZERO;
-        BigDecimal credit = creditAmount != null ? creditAmount : BigDecimal.ZERO;
+    /** Debit-normal accounts increase with a debit, credit-normal ones with a credit; the classification lives on AccountType.isCreditNormal(). */
+    private void applyToBalance(ChartOfAccount account, BigDecimal debit, BigDecimal credit) {
+        BigDecimal currentBalance = account.getBalance() != null ? account.getBalance() : BigDecimal.ZERO;
 
-        if (isCreditNormalType) {
+        if (account.getType().isCreditNormal()) {
             currentBalance = currentBalance.add(credit).subtract(debit);
         } else {
             currentBalance = currentBalance.add(debit).subtract(credit);
         }
 
         account.setBalance(currentBalance);
-        coaRepository.save(account);
     }
 }

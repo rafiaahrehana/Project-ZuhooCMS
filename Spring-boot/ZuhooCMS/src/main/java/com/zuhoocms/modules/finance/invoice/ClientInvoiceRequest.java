@@ -17,7 +17,7 @@ public class ClientInvoiceRequest {
     @NotNull(message = "Invoice date is required")
     private LocalDate invoiceDate;
 
-    @NotNull(message = "Due date is required")
+    // Optional for non-CUSTOM paymentTerms, where the server derives it from invoiceDate (DUE_ON_RECEIPT = same day, NET_n = +n days); an explicit value always wins, and CUSTOM without a date is a 400.
     private LocalDate dueDate;
 
     @NotEmpty(message = "Invoice must have at least one item")
@@ -27,8 +27,7 @@ public class ClientInvoiceRequest {
     @Builder.Default
     private BigDecimal taxAmount = BigDecimal.ZERO;
 
-    // If provided, overrides taxAmount - the server recomputes tax from
-    // (subtotal - discountAmount) * rate / 100.
+    // If provided, overrides taxAmount: tax is recomputed as (subtotal - discountAmount) * rate / 100.
     @DecimalMin(value = "0.0")
     private BigDecimal taxRatePercent;
 
@@ -38,8 +37,7 @@ public class ClientInvoiceRequest {
 
     private String currency;
 
-    // Required (>0) when currency differs from the company's base currency;
-    // ignored/forced to 1 for base-currency invoices.
+    // Required (>0) when currency differs from the company's base currency; forced to 1 otherwise.
     @DecimalMin(value = "0.000001", message = "Exchange rate must be positive")
     private BigDecimal exchangeRate;
 
@@ -47,7 +45,6 @@ public class ClientInvoiceRequest {
     private String description;
     private String notes;
 
-    // Set internally when an invoice is auto-generated for a paid service request
-    // (see ClientInvoiceServiceImpl#createForServiceRequest) - not user-supplied.
+    // Set internally for an auto-generated service-request invoice (see ClientInvoiceServiceImpl#createForServiceRequest), not user-supplied.
     private Long serviceRequestId;
 }

@@ -28,17 +28,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        registry.addEndpoint("/ws")
+        // Both "/ws" (servicedesk) and "/ws/support" (platform-support chat) share one broker, auth and handshake so the same Angular app works against either backend; SecurityConfig's "/ws/**" covers both.
+        registry.addEndpoint("/ws", "/ws/support")
                 .setAllowedOriginPatterns("*")
                 .addInterceptors(webSocketAuthInterceptor)
                 .setHandshakeHandler(new DefaultHandshakeHandler() {
-                    // The raw HTTP handshake request carries no Spring Security
-                    // Authentication (/ws is permitAll - see SecurityConfig) since a
-                    // browser's native WebSocket transport can't send an Authorization
-                    // header. WebSocketAuthInterceptor validates the ?token= query
-                    // param instead and stashes the resolved principal in
-                    // `attributes`; pull it back out here so it becomes this STOMP
-                    // session's Principal.
+                    // The handshake carries no Spring Security Authentication (/ws is permitAll), so the principal WebSocketAuthInterceptor stashed in `attributes` is pulled back out here to become the STOMP session's Principal.
                     @Override
                     protected Principal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler,
                                                        Map<String, Object> attributes) {
@@ -46,11 +41,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         return principal instanceof Principal p ? p : super.determineUser(request, wsHandler, attributes);
                     }
                 });
-        // Deliberately NOT .withSockJS() - every supported browser has native
-        // WebSocket, and SockJS's client library assumes a Node-style `global`
-        // object that modern bundlers (esbuild/Vite, which Angular now uses) don't
-        // polyfill, breaking at runtime. Plain WebSocket avoids that dependency
-        // entirely; HandshakeInterceptor/DefaultHandshakeHandler above work
-        // identically either way.
+        // Deliberately NOT .withSockJS(): its client assumes a Node-style `global` that Angular's esbuild bundler doesn't polyfill, breaking at runtime.
     }
 }

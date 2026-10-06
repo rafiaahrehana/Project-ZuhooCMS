@@ -5,12 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-/**
- * Announcement.scheduledAt existed on nothing before this - HR could draft a
- * holiday notice Friday, but someone had to remember to click Publish Monday
- * morning. Runs every 15 minutes (finer-grained than most schedulers here,
- * since a 9am-scheduled announcement landing at 9:45 defeats the point).
- */
+/** Publishes on Announcement.scheduledAt, which nothing acted on before; every 15 minutes, since a 9am announcement landing at 9:45 defeats the point. */
 @Component
 @RequiredArgsConstructor
 public class AnnouncementScheduledPublishScheduler {

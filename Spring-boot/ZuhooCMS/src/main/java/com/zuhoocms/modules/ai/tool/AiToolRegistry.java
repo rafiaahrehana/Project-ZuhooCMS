@@ -10,20 +10,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Every AiTool is a Spring bean; this just collects them and applies the one
- * cross-cutting rule every tool shares: filter by the caller's actual
- * permissions BEFORE the list is ever sent to a provider, so a tool a user
- * isn't authorized for is not just refused if called - it's never visible to
- * the model as an option in the first place.
- *
- * <p>Takes {@code ObjectProvider<List<AiTool>>} rather than {@code List<AiTool>}
- * directly: several tools wrap services (e.g. AnnouncementServiceImpl) that
- * themselves depend on AiService for their own draftWithAi()-style features.
- * An eager List<AiTool> here would force those tool beans to be constructed
- * while AiServiceImpl (which depends on this registry) is still being built,
- * forming a bean-creation cycle. ObjectProvider defers resolving the list
- * until a method below is actually called, by which point every bean in the
- * cycle already exists.
+ * Collects the AiTool beans and filters by the caller's permissions before the list reaches a provider, so an unauthorized tool is never even visible to the model.
+ * Takes {@code ObjectProvider<List<AiTool>>} rather than the list directly: tools wrap services that depend on AiService, so an eager list forms a bean-creation cycle.
  */
 @Component
 @RequiredArgsConstructor

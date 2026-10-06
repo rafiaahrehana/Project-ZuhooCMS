@@ -23,6 +23,11 @@ public class AssetMapper {
         r.setName(a.getName());
         r.setCategory(a.getCategory());
         r.setSerialNumber(a.getSerialNumber());
+        // description and notes are ONE column, echoed under two names. The web had an input box for each, so a
+        // client sending both had notes silently overwrite description on update (they are applied in that order to
+        // the same setter) - editing the Description box stored the old text and answered 200. Both front-ends now
+        // show a single box. Left as two keys on the wire because clients bind to both; the aliasing is written down
+        // here so the next reader does not take them for two fields.
         r.setDescription(a.getNotes());
         r.setPurchaseDate(a.getPurchaseDate());
         r.setPurchaseCost(a.getPurchasePrice());
@@ -43,6 +48,8 @@ public class AssetMapper {
         r.setStorageSize(a.getStorageSize());
         r.setOperatingSystem(a.getOperatingSystem());
         r.setWarrantyExpiry(a.getWarrantyExpiry());
+        r.setDisposalDate(a.getDisposalDate());
+        r.setDisposalReason(a.getDisposalReason());
         return r;
     }
 }

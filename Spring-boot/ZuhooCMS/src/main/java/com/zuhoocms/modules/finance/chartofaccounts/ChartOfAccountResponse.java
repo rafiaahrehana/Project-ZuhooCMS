@@ -19,9 +19,10 @@ public class ChartOfAccountResponse {
     private String accountName;
     private AccountType type;
     private BigDecimal balance;
-    // Jackson strips the "is" prefix from Lombok's isHeaderAccount() getter by default
-    // (JSON key would be "headerAccount"), which wouldn't match the frontend's
-    // isHeaderAccount field - force the full name explicitly.
+    // Jackson would strip the "is" prefix from isHeaderAccount() and emit "headerAccount", which doesn't match the frontend's isHeaderAccount field.
+    // The stripped "headerAccount"/"bankAccount" keys still ship alongside these, and are deliberately not suppressed:
+    // the Flutter app reads them as a fallback (accounting_models.dart), so dropping them would be a wire removal a
+    // client references. Angular reads only the pinned "is" spellings.
     @JsonProperty("isHeaderAccount")
     private boolean isHeaderAccount;
     @JsonProperty("isBankAccount")

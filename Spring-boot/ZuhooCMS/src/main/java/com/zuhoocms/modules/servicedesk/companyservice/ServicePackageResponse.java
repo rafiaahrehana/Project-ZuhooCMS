@@ -28,11 +28,9 @@ public class ServicePackageResponse {
     private boolean featured;
     private boolean popular;
 
-    // Computed
     private BigDecimal effectivePrice;
     private BigDecimal totalServicePrice;
 
-    // Included services summary
     private List<CompanyServiceResponse> services;
 
     private LocalDateTime createdAt;

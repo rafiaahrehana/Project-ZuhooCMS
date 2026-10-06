@@ -5,7 +5,7 @@ import com.zuhoocms.enums.TaskStatus;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.time.LocalDate;       // was LocalDateTime — fixed to match Task.dueDate
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 
@@ -17,7 +17,7 @@ public class TaskResponse {
     private String description;
     private TaskStatus status;
     private ServiceRequestPriority priority;
-    private LocalDate dueDate;              // fixed: was LocalDateTime
+    private LocalDate dueDate;
     private LocalDateTime slaDeadline;
     private LocalDateTime completedAt;
     private Long serviceRequestId;

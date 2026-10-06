@@ -83,12 +83,9 @@ public class Lead extends BaseEntity {
     private LocalDate lastContactDate;
     private LocalDateTime lastActivityAt;
 
-    // Set once CrmFollowUpScheduler notifies the assignee this lead has gone
-    // stale; reset to null whenever new activity is logged, so the next
-    // staleness period notifies again instead of staying permanently silent.
+    // Set when CrmFollowUpScheduler notifies the assignee, reset to null on new activity, so the next staleness period notifies again.
     private LocalDateTime staleNotifiedAt;
 
-    // Which service they're interested in
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "company_service_id")
     private CompanyService interestedService;
@@ -97,13 +94,12 @@ public class Lead extends BaseEntity {
     @JoinColumn(name = "company_id", nullable = false)
     private com.zuhoocms.modules.company.Company company;
 
-    // Assigned sales person
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "assigned_to_id")
     private com.zuhoocms.modules.hrm.employee.Employee assignedTo;
 
-    // When lead converts to client
-    @OneToOne(fetch = FetchType.LAZY)
+    /** The Client this lead became, set when its Opportunity is won. ManyToOne, not OneToOne: a UNIQUE index on converted_client_id failed the Won transition with a 409 for a second lead at an existing account. The old index is dropped in CrmSchemaMigrationRunner. */
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "converted_client_id")
     private Client convertedClient;
 
@@ -111,7 +107,6 @@ public class Lead extends BaseEntity {
     private boolean converted = false;
     private LocalDateTime convertedAt;
 
-    // Bidirectional relationship with activities
     @OneToMany(mappedBy = "lead", fetch = FetchType.LAZY, orphanRemoval = false)
     @Builder.Default
     private List<com.zuhoocms.modules.crm.activity.CrmActivity> activities = new ArrayList<>();

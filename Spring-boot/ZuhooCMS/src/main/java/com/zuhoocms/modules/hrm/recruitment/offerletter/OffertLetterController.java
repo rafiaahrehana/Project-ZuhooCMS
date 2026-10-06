@@ -19,7 +19,9 @@ public class OffertLetterController {
     private final OfferLetterService letterService;
 
     @PostMapping
-    public ResponseEntity<OfferLetterResponse> create(@RequestBody OfferLetterRequest request) {
+    // @Valid: letterType and issueDate are dereferenced/persisted unchecked without it, and referenceNumber/signedBy
+    // are length-capped in the DB. content carries no constraint on purpose - blank means "generate it with AI".
+    public ResponseEntity<OfferLetterResponse> create(@Valid @RequestBody OfferLetterRequest request) {
         return new ResponseEntity<>(letterService.create(request), HttpStatus.CREATED);
     }
 

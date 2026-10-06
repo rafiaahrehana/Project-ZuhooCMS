@@ -9,11 +9,14 @@ import java.time.LocalDate;
 
 @Data
 public class PerformanceReviewRequest {
-    @NotNull(message = "Employee ID is required")
+    /** Validation group for create only - an edit (PATCH) may omit these. */
+    public interface OnCreate {}
+
+    @NotNull(message = "Employee ID is required", groups = OnCreate.class)
     private Long employeeId;
-    @NotNull
+    @NotNull(message = "Review period start is required", groups = OnCreate.class)
     private LocalDate reviewPeriodStart;
-    @NotNull
+    @NotNull(message = "Review period end is required", groups = OnCreate.class)
     private LocalDate reviewPeriodEnd;
     @Min(1) @Max(10)
     private Integer scoreWorkQuality;
@@ -27,8 +30,7 @@ public class PerformanceReviewRequest {
     private Integer scoreInitiative;
     @Min(1) @Max(10)
     private Integer scorePunctuality;
-    // Competencies were validated @Max(5) while the form has always been
-    // labelled 1-10, so any score above 5 was rejected. Now 1-10 throughout.
+    // Competencies are 1-10, matching the form label; they were validated @Max(5), so any score above 5 was rejected.
     @Min(1) @Max(10)
     private Integer scoreLeadership;
     @Min(1) @Max(10)
@@ -41,7 +43,6 @@ public class PerformanceReviewRequest {
     private String goalsForNextPeriod;
     private String comments;
 
-    // ── Review outcome ────────────────────────────────────────────
     private String performanceLevel;
     private String promotionRecommendation;
     private String promotionReadiness;
@@ -55,4 +56,10 @@ public class PerformanceReviewRequest {
     private String recognition;
     /** JSON array of {title, progress} for the goal-tracking bars. */
     private String goals;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @jakarta.validation.constraints.AssertTrue(message = "Review period end must be on or after the start")
+    public boolean isReviewPeriodValid() {
+        return reviewPeriodStart == null || reviewPeriodEnd == null || !reviewPeriodEnd.isBefore(reviewPeriodStart);
+    }
 }

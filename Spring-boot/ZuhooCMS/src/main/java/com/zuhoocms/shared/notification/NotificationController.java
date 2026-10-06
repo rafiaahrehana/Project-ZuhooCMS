@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -12,6 +13,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/notifications")
 public class NotificationController {
 
+    static final int MAX_PAGE_SIZE = 100;
+
     private final NotificationService notificationService;
 
     @GetMapping
@@ -19,8 +22,10 @@ public class NotificationController {
             @RequestParam(defaultValue = "false") boolean unreadOnly,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
         return ResponseEntity.ok(notificationService.getMyNotifications(unreadOnly,
-                PageRequest.of(page, size, Sort.by("createdAt").descending())));
+                PageRequest.of(safePage, safeSize, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/count")
@@ -28,15 +33,16 @@ public class NotificationController {
         return ResponseEntity.ok(notificationService.getUnreadCount());
     }
 
+    // Bodies are JSON string literals so HttpClient's default JSON parsing doesn't fail.
     @PatchMapping("/{id}/read")
     public ResponseEntity<String> markAsRead(@PathVariable Long id) {
         notificationService.markAsRead(id);
-        return ResponseEntity.ok("Notification marked as read");
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body("\"Notification marked as read\"");
     }
 
     @PatchMapping("/read-all")
     public ResponseEntity<String> markAllAsRead() {
         notificationService.markAllAsRead();
-        return ResponseEntity.ok("All notifications marked as read");
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body("\"All notifications marked as read\"");
     }
 }

@@ -14,6 +14,10 @@ public interface OfferLetterRepository extends JpaRepository<OfferLetter, Long> 
     Page<OfferLetter> findByCompanyIdAndEmployeeId(
         Long companyId, Long employeeId, Pageable pageable);
 
+    /** An employee's own view of their letters: only ones actually issued to them, never drafts. */
+    Page<OfferLetter> findByCompanyIdAndEmployeeIdAndIssuedTrue(
+        Long companyId, Long employeeId, Pageable pageable);
+
     Page<OfferLetter> findByCompanyId(Long companyId, Pageable pageable);
 
     boolean existsByCompanyIdAndReferenceNumber(Long companyId, String referenceNumber);

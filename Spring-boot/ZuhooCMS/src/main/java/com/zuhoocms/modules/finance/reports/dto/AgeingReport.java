@@ -9,11 +9,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * Accounts Receivable aging as of a given date - every outstanding client invoice
- * bucketed by how overdue it is, so a company can see who owes them money and how
- * late it is (the report every business needs for AR follow-up).
- */
+/** Accounts Receivable aging as of a date: every outstanding client invoice bucketed by how overdue it is. */
 @Data
 @Builder
 @NoArgsConstructor

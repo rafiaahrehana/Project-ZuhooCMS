@@ -16,15 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.YearMonth;
 import java.util.List;
 
-/**
- * FixedAssetService.runDepreciation() is manually triggered and idempotent per
- * month - nothing ever prompted anyone to actually run it. Six months could pass
- * with book value never reflecting depreciation expense, with nothing warning
- * that prior-period financials were wrong in the interim. This only reminds -
- * running depreciation posts real GL entries, so it stays an explicit human
- * action (FIXED_ASSET_MANAGE), same as every other financial posting in this
- * codebase.
- */
+/** Only reminds: FixedAssetService.runDepreciation() posts real GL entries, so it stays an explicit human action (FIXED_ASSET_MANAGE) like every other financial posting here. */
 @Component
 @RequiredArgsConstructor
 public class DepreciationReminderScheduler {
@@ -34,8 +26,7 @@ public class DepreciationReminderScheduler {
     private final CompanyRepository companyRepository;
     private final NotificationService notificationService;
 
-    // 9am on the 5th of each month - gives a few days into the new month before
-    // nagging about the previous one closing out.
+    // The 5th, not the 1st: a few days into the new month before nagging about the previous one.
     @Scheduled(cron = "0 0 9 5 * *")
     @Transactional(readOnly = true)
     public void remindUnrunDepreciation() {

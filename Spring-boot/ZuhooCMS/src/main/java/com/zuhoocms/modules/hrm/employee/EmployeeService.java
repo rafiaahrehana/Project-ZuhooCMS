@@ -20,9 +20,7 @@ public interface EmployeeService {
 
     /**
      * ADMIN / OWNER: list all employees, optionally filtered by department, status, or search term.
-     * excludeOwner=true drops the company owner's own auto-created Employee record -
-     * used by the HRM Employees admin page; other callers (asset assignment, payroll,
-     * offboarding pickers) pass false to keep including the owner as before.
+     * excludeOwner=true drops the owner's auto-created Employee record (the Employees admin page); other callers pass false to keep including them.
      */
     Page<EmployeeResponse> listAll(Long departmentId, EmploymentStatus status, String search, boolean excludeOwner, Pageable pageable);
 
@@ -37,6 +35,7 @@ public interface EmployeeService {
     void terminate(Long id);
 
     /** ADMIN / OWNER: get total number of employees for the current company */
+    /** Active headcount for the caller's company - the same figure the HR dashboard shows; resigned/deactivated staff are excluded. */
     long getEmployeeCount();
 
     /** Checks if a platformuser is an employee of the current company */

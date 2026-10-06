@@ -19,8 +19,7 @@ public class JournalEntryResponse {
     private String journalEntryNumber;
     private LocalDate entryDate;
 
-    // Authoritative multi-line breakdown. Old pre-lines entries have this synthesized
-    // from the legacy debit/credit fields so every entry renders the same way.
+    // Authoritative multi-line breakdown; pre-lines entries have it synthesized from the legacy fields so every entry renders the same way.
     private List<JournalEntryLineResponse> lines;
 
     // Legacy 1:1 summary fields (first debit/credit account, total amount)
@@ -40,7 +39,11 @@ public class JournalEntryResponse {
     private String approvedBy;
     private LocalDate approvedDate;
     private boolean approved;
-    
+
+    // True when the creator approved their own entry (only the company owner or an impersonating platform admin may), so the UI and auditors can flag it.
+    private boolean selfApproved;
+
+
     private boolean posted;
     private LocalDate postedDate;
 

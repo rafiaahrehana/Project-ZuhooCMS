@@ -11,10 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 
-/**
- * The company salary sheet. Gated on PAYROLL_VIEW: this shows every employee's
- * pay, which is exactly what the payroll permission exists to protect.
- */
+/** The company salary sheet, gated on PAYROLL_VIEW because it shows every employee's pay. */
 @RestController
 @RequestMapping("/api/hr/salary-sheet")
 @RequiredArgsConstructor
@@ -37,11 +34,7 @@ public class SalarySheetController {
                 year != null ? year : now.getYear()));
     }
 
-    /**
-     * The same sheet as a PDF, for the month-end pack that gets signed off or
-     * filed. Rendered server-side from the same service call the screen uses,
-     * so the export cannot drift from what was on screen.
-     */
+    /** The same sheet as a PDF, rendered from the same service call the screen uses so the export cannot drift from it. */
     @GetMapping(value = "/export", produces = org.springframework.http.MediaType.APPLICATION_PDF_VALUE)
     public ResponseEntity<byte[]> export(
             @RequestParam(required = false) Integer month,

@@ -13,10 +13,6 @@ public interface AuthorizationService {
 
     boolean hasPermission(PermissionCode permission);
 
-    /**
-     * The full, resolved set of permission codes the current user holds - same
-     * resolution rules as hasPermission(), just enumerated instead of checked one at a
-     * time. Used to drive frontend permission-based UI (dashboard widgets, sidebar menu).
-     */
+    /** Same resolution rules as hasPermission(), enumerated rather than checked one at a time, to drive frontend permission-based UI. */
     List<String> getMyPermissionCodes();
 }

@@ -75,8 +75,7 @@ public class DailyBriefingServiceImpl implements DailyBriefingService {
                     .reduce((a, b) -> a + "; " + b)
                     .orElse(null);
             } catch (Exception ignored) {
-                // Leave balances aren't set up for every company - a briefing
-                // shouldn't fail just because this one nudge isn't available.
+                // Leave balances aren't set up for every company, and a briefing shouldn't fail over one unavailable nudge.
             }
 
             return new PreparedPrompt<Void>(null, DailyBriefingPromptBuilder.builder()
@@ -91,16 +90,24 @@ public class DailyBriefingServiceImpl implements DailyBriefingService {
 
         String content = aiService.generateRaw(AiFeature.DAILY_BRIEFING, prepared.prompt()).trim();
 
-        aiTx.persist(() -> {
-            Company company = companyRepository.getReferenceById(companyId);
-            briefingRepository.save(AiDailyBriefing.builder()
-                .briefingDate(today)
-                .content(content)
-                .company(company)
-                .user(user)
-                .build());
-            return null;
-        });
+        // Two first-opens of the day can race and both build; the unique (company, user, date) key lets one insert win and the loser returns the winner's briefing.
+        try {
+            aiTx.persist(() -> {
+                Company company = companyRepository.getReferenceById(companyId);
+                briefingRepository.saveAndFlush(AiDailyBriefing.builder()
+                    .briefingDate(today)
+                    .content(content)
+                    .company(company)
+                    .user(user)
+                    .build());
+                return null;
+            });
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            return aiTx.load(() -> briefingRepository
+                .findByCompanyIdAndUserIdAndBriefingDate(companyId, user.getId(), today)
+                .map(AiDailyBriefing::getContent)
+                .orElse(content));
+        }
 
         return content;
     }

@@ -33,6 +33,12 @@ public class BiometricDeviceResponse {
     
     private LocalDateTime lastSyncTime;
     private LocalDateTime lastHealthCheckTime;
+    /**
+     * Pinned like AttendanceResponse.isLate: unpinned, Jackson emitted only the stripped "online", so the Angular
+     * device list (which reads isOnline) showed every device as Offline. The stripped "online" key is deliberately
+     * NOT suppressed here - the Flutter app reads it (biometric_models.dart falls back to it), so both spellings ship.
+     */
+    @com.fasterxml.jackson.annotation.JsonProperty("isOnline")
     private boolean isOnline;
     
     private String manufacturer;

@@ -6,10 +6,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 
-// No tenant @Filter here on purpose - unlike its sibling entities, Wallet has no
-// company_id column. Scoping is done via contextType/contextId instead (see
-// WalletServiceImpl). Do not uncomment a commented-out version of this - it
-// will break startup (no such column) or silently mis-scope queries.
+// No tenant @Filter on purpose: Wallet has no company_id column, so scoping goes through contextType/contextId (see WalletServiceImpl).
 @Entity
 @Table(name = "wallets")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -33,7 +30,6 @@ public class Wallet extends BaseEntity {
     @Column(name = "context_id", nullable = false)
     private Long contextId;
 
-    // Optional constraint: UNIQUE(context_type, context_id)
     // Total spendable amount = cash balance + credit balance.
     public BigDecimal getTotalAvailable() {
         BigDecimal b = balance      != null ? balance      : BigDecimal.ZERO;

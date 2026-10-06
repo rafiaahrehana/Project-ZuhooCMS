@@ -11,11 +11,7 @@ import org.hibernate.annotations.ParamDef;
 
 import java.time.LocalDate;
 
-/**
- * One cached daily briefing per (company, user, date) - lazily built the
- * first time the employee opens the assistant that day, so nothing pays for
- * an AI generation on a day the app is never opened.
- */
+/** One cached briefing per (company, user, date), built lazily on first open so no AI generation is paid for on a day the app is never opened. */
 @Getter
 @Setter
 @NoArgsConstructor

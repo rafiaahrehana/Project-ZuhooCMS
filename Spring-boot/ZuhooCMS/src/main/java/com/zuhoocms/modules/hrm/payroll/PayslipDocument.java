@@ -1,11 +1,5 @@
 package com.zuhoocms.modules.hrm.payroll;
 
-/**
- * A rendered payslip and the filename it should download as.
- *
- * The filename is built from the employee number and pay period, which only the
- * service can see once the entity is loaded - returning it alongside the bytes
- * saves the controller a second lookup just to name the attachment.
- */
+/** A rendered payslip plus its filename; the name needs the loaded entity, so returning it here saves the controller a second lookup. */
 public record PayslipDocument(byte[] content, String fileName) {
 }

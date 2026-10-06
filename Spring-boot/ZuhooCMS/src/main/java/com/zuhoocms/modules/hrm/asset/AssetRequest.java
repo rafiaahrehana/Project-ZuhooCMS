@@ -22,7 +22,6 @@ public class AssetRequest {
     private Long assignedToId;
     private String notes;
 
-    // IT Hardware Specific Fields - already on the Asset entity, now settable via the API
     @Size(max = 100)
     private String assetTag;
     @Size(max = 100)

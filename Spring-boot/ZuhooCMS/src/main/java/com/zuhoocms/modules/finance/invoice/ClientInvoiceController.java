@@ -149,6 +149,14 @@ public class ClientInvoiceController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/{id}/refunds")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @Operation(summary = "Request a refund against a paid or partially paid invoice (up to the paid amount; permission INVOICE_REFUND)")
+    public ResponseEntity<RefundResponse> requestRefund(@PathVariable Long id,
+                                                        @Valid @RequestBody RefundCreateRequest request) {
+        return new ResponseEntity<>(service.requestRefund(id, request), HttpStatus.CREATED);
+    }
+
     @GetMapping("/refunds")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @Operation(summary = "List refund requests (from clients cancelling an already-paid service request)")

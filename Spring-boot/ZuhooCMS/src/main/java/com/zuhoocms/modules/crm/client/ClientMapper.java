@@ -8,14 +8,7 @@ public class ClientMapper {
         return toResponse(client, null, null);
     }
 
-    /**
-     * Won-opportunity clients (the Phase 1 CRM pipeline default) don't get a
-     * portal login, so client.getUser() - the only place email/phone came
-     * from - is null for most clients created that way. fallbackEmail/Phone
-     * let callers pass the client's primary ClientContact instead, so the
-     * detail page doesn't show blank contact info that exists right next to
-     * it in the Contacts card.
-     */
+    /** Clients created from a won opportunity have no portal login, so client.getUser() - the only source of email/phone - is null; fallbackEmail/Phone let callers pass the primary ClientContact instead of showing blanks. */
     public static ClientResponse toResponse(Client client, String fallbackEmail, String fallbackPhone) {
         User u = client.getUser();
         Employee employee = client.getAccountManager();

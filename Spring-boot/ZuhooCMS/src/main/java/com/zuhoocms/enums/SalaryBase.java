@@ -1,10 +1,6 @@
 package com.zuhoocms.enums;
 
-/**
- * Which figure a derived amount is calculated from - the basic salary alone, or
- * the full gross. Used for absence deductions and overtime rates, which
- * different companies base on different figures.
- */
+/** Whether absence deductions and overtime rates are computed off basic salary or full gross - companies differ, so it is a per-tenant choice. */
 public enum SalaryBase {
     BASIC,
     GROSS

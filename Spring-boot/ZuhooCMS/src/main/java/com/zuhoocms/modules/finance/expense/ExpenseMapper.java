@@ -45,7 +45,7 @@ public class ExpenseMapper {
                 .amount(request.getAmount())
                 .category(request.getCategory())
                 .expenseDate(request.getExpenseDate())
-                .receiptUrl(request.getReceiptUrl())
+                .receiptUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getReceiptUrl()))
                 .notes(request.getNotes())
                 .referenceNumber(request.getReferenceNumber())
                 .build();

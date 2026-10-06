@@ -15,15 +15,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * "See Demo" on the landing page calls this to drop an anonymous visitor into
- * the seeded demo tenant.
- *
- * Mints a short-lived access token for the demo owner directly - there is no
- * password exchange, and the demo account's stored password is random and
- * never disclosed, so the only way into the demo is this endpoint. Every
- * mutation the token could attempt is blocked by DemoReadOnlyFilter, which is
- * what makes handing out sessions to the whole internet acceptable.
- *
+ * "See Demo" drops an anonymous visitor into the seeded demo tenant by minting a short-lived access token for the demo owner: no password exchange, and the stored password is random, so this endpoint is the only way in.
+ * Handing sessions to the whole internet is only acceptable because DemoReadOnlyFilter blocks every mutation the token could attempt.
  * No refresh token on purpose: when the access token dies, the demo is over.
  */
 @RestController
@@ -46,11 +39,13 @@ public class DemoSessionController {
         if (!demoEnabled) {
             throw new ResourceNotFoundException("The demo is not available right now");
         }
-        Company company = companyRepository.findBySubdomain(DemoDataSeeder.DEMO_SUBDOMAIN)
-                .orElseThrow(() -> new ResourceNotFoundException("The demo is not available right now"));
         User demoUser = userRepository.findByEmail(DemoDataSeeder.DEMO_OWNER_EMAIL)
                 .orElseThrow(() -> new ResourceNotFoundException("The demo is not available right now"));
+        // The demo owner's own company - not whichever company holds subdomain "demo".
+        Company company = companyRepository.findByOwnerId(demoUser.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("The demo is not available right now"));
 
+        // Minting is rate-limited per IP by PublicEndpointRateLimitFilter.
         String accessToken = jwtService.generateAccessToken(
                 demoUser.getEmail(), demoUser.getRole().name(), company.getId(), DEMO_SESSION_MS);
 

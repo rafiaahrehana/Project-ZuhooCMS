@@ -5,12 +5,8 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 /**
- * One endpoint, two outcomes.
- *
- * `registered = true`  -> `login` holds the usual tokens, the app goes straight to the dashboard.
- * `registered = false` -> the Google account is genuine but no user matches that email, so the
- *                         app collects a company and calls /api/auth/google/register. The email
- *                         and name come from the verified token, purely to prefill that form.
+ * registered = true  -> `login` holds the usual tokens.
+ * registered = false -> the Google account is genuine but unknown, so the app collects a company and calls /api/auth/google/register; email and name come from the verified token only to prefill that form.
  */
 @Getter
 @AllArgsConstructor

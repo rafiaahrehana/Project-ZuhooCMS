@@ -7,15 +7,13 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.Optional;
 
 public interface TokenRepository extends JpaRepository<UserToken, Long> {
 
     Optional<UserToken> findByToken(String token);
 
-    /**
-     * Find a token by its value and type (supports multi-token type handling)
-     */
     @Query("SELECT t FROM UserToken t WHERE t.token = :token AND t.tokenType = :type")
     Optional<UserToken> findByTokenAndType(@Param("token") String token, @Param("type") TokenType type);
 
@@ -24,9 +22,6 @@ public interface TokenRepository extends JpaRepository<UserToken, Long> {
     @Query("DELETE FROM UserToken t WHERE t.user.id = :userId")
     void deleteByUserId(@Param("userId") Long userId);
 
-    /**
-     * Revoke all refresh tokens for a specific platformuser
-     */
     @Transactional
     @Modifying
     @Query("""
@@ -37,9 +32,6 @@ public interface TokenRepository extends JpaRepository<UserToken, Long> {
     """)
     void revokeAllByUserId(@Param("userId") Long userId);
 
-    /**
-     * Revoke all tokens of a specific type for a platformuser (e.g., only REFRESH tokens)
-     */
     @Transactional
     @Modifying
     @Query("""
@@ -58,5 +50,17 @@ public interface TokenRepository extends JpaRepository<UserToken, Long> {
         WHERE t.expiresAt < :cutoff
     """)
     void deleteExpiredBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    /** Bulk-revokes REFRESH tokens when a company is suspended/deactivated (see CompanyServiceImpl.changeStatus); otherwise its users keep calling /refresh and bypass the suspension. */
+    @Transactional
+    @Modifying
+    @Query("""
+        UPDATE UserToken t
+        SET t.revoked = true
+        WHERE t.user.id IN :userIds
+        AND t.tokenType = :type
+        AND t.revoked = false
+    """)
+    void revokeAllByUserIdInAndType(@Param("userIds") Collection<Long> userIds, @Param("type") TokenType type);
 
 }

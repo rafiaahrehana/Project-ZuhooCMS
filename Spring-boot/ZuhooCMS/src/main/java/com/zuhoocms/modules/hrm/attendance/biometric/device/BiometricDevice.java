@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class BiometricDevice extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     private String deviceName; // "Main Gate Fingerprint Terminal"
 
@@ -35,12 +35,10 @@ public class BiometricDevice extends BaseEntity {
     @Column(length = 50)
     private BiometricDeviceStatus status = BiometricDeviceStatus.ACTIVE;
 
-    // API Integration
     private String apiEndpoint;
     private String apiKey;
     private String apiSecret;
 
-    // Configuration
     @Builder.Default
     private int matchThreshold = 95; // 95% for fingerprint
 
@@ -50,7 +48,6 @@ public class BiometricDevice extends BaseEntity {
     @Builder.Default
     private boolean enabledForCheckOut = true;
 
-    // Sync & Communication
     private LocalDateTime lastSyncTime;
     private LocalDateTime lastHealthCheckTime;
 
@@ -61,14 +58,12 @@ public class BiometricDevice extends BaseEntity {
     private String model;
     private String firmwareVersion;
 
-    // Capacity
     @Builder.Default
     private int totalEnrollments = 0;
 
     @Builder.Default
     private int maxEnrollments = 5000;
 
-    // Notes
     private String notes;
     private String maintenanceNotes;
 

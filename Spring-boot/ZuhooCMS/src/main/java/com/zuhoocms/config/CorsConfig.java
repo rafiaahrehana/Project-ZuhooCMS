@@ -8,18 +8,21 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
 public class CorsConfig {
 
-    @Value("${app.frontend-url:http://localhost:4200}")
+    // Comma-separated origin patterns; setAllowedOriginPatterns (not setAllowedOrigins) is required for the wildcard to work alongside allowCredentials(true).
+    @Value("${app.frontend-url:http://localhost:4200,http://localhost:*}")
     private String frontendUrl;
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(frontendUrl));
+        config.setAllowedOriginPatterns(
+                Arrays.stream(frontendUrl.split(",")).map(String::trim).toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Authorization", "Content-Disposition"));
@@ -28,15 +31,8 @@ public class CorsConfig {
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
 
-        // SSLCommerz's payment page redirects the payer's browser here with a cross-origin
-        // POST (Origin: sandbox.sslcommerz.com) - the strict frontend-only rule below
-        // rejected that as "Invalid CORS request" before the request ever reached the
-        // controller, so the wallet/invoice was never credited even on a successful charge.
-        // This endpoint is already permitAll() in SecurityConfig and sends no credentials,
-        // so a permissive rule here is safe. Must be registered BEFORE "/**":
-        // UrlBasedCorsConfigurationSource returns the config for the FIRST matching
-        // pattern in registration order (not the most specific one), so registering
-        // "/**" first would always win and this rule would never be reached.
+        // SSLCommerz redirects the payer's browser here with a cross-origin POST; the frontend-only rule below rejects it as "Invalid CORS request" and the invoice is never credited.
+        // Safe because the endpoint is permitAll and sends no credentials. Must be registered BEFORE "/**": UrlBasedCorsConfigurationSource takes the FIRST matching pattern in registration order, not the most specific.
         CorsConfiguration gatewayCallbackConfig = new CorsConfiguration();
         gatewayCallbackConfig.setAllowedOriginPatterns(List.of("*"));
         gatewayCallbackConfig.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));

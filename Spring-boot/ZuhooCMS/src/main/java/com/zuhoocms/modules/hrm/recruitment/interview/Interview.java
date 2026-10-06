@@ -20,11 +20,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/**
- * One interview round for a job application: the schedule (round, time, mode,
- * interviewer) and, once held, the interviewer's feedback (rating,
- * strengths/concerns, hire recommendation).
- */
+/** One interview round for a job application: the schedule (round, time, mode, interviewer) and, once held, the interviewer's feedback. */
 @Entity
 @Table(name = "recruitment_interviews")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -69,7 +65,7 @@ public class Interview extends BaseEntity {
     @Builder.Default
     private Status status = Status.SCHEDULED;
 
-    // ── Feedback (set when the round completes) ───────────────
+    // Feedback, set when the round completes.
     /** 1-5. */
     private Integer rating;
 

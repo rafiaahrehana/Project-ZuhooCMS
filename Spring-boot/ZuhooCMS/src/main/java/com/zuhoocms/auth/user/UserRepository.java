@@ -16,6 +16,10 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByEmail(String email);
 
+    /** Case-insensitive, and counts soft-deleted rows too - they still hold the unique email. */
+    @Query(value = "select exists(select 1 from users where lower(email) = lower(:email))", nativeQuery = true)
+    boolean existsAnyByEmailIgnoreCase(@org.springframework.data.repository.query.Param("email") String email);
+
     Optional<User> findByIdAndDeletedFalse(Long id);
 
     Page<User> findByRole(Role role, Pageable pageable);
@@ -27,11 +31,7 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Query("SELECT u FROM User u WHERE u.deleted = true AND u.deletedAt < :cutoff")
     List<User> findDeletedBefore(LocalDateTime cutoff);
 
-    /**
-     * Nullifies customRole on all users assigned to the given role.
-     * Must be called before soft-deleting a CustomRole to preserve referential integrity.
-     * Replaces the invalid CascadeType.SET_NULL that was previously on User.customRole.
-     */
+    /** Must be called before soft-deleting a CustomRole; stands in for the CascadeType.SET_NULL that JPA does not have. */
     @org.springframework.data.jpa.repository.Modifying
     @Query("UPDATE User u SET u.customRole = null WHERE u.customRole.id = :roleId")
     void clearCustomRoleForAllUsers(@org.springframework.data.repository.query.Param("roleId") Long roleId);

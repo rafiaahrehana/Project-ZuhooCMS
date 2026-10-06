@@ -16,10 +16,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-/**
- * BUG-FIX: Added @Valid on all @RequestBody parameters.
- * Added @PreAuthorize — workflow template management is an admin-only operation.
- */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/workflows")

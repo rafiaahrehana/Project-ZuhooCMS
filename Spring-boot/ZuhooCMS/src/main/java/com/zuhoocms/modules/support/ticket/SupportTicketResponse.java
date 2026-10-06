@@ -23,8 +23,7 @@ public class SupportTicketResponse {
 
     private Long assignedToAgentId;
     private String assignedToAgentName;
-    // CUSTOMER_SUPPORT tickets route to an internal Employee instead of a
-    // platform SupportAgent - see SupportTicket.assignedEmployee.
+    // CUSTOMER_SUPPORT tickets route to an internal Employee, not a platform SupportAgent - see SupportTicket.assignedEmployee.
     private String assignedEmployeeName;
     private LocalDateTime assignedDate;
 

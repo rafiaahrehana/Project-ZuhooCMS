@@ -58,9 +58,7 @@ public class HolidayServiceImpl implements HolidayService {
         return HolidayMapper.toHolidayResponse(holiday);
     }
 
-    // Holidays are always company-wide (see the removed department-targeting
-    // control) but publishing one told nobody - only AnnouncementServiceImpl
-    // called NotificationService anywhere in this slice.
+    // Holidays are company-wide, and publishing one previously notified nobody.
     private void notifyCompanyOfNewHoliday(Holiday holiday, Long companyId) {
         int pageNum = 0;
         final int PAGE_SIZE = 100;
@@ -82,9 +80,7 @@ public class HolidayServiceImpl implements HolidayService {
         } while (page.hasNext());
     }
 
-    // No @Transactional here on purpose: the company lookup runs inside
-    // aiTx.load(), which commits before the provider call so no DB connection is
-    // held across it - see AiTransactionBoundary.
+    // No @Transactional on purpose: the company lookup runs inside aiTx.load(), which commits before the provider call so no DB connection is held across it - see AiTransactionBoundary.
     @Override
     public HolidayDraftResponse draftWithAi(HolidayDraftRequest request) {
         authorizationService.checkPermission(PermissionCode.HOLIDAY_CREATE);
@@ -118,8 +114,7 @@ public class HolidayServiceImpl implements HolidayService {
             response.setType(node.path("type").asText(null));
             response.setDescription(node.path("description").asText(null));
         } catch (Exception ignored) {
-            // Model didn't return valid JSON despite instructions - fall back to a
-            // best-effort name rather than failing the whole request.
+            // Model returned invalid JSON - fall back to a best-effort name rather than failing the request.
         }
         if (response.getName() == null || response.getName().isBlank()) {
             response.setName(fallbackInstructions.length() > 150

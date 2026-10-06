@@ -39,7 +39,8 @@ public class JobPostingServiceImpl implements JobPostingService {
         Long companyId = requireCompanyId();
         User currentUser = securityUtil.getCurrentUser();
 
-        Employee creator = employeeRepository.findByUserId(currentUser.getId())
+        // Scoped: createdBy is stored on a posting stamped with companyId, so the creator must be in that company.
+        Employee creator = employeeRepository.findByUserIdAndCompanyId(currentUser.getId(), companyId)
             .orElseThrow(() -> new BadRequestException(
                 "Only employees can create job postings"));
 
@@ -56,7 +57,7 @@ public class JobPostingServiceImpl implements JobPostingService {
             .salaryMin(request.getSalaryMin())
             .salaryMax(request.getSalaryMax())
             .deadline(request.getDeadline())
-            .remote(request.isRemote())
+            .remote(Boolean.TRUE.equals(request.getRemote()))
             .requiredSkills(request.getRequiredSkills())
             .preferredSkills(request.getPreferredSkills())
             .minExperienceYears(request.getMinExperienceYears())
@@ -81,6 +82,7 @@ public class JobPostingServiceImpl implements JobPostingService {
     @Override
     @Transactional(readOnly = true)
     public JobPostingResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.JOB_POSTING_VIEW);
         return JobPostingMapper.toResponse(findInTenant(id));
     }
 
@@ -97,9 +99,7 @@ public class JobPostingServiceImpl implements JobPostingService {
         return page.map(JobPostingMapper::toResponse);
     }
 
-    // Deliberately NOT gated by JOB_POSTING_VIEW: this is the open-posting picker
-    // consumed by the Applications page - users with APPLICATION_VIEW but not
-    // JOB_POSTING_VIEW still need it to populate that dropdown.
+    // Deliberately NOT gated by JOB_POSTING_VIEW: users with APPLICATION_VIEW alone need this open-posting picker to populate the Applications page dropdown.
     @Override
     @Transactional(readOnly = true)
     public List<JobPostingResponse> listOpen() {
@@ -129,7 +129,9 @@ public class JobPostingServiceImpl implements JobPostingService {
         if (request.getSalaryMin()    != null) posting.setSalaryMin(request.getSalaryMin());
         if (request.getSalaryMax()    != null) posting.setSalaryMax(request.getSalaryMax());
         if (request.getDeadline()     != null) posting.setDeadline(request.getDeadline());
-        posting.setRemote(request.isRemote());
+        // Guarded like its sixteen neighbours. It used to be a primitive assigned unconditionally, so a PUT that
+        // omitted it - a location-only edit, say - silently turned a remote posting into an on-site one.
+        if (request.getRemote() != null) posting.setRemote(request.getRemote());
         if (request.getRequiredSkills()   != null) posting.setRequiredSkills(request.getRequiredSkills());
         if (request.getPreferredSkills()  != null) posting.setPreferredSkills(request.getPreferredSkills());
         if (request.getMinExperienceYears()!= null) posting.setMinExperienceYears(request.getMinExperienceYears());
@@ -192,8 +194,6 @@ public class JobPostingServiceImpl implements JobPostingService {
         posting.softDelete();
 
     }
-
-    // ── Private helpers ───────────────────────────────────────────
 
     private JobPosting findInTenant(Long id) {
         return jobPostingRepository.findByIdAndCompanyId(id, requireCompanyId())

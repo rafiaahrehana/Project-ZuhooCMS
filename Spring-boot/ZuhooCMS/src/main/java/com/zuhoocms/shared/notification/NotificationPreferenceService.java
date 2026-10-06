@@ -2,16 +2,15 @@ package com.zuhoocms.shared.notification;
 
 public interface NotificationPreferenceService {
 
-    /** ALL: get preferences for the authenticated platformuser — auto-creates if missing */
+    /** Auto-creates the row when missing. */
     NotificationPreferenceResponse getForCurrentUser();
 
-    /** ALL: full replacement update of notification preferences */
+    /** Full replacement, not a partial update. */
     NotificationPreferenceResponse update(UpdateNotificationPreferenceRequest request);
 
-    /** ALL: reset all preferences to platform defaults */
     NotificationPreferenceResponse resetToDefaults();
 
-    /** INTERNAL: create default preferences on platformuser activation */
+    /** Internal: called on user activation. */
     void createDefaultsForUser(Long userId);
 
 }

@@ -4,11 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.*;
 import lombok.*;
 
-// AllArgsConstructor access is package-private (not public) so Jackson can't use it as
-// a deserialization creator - a creator requires every constructor parameter, so a JSON
-// body omitting a primitive int/boolean field fails with "Cannot map null into type
-// int/boolean" before @Valid runs. Package-private forces the no-args+setters path,
-// which correctly leaves missing primitives at their Java default.
+// AllArgsConstructor is package-private so Jackson can't use it as a creator: a creator needs every parameter, so a body omitting a primitive fails with "Cannot map null into type int/boolean" before @Valid runs.
+// Package-private forces the no-args+setters path, leaving missing primitives at their Java default.
 @Data @NoArgsConstructor @AllArgsConstructor(access = AccessLevel.PACKAGE) @Builder
 public class ChartOfAccountRequest {
 
@@ -34,9 +31,7 @@ public class ChartOfAccountRequest {
     private boolean active = true;
     private String notes;
 
-    // Migration support: the balance this account starts with (from a previous
-    // accounting system). Posts a balanced entry against Opening Balance Equity on
-    // create - can't just set the balance field or the ledger wouldn't back it up.
+    // Starting balance carried in from a previous system: posts a balanced entry against Opening Balance Equity on create, since setting the balance field alone leaves the ledger not backing it up.
     @DecimalMin(value = "0.0")
     private java.math.BigDecimal openingBalance;
     private java.time.LocalDate openingBalanceDate;

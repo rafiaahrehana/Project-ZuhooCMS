@@ -10,15 +10,8 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Everything the HR dashboard renders, in one round trip.
- *
- * Aggregated live on read. Nothing here is stored, so the numbers always agree
- * with the underlying employee, attendance, leave and payroll records rather
- * than with a snapshot that has since drifted.
- *
- * Counts that could legitimately be zero are primitives. Values that may be
- * genuinely UNKNOWN are boxed and left null so the UI can show a dash - an
- * attendance rate of null ("nothing recorded today") must not render as 0%.
+ * Everything the HR dashboard renders, in one round trip; aggregated live on read, nothing stored, so nothing can drift.
+ * Counts that can legitimately be zero are primitives; genuinely unknown values are boxed and null so the UI shows a dash, not 0%.
  */
 @Data
 @Builder
@@ -26,7 +19,6 @@ import java.util.List;
 @AllArgsConstructor
 public class HrDashboardResponse {
 
-    // ── Headline figures ──────────────────────────────────────
     private long totalEmployees;
     private long newHiresThisMonth;
     private long presentToday;
@@ -44,7 +36,6 @@ public class HrDashboardResponse {
     private int payrollMonth;
     private int payrollYear;
 
-    // ── Panels ────────────────────────────────────────────────
     private List<DepartmentSlice> departmentDistribution;
     private LeaveSummary leaveSummary;
     private List<JoinerItem> recentJoiners;
@@ -98,14 +89,7 @@ public class HrDashboardResponse {
         private LocalDate hireDate;
     }
 
-    /**
-     * A dated item needing HR's attention. `kind` is BIRTHDAY or PROBATION_END -
-     * both derived from employee records.
-     *
-     * Deliberately does NOT include "performance review cycle" or "payroll run
-     * date": neither is scheduled anywhere in the system, so any date shown for
-     * them would be invented.
-     */
+    /** A dated item needing HR's attention; kind is BIRTHDAY or PROBATION_END only, as review cycles and payroll runs are not scheduled anywhere. */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class UpcomingItem {
         private String kind;

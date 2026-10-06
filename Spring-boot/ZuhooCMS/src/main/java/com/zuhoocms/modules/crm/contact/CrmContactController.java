@@ -11,9 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-// Cross-client Contacts list - distinct from ClientContactController, which is
-// nested under a single Client (/api/clients/{clientId}/contacts). This is the
-// standalone Contacts page's backing endpoint.
+// Backs the standalone cross-client Contacts page, unlike ClientContactController, which is nested under one Client (/api/clients/{clientId}/contacts).
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/crm/contacts")

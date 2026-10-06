@@ -32,6 +32,11 @@ public class CheckCompanyAnnouncementsTool implements AiTool {
     }
 
     @Override
+    public boolean returnsUntrustedContent() {
+        return true; // third-party text (see AiTool#returnsUntrustedContent)
+    }
+
+    @Override
     public boolean isWrite() {
         return false;
     }

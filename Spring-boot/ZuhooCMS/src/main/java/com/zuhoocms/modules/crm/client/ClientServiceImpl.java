@@ -51,11 +51,13 @@ public class ClientServiceImpl implements ClientService {
     private final AuthorizationService authorizationService;
     private final com.zuhoocms.modules.crm.tag.TagRepository tagRepository;
     private final com.zuhoocms.modules.crm.duplicate.DuplicateDetectionService duplicateDetectionService;
-    // Portal invites: the contact holds the email, JwtService mints the one-time
-    // set-password token.
+    // Portal invites: the contact holds the email, JwtService mints the one-time set-password token.
     private final ClientContactRepository clientContactRepository;
     private final JwtService jwtService;
     private final com.zuhoocms.modules.crm.opportunity.OpportunityRepository opportunityRepository;
+
+    /** Same window as AuthServiceImpl's own verification codes. */
+    private static final int EMAIL_VERIFY_CODE_MINUTES = 15;
 
     @Override
     @Transactional
@@ -63,8 +65,7 @@ public class ClientServiceImpl implements ClientService {
         authorizationService.checkPermission(PermissionCode.CLIENT_CREATE);
         Long companyId = requireCompanyId();
 
-        // Checked before saving, against existing clients only - the new row doesn't
-        // exist yet, so this can't match itself.
+        // Checked before saving, so the new row cannot match itself.
         com.zuhoocms.modules.crm.duplicate.DuplicateMatch possibleDuplicate = duplicateDetectionService
                 .findPossibleDuplicateClient(request.getClientCompanyName(), request.getEmail(), request.getPhone())
                 .orElse(null);
@@ -100,7 +101,7 @@ public class ClientServiceImpl implements ClientService {
 
         Client client = Client.builder()
                 .user(user)
-                .company(companyRef(companyId))   // was: full companyRepository.findById()
+                .company(companyRef(companyId))
                 .clientCompanyName(request.getClientCompanyName())
                 .industry(request.getIndustry())
                 .website(request.getWebsite())
@@ -114,15 +115,12 @@ public class ClientServiceImpl implements ClientService {
                 .build();
 
         if (request.getAccountManagerId() != null) {
-            Employee am = employeeRepository
-                    .findByIdAndCompanyId(request.getAccountManagerId(), companyId)
-                    .orElseThrow(() -> new ResourceNotFoundException(
-                            "Account manager not found: " + request.getAccountManagerId()));
-            client.setAccountManager(am);
+            client.setAccountManager(findAccountManager(request.getAccountManagerId(), companyId));
         }
 
         if (request.getTagIds() != null && !request.getTagIds().isEmpty()) {
-            client.setTagEntities(tagRepository.findByIdInAndCompanyId(request.getTagIds(), companyId));
+            client.setTagEntities(com.zuhoocms.modules.crm.support.TagResolver.resolve(
+                    tagRepository, request.getTagIds(), companyId));
         }
 
         clientRepository.save(client);
@@ -144,6 +142,14 @@ public class ClientServiceImpl implements ClientService {
         return response;
     }
 
+    /**
+     * Unauthenticated client self-registration, reachable by anyone who can guess a numeric companyId.
+     *
+     *  - The response is identical whether the address was free or taken; throwing "An account with this email already exists" was an enumeration oracle.
+     *  - The account is created unverified and sent the verification email (see AuthServiceImpl.register): emailVerified(true) minted a live CLIENT login into any tenant's portal.
+     *  - No welcome email, which belongs after verification.
+     *  - The response body carries no id or userId; the Angular caller reads only the status code (see client-register.ts).
+     */
     @Override
     @Transactional
     public ClientResponse registerPublic(PublicClientRegisterRequest request) {
@@ -155,9 +161,13 @@ public class ClientServiceImpl implements ClientService {
 
         String normalizedEmail = request.getEmail().toLowerCase().trim();
         if (userRepository.existsByEmail(normalizedEmail)) {
-            throw new BadRequestException("An account with this email already exists");
+            // Deliberately indistinguishable from success; the real owner already has an account and resumes via sign-in or password reset.
+            log.info("Public client registration for an address that already has an account - "
+                    + "answering with the generic response");
+            return genericRegistrationResponse(request);
         }
 
+        String verificationCode = generateVerificationCode();
         User user = User.builder()
                 .firstName(request.getFirstName())
                 .lastName(request.getLastName())
@@ -166,7 +176,10 @@ public class ClientServiceImpl implements ClientService {
                 .phone(request.getPhone())
                 .role(Role.CLIENT)
                 .active(true)
-                .emailVerified(true)
+                .emailVerified(false)
+                .emailVerificationCode(verificationCode)
+                .emailVerificationCodeExpiresAt(
+                        java.time.LocalDateTime.now().plusMinutes(EMAIL_VERIFY_CODE_MINUTES))
                 .build();
         userRepository.save(user);
 
@@ -182,18 +195,47 @@ public class ClientServiceImpl implements ClientService {
         notificationPreferenceService.createDefaultsForUser(user.getId());
 
         try {
-            EmailBranding.Data branding = emailBranding.from(company);
-            emailService.sendClientWelcomeEmail(user.getEmail(), user.getFirstName(), branding);
+            emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), verificationCode);
         } catch (Exception ex) {
-            log.warn("Welcome email failed for client {}: {}", user.getEmail(), ex.getMessage());
+            // A dead SMTP connection must not roll the registration back, nor change the response, or the timing/shape difference becomes the enumeration oracle again.
+            log.warn("Verification email failed for public client registration: {}", ex.getMessage());
         }
 
-        return ClientMapper.toResponse(client);
+        return genericRegistrationResponse(request);
     }
 
+    /** Identical for a new account and for an address that already had one. */
+    private ClientResponse genericRegistrationResponse(PublicClientRegisterRequest request) {
+        ClientResponse response = new ClientResponse();
+        response.setClientCompanyName(request.getClientCompanyName());
+        response.setIndustry(request.getIndustry());
+        response.setWebsite(request.getWebsite());
+        response.setStatus(ClientStatus.ACTIVE);
+        return response;
+    }
+
+    /** Matches AuthServiceImpl's six-digit code. */
+    private String generateVerificationCode() {
+        return String.valueOf(100000 + new java.security.SecureRandom().nextInt(900000));
+    }
+
+    /**
+     * Checks CLIENT_VIEW, like listAll does.
+     *
+     * It used to check nothing while every sibling on this class did - create, update, delete and the list - so an
+     * employee with no permissions could read any client row by id, including its billing address, tax id, annual
+     * revenue and lifetime value. The list it was meant to be reached from was closed to them.
+     *
+     * The same hole in the same module family had already been found and closed next door, where
+     * ClientContactServiceImpl.getById carries the note "Its list siblings check CONTACT_VIEW; unguarded, this
+     * single-row read was the way around them." This is that fix, one class late.
+     *
+     * getMyProfile below is deliberately unchecked and stays so: a client reads their own record.
+     */
     @Override
     @Transactional(readOnly = true)
     public ClientResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.CLIENT_VIEW);
         Client client = findInTenant(id);
         return ClientMapper.toResponse(client, primaryContactEmail(client), primaryContactPhone(client));
     }
@@ -202,7 +244,9 @@ public class ClientServiceImpl implements ClientService {
     @Transactional(readOnly = true)
     public ClientResponse getMyProfile() {
         User user = securityUtil.getCurrentUser();
-        Client client = clientRepository.findByUserId(user.getId())
+        // Scoped to the active company: the response carries the whole client row (billing/shipping address,
+        // taxId, lifetime value), and findByUserId alone could resolve the record from a different tenant.
+        Client client = clientRepository.findByUserIdAndCompanyId(user.getId(), requireCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Client profile not found"));
         return ClientMapper.toResponse(client);
     }
@@ -211,7 +255,8 @@ public class ClientServiceImpl implements ClientService {
     @Transactional
     public ClientResponse updateMyProfile(UpdateMyClientProfileRequest request) {
         User user = securityUtil.getCurrentUser();
-        Client client = clientRepository.findByUserId(user.getId())
+        // Scoped before any setter runs: this used to be able to overwrite another tenant's client row.
+        Client client = clientRepository.findByUserIdAndCompanyId(user.getId(), requireCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Client profile not found"));
 
         if (request.getClientCompanyName() != null) client.setClientCompanyName(request.getClientCompanyName());
@@ -240,10 +285,7 @@ public class ClientServiceImpl implements ClientService {
         return page.map(ClientMapper::toResponse);
     }
 
-    // Deliberately NOT gated by CLIENT_VIEW: this is the active-client picker consumed
-    // by Invoices, Payment Receipts, and the CRM Pipeline board when attaching a client
-    // to an unrelated record - users with INVOICE_VIEW/PAYMENT_RECEIPT_VIEW/OPPORTUNITY_VIEW
-    // but not CLIENT_VIEW still need it to populate that dropdown.
+    // Deliberately NOT gated by CLIENT_VIEW: it populates the client dropdown for users with only INVOICE_VIEW/PAYMENT_RECEIPT_VIEW/OPPORTUNITY_VIEW.
     @Override
     @Transactional(readOnly = true)
     public List<ClientResponse> listActive() {
@@ -271,35 +313,19 @@ public class ClientServiceImpl implements ClientService {
         if (request.getAnnualRevenue() != null) client.setAnnualRevenue(request.getAnnualRevenue());
 
         if (request.getAccountManagerId() != null) {
-            Employee am = employeeRepository
-                    .findByIdAndCompanyId(request.getAccountManagerId(), companyId)
-                    .orElseThrow(() -> new ResourceNotFoundException(
-                            "Account manager not found: " + request.getAccountManagerId()));
-            client.setAccountManager(am);
+            client.setAccountManager(findAccountManager(request.getAccountManagerId(), companyId));
         }
 
         if (request.getTagIds() != null) {
-            client.setTagEntities(request.getTagIds().isEmpty()
-                    ? new java.util.ArrayList<>()
-                    : tagRepository.findByIdInAndCompanyId(request.getTagIds(), companyId));
+            client.setTagEntities(com.zuhoocms.modules.crm.support.TagResolver.resolve(
+                    tagRepository, request.getTagIds(), companyId));
         }
 
         clientRepository.save(client);
         return ClientMapper.toResponse(client);
     }
 
-    /**
-     * Gives a client a portal login without anyone choosing a password for them.
-     *
-     * The user row is created with a long random password that is never shown to
-     * anybody - the only way in is the emailed set-password link. That avoids the
-     * usual failure mode where staff invent a password and send it over WhatsApp,
-     * or worse, reuse one across every client.
-     *
-     * Re-invitable on purpose: calling it again for a client who already has a
-     * login just issues a fresh link, which is what you want when the first one
-     * expired or never arrived.
-     */
+    /** Gives a client a portal login via an emailed set-password link, never a staff-chosen password: the stored one is random and shown to nobody. Re-invitable on purpose, to reissue an expired or lost link. */
     @Override
     @Transactional
     public ClientResponse inviteToPortal(Long id) {
@@ -310,8 +336,7 @@ public class ClientServiceImpl implements ClientService {
         User user = client.getUser();
 
         if (user == null) {
-            // The address comes from the client's primary contact - the only place
-            // an email is actually stored for a client.
+            // The primary contact is the only place an email is stored for a client.
             String email = primaryContactEmail(client);
             if (email == null) {
                 throw new BadRequestException(
@@ -330,8 +355,7 @@ public class ClientServiceImpl implements ClientService {
                         .password(passwordEncoder.encode(UUID.randomUUID() + "-" + UUID.randomUUID()))
                         .role(Role.CLIENT)
                         .active(true)
-                        // Clicking the emailed link proves they control the address,
-                        // so a separate verification step would be redundant.
+                        // Clicking the emailed link already proves they control the address.
                         .emailVerified(true)
                         .build();
                 userRepository.save(user);
@@ -346,15 +370,11 @@ public class ClientServiceImpl implements ClientService {
         client.setPortalAccessEnabled(true);
         clientRepository.save(client);
 
-        // 7 days, not the 15-minute reset window: an invite often sits unopened
-        // over a weekend, and a dead link means a support request.
+        // 7 days, not the 15-minute reset window: an invite often sits unopened over a weekend.
         String token = jwtService.generateActionToken(
                 user.getEmail(), TokenType.PASSWORD_RESET, 7L * 24 * 60 * 60 * 1000);
 
-        // The login is provisioned regardless of whether the email gets through -
-        // rolling it back would leave the client half-created, and a failed send is
-        // recoverable by clicking invite again. But the caller is told which
-        // happened, so "invite sent" never appears when nothing was delivered.
+        // The login is provisioned even if the email fails (invite again is the recovery), but the caller is told, so "invite sent" never appears when nothing was delivered.
         boolean emailSent = false;
         String emailError = null;
 
@@ -370,8 +390,7 @@ public class ClientServiceImpl implements ClientService {
                         token, emailBranding.from(company));
                 emailSent = true;
             } catch (Exception ex) {
-                // sendInternal already recorded a FAILED row in email_logs with the
-                // reason; this only surfaces it to the caller.
+                // sendInternal already logged a FAILED row in email_logs; this only surfaces it to the caller.
                 emailError = "The portal login was created, but the invite email could not be delivered.";
                 log.warn("Portal invite email failed for client {} ({}): {}",
                         client.getId(), user.getEmail(), ex.getMessage());
@@ -425,10 +444,7 @@ public class ClientServiceImpl implements ClientService {
         authorizationService.checkPermission(PermissionCode.CLIENT_DELETE);
         Client client = findInTenant(id);
 
-        // The client vanishes from every lookup instantly (soft-delete), but any
-        // still-open Opportunity pointing at it survives - a rep can no longer
-        // open the client to see its contacts for that deal. Block instead of
-        // silently orphaning it.
+        // Blocked rather than orphaned: soft-deleting hides the client from every lookup while open Opportunities still point at it.
         long openOpportunities = opportunityRepository.countByCompanyIdAndClientIdAndStageNotIn(
                 client.getCompany().getId(), client.getId(),
                 List.of(com.zuhoocms.modules.crm.opportunity.OpportunityStage.WON,
@@ -441,6 +457,13 @@ public class ClientServiceImpl implements ClientService {
 
         client.softDelete();
         clientRepository.save(client);
+
+        // Contacts go too: left live, they kept matching in duplicate detection, whose getClient() proxy for a @SQLRestriction-hidden row caused 500s and a 404 "Client not found" when marking an unrelated deal Won.
+        int orphaned = clientContactRepository.softDeleteByClientId(
+                client.getId(), client.getCompany().getId(), java.time.LocalDateTime.now());
+        if (orphaned > 0) {
+            log.info("Soft-deleted {} contact(s) along with client {}", orphaned, client.getId());
+        }
 
         User user = client.getUser();
         if (user != null) {
@@ -461,6 +484,13 @@ public class ClientServiceImpl implements ClientService {
     @Transactional(readOnly = true)
     public boolean isClient(Long userId) {
         return clientRepository.existsByUserIdAndCompanyId(userId, requireCompanyId());
+    }
+
+    /** Only a still-employed employee can be an account manager: company membership alone let clients be handed to leavers, so escalations went nowhere. */
+    private Employee findAccountManager(Long employeeId, Long companyId) {
+        return employeeRepository.findAssignableByIdAndCompanyId(employeeId, companyId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Account manager not found, or is no longer an active employee: " + employeeId));
     }
 
     private Client findInTenant(Long id) {

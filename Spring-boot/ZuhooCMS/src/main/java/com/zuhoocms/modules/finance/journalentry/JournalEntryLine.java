@@ -7,11 +7,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 
-/**
- * One line of a multi-line journal entry. Real bookkeeping routinely needs one debit
- * split across several credits (or vice versa) - the old model's single
- * debitAccount/creditAccount/amount could only express a 1:1 entry.
- */
+/** One line of a multi-line journal entry: the single debitAccount/creditAccount/amount model could only express a 1:1 entry, not one debit split across several credits. */
 @Entity
 @Table(name = "journal_entry_lines")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

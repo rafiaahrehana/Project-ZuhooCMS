@@ -36,11 +36,7 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
     public ServiceReviewResponse submitOrUpdate(ServiceReviewRequest request) {
         Long companyId = requireCompanyId();
 
-        /*
-         * BUG-FIX: was serviceRequestRepository.findById() with no companyId check.
-         * A client from Company A could submit a review referencing Company B's request.
-         * Fixed to findByIdAndCompanyId() to enforce tenant isolation.
-         */
+        // Must be company-scoped: findById() alone let a client review another company's request.
         ServiceRequest sr = serviceRequestRepository
                 .findByIdAndCompanyId(request.getServiceRequestId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -60,7 +56,7 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
                 .orElse(null);
 
         if (review != null) {
-            // Use updatedAt if set, otherwise fall back to createdAt, for the edit window
+            // The 7-day edit window runs from the last edit, not the original creation.
             LocalDateTime editBase = review.getUpdatedAt() != null
                     ? review.getUpdatedAt() : review.getCreatedAt();
             if (editBase.isBefore(LocalDateTime.now().minusDays(7)))
@@ -89,11 +85,7 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
     @Transactional(readOnly = true)
     public ServiceReviewResponse getById(Long id) {
         Long companyId = requireCompanyId();
-        /*
-         * BUG-FIX: was reviewRepository.findById(id) with no tenant check.
-         * Any platformuser knowing a review ID could read another company's review.
-         * Fixed to findByIdAndCompanyId().
-         */
+        // Must be tenant-scoped: findById(id) let any user read another company's review by id.
         return ServiceReviewMapper.toServiceReviewResponse(
                 reviewRepository.findByIdAndCompanyId(id, companyId)
                         .orElseThrow(() -> new ResourceNotFoundException(
@@ -105,10 +97,7 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
     public Page<ServiceReviewResponse> listAll(Pageable pageable) {
         authorizationService.checkPermission(PermissionCode.REVIEW_VIEW);
         Long companyId = requireCompanyId();
-        /*
-         * BUG-FIX: was reviewRepository.findAll(pageable) — returned ALL tenants' reviews.
-         * This is a critical data leak. Fixed to findByCompanyId().
-         */
+        // Must be tenant-scoped: findAll(pageable) returned every tenant's reviews.
         return reviewRepository.findByCompanyId(companyId, pageable)
                 .map(ServiceReviewMapper::toServiceReviewResponse);
     }
@@ -116,14 +105,15 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
     @Override
     @Transactional(readOnly = true)
     public Page<ServiceReviewResponse> listByService(Long hubServiceId, Pageable pageable) {
-        return reviewRepository.findByHubServiceId(hubServiceId, pageable)
+        // Scoped to the caller's company: unscoped, any logged-in user could read every tenant's reviews.
+        return reviewRepository.findByCompanyIdAndHubServiceId(requireCompanyId(), hubServiceId, pageable)
                 .map(ServiceReviewMapper::toServiceReviewResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Double getAverageRatingByService(Long hubServiceId) {
-        return reviewRepository.findAverageRatingByServiceId(hubServiceId).orElse(null);
+        return reviewRepository.findAverageRatingByCompanyIdAndServiceId(requireCompanyId(), hubServiceId).orElse(null);
     }
 
     @Override
@@ -137,16 +127,8 @@ public class ServiceReviewServiceImpl implements ServiceReviewService {
     public void delete(Long id) {
         authorizationService.checkPermission(PermissionCode.REVIEW_DELETE);
         Long companyId = requireCompanyId();
-        /*
-         * BUG-FIX 1: was reviewRepository.findById(id) — no tenant check. Fixed to
-         * findByIdAndCompanyId() so admins can only delete their own company's reviews.
-         *
-         * BUG-FIX 2: was 'if (review.isPublished()) throw' — this prevented admins from
-         * ever deleting published reviews, which is the opposite of the intended behaviour
-         * (the controller restricts this endpoint to ADMIN role for exactly this purpose).
-         * Guard removed: the @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')") on the controller endpoint
-         * is the correct gate. An admin should be able to delete any review for moderation.
-         */
+        // Tenant-scoped so admins delete only their own company's reviews.
+        // No isPublished() guard on purpose: moderation must be able to delete published reviews, and the controller's @PreAuthorize is the gate.
         ServiceReview review = reviewRepository.findByIdAndCompanyId(id, companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Service review not found: " + id));
         review.softDelete();

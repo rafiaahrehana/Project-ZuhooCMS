@@ -59,8 +59,7 @@ public class SupportTicket extends BaseEntity {
     private String title;
     private String description;
 
-    // Optional screenshot/image attached when the ticket was raised - was
-    // declared on SupportTicketRequest but never actually persisted anywhere.
+    // Optional screenshot/image attached when the ticket was raised.
     private String attachmentUrl;
     private String attachmentFileName;
 
@@ -89,28 +88,30 @@ public class SupportTicket extends BaseEntity {
 
     private LocalDateTime assignedDate;
 
-    // SLA Tracking
     private LocalDateTime firstResponseTime;
     private LocalDateTime resolutionTime;
 
     private LocalDateTime firstResponseDeadline;
     private LocalDateTime resolutionDeadline;
 
+    // Resolution-deadline breach (set by SlaBreachScheduler).
     @Builder.Default
     private boolean slaBreached = false;
 
+    // Tracked separately so a missed first response doesn't suppress the resolution-breach alert; the column default lets ddl-auto=update add it to a populated table.
+    @Builder.Default
+    @Column(name = "first_response_breached", nullable = false, columnDefinition = "boolean default false")
+    private boolean firstResponseBreached = false;
+
     private String slaBreachReason;
 
-    // Resolution
     private String resolutionNotes;
     private LocalDateTime closedDate;
     private String closedBy;
 
-    // Customer satisfaction
     private Integer satisfactionRating; // 1-5 stars
     private String satisfactionFeedback;
 
-    // Escalation
     @Builder.Default
     private Integer escalationLevel = 1; // 1=First level, 2=Senior, 3=Manager
     private LocalDateTime escalatedDate;
@@ -121,10 +122,22 @@ public class SupportTicket extends BaseEntity {
 
     private LocalDate followUpDate;
 
+    /** Statuses a ticket is still being worked in - everything except RESOLVED/CLOSED. */
+    public static final java.util.Set<TicketStatus> ACTIVE_STATUSES = java.util.EnumSet.of(
+            TicketStatus.NEW, TicketStatus.OPEN, TicketStatus.IN_PROGRESS,
+            TicketStatus.WAITING, TicketStatus.ON_HOLD, TicketStatus.REOPENED);
+
+    public boolean isActiveStatus() {
+        return status != null && ACTIVE_STATUSES.contains(status);
+    }
+
+    /** Assigning never moves a ticket out of whatever active state it is in, except NEW/REOPENED -> OPEN. */
     public void assignToAgent(SupportAgent agent) {
         this.assignedToAgent = agent;
         this.assignedDate = LocalDateTime.now();
-        this.status = TicketStatus.OPEN;
+        if (this.status == TicketStatus.NEW || this.status == TicketStatus.REOPENED) {
+            this.status = TicketStatus.OPEN;
+        }
     }
 
     public void recordFirstResponse() {
@@ -133,20 +146,34 @@ public class SupportTicket extends BaseEntity {
         }
     }
 
-    public void resolve(String notes, String closedByName) {
+    public void resolve(String notes, String resolvedByName) {
         this.resolutionNotes = notes;
         this.resolutionTime = LocalDateTime.now();
-        this.closedDate = LocalDateTime.now();
-        this.closedBy = closedByName;
+        this.closedBy = resolvedByName;
         this.status = TicketStatus.RESOLVED;
     }
 
     public void close() {
         this.status = TicketStatus.CLOSED;
+        this.closedDate = LocalDateTime.now();
+    }
+
+    /** RESOLVED/CLOSED -> REOPENED: clears the close/resolution record, resets the breach flags and restarts the SLA clock. */
+    public void reopen(LocalDateTime newFirstResponseDeadline, LocalDateTime newResolutionDeadline) {
+        this.status = TicketStatus.REOPENED;
+        this.closedDate = null;
+        this.closedBy = null;
+        this.resolutionNotes = null;
+        this.resolutionTime = null;
+        this.slaBreached = false;
+        this.firstResponseBreached = false;
+        this.slaBreachReason = null;
+        this.firstResponseDeadline = newFirstResponseDeadline;
+        this.resolutionDeadline = newResolutionDeadline;
     }
 
     public boolean isOverdueSLA() {
-        if (firstResponseDeadline != null && LocalDateTime.now().isAfter(firstResponseDeadline)) {
+        if (firstResponseTime == null && firstResponseDeadline != null && LocalDateTime.now().isAfter(firstResponseDeadline)) {
             return true;
         }
         if (resolutionDeadline != null && LocalDateTime.now().isAfter(resolutionDeadline)) {

@@ -11,7 +11,7 @@ public interface CompanyService {
     CompanyPublicResponse getBySubdomain(String subdomain);
 
     /** Companies a prospective client can pick from during public client registration. */
-    java.util.List<CompanyPublicResponse> getPublicList();
+    java.util.List<CompanyPublicListItem> getPublicList();
 
     java.util.List<com.zuhoocms.modules.servicedesk.companyservice.CompanyServiceResponse> getPublicServices(String subdomain);
     CompanyResponse getById(Long id);
@@ -23,12 +23,7 @@ public interface CompanyService {
      * determines whether subscriptionEnd becomes +1 month or +1 year from today. */
     CompanyResponse changePlan(Long id, String planCode, BigDecimal amountPaid, String transactionRef);
 
-    /**
-     * Applies a plan upgrade the Company Owner paid for through the online checkout
-     * (SslCommerzServiceImpl.handleSuccess). Unlike the admin-only changePlan() above,
-     * this also (re)activates the subscription window and status, since a paid upgrade
-     * should immediately lift a TRIAL/SUSPENDED company back to ACTIVE.
-     */
+    /** Paid checkout upgrade (SslCommerzServiceImpl.handleSuccess): unlike changePlan(), it also reactivates a TRIAL/SUSPENDED company. */
     void applyPaidPlanUpgrade(Long companyId, SubscriptionPlanDefinition plan, BigDecimal amountPaid,
                               String transactionRef, Long changedByUserId);
 

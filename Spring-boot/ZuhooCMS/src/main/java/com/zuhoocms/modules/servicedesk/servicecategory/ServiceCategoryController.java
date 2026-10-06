@@ -16,16 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * FIXES:
- * 1. ServiceCategory.builder() now works — @Builder added to base.
- * 2. .sortOrder() / setSortOrder() now work — field added to base.
- * 3. Added @Valid on @RequestBody parameters.
- * 4. Added @PreAuthorize — company owner/employee manage their own company's categories.
- * 5. Removed direct import of old ServiceCategoryMapper from wrong package.
- * 6. Tenant-scoped by companyId — categories are each company's own service catalog,
- *    not a shared platform-wide taxonomy (name uniqueness is now per-company).
- */
+/** Categories are each company's own catalog, not a shared platform taxonomy, so everything is scoped by companyId and name uniqueness is per-company. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/service-categories")
@@ -56,10 +47,7 @@ public class ServiceCategoryController {
                 .collect(Collectors.toList()));
     }
 
-    /**
-     * Management listing including inactive categories - the active-only GET would make
-     * a disabled category impossible to re-enable.
-     */
+    /** Includes inactive categories: with the active-only GET, a disabled category could never be re-enabled. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @GetMapping("/all")
     public ResponseEntity<List<ServiceCategoryResponse>> getAllIncludingInactive() {
@@ -115,7 +103,6 @@ public class ServiceCategoryController {
         ServiceCategory category = categoryRepository.findByIdAndCompanyId(id, companyId)
             .orElseThrow(() -> new ResourceNotFoundException(
                 "Service category not found: " + id));
-        // Prevent duplicate names on update (excluding the same record)
         if (!category.getName().equalsIgnoreCase(request.getName())
                 && categoryRepository.existsByCompanyIdAndName(companyId, request.getName())) {
             throw new BadRequestException("A service category with this name already exists");

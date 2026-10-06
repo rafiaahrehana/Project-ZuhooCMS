@@ -18,9 +18,7 @@ public interface AssetRepository extends JpaRepository<Asset, Long> {
 
     Optional<Asset> findByIdAndCompanyId(Long id, Long companyId);
 
-    /** Locked lookup for assign() - prevents two admins assigning the same asset
-     *  to two different new hires at once, matching
-     *  SoftwareLicenseRepository.findByIdAndCompanyIdForUpdate(). */
+    /** Locked lookup for assign() so two admins cannot assign the same asset at once; matches SoftwareLicenseRepository.findByIdAndCompanyIdForUpdate(). */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT a FROM Asset a WHERE a.id = :id AND a.company.id = :companyId")
     Optional<Asset> findByIdAndCompanyIdForUpdate(@Param("id") Long id, @Param("companyId") Long companyId);

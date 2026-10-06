@@ -62,6 +62,8 @@ public class LeadMapper {
         res.setActivityDate(activity.getActivityDate());
         res.setScheduledAt(activity.getScheduledAt());
         res.setCompleted(activity.isCompleted());
+        res.setFollowUpAt(activity.getFollowUpAt());
+        res.setFollowUpDone(activity.isFollowUpDone());
         res.setSystemGenerated(activity.isSystemGenerated());
         res.setClientId(activity.getClient() != null ? activity.getClient().getId() : null);
         res.setOpportunityId(activity.getOpportunity() != null ? activity.getOpportunity().getId() : null);

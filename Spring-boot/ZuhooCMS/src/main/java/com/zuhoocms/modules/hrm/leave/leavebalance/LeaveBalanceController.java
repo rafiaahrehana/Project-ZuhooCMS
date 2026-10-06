@@ -38,10 +38,7 @@ public class LeaveBalanceController {
         return ResponseEntity.ok("Deleted successfully");
     }
 
-    /**
-     * The caller's own balances - what the employee dashboard renders.
-     * Separate from GET / because that returns every employee's balances.
-     */
+    /** The caller's own balances; separate from GET / because that returns every employee's. */
     @GetMapping("/my")
     public ResponseEntity<java.util.List<LeaveBalanceResponse>> listMine(
             @RequestParam(required = false) Integer year) {

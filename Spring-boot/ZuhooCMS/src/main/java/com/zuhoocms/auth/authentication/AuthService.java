@@ -34,11 +34,7 @@ public interface AuthService {
 
     void changePassword(ChangePasswordRequest request);
 
-    /**
-     * Signs in with a verified Google account, or reports that the account needs registering
-     * first. Multi-tenancy is why it can't just create a user: every user belongs to a company,
-     * and a Google token says nothing about which one.
-     */
+    /** Signs in with a verified Google account, or reports it needs registering first: every user belongs to a company and a Google token names none. */
     GoogleSignInResponse googleSignIn(GoogleAuthRequest request);
 
     /** Completes signup for a Google account by attaching it to a chosen company as a CLIENT. */

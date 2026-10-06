@@ -8,6 +8,7 @@ import com.zuhoocms.modules.finance.generalledger.GeneralLedger;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerMapper;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerRepository;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerResponse;
+import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.invoice.ClientInvoice;
 import com.zuhoocms.modules.finance.invoice.ClientInvoiceRepository;
 import com.zuhoocms.modules.finance.reports.dto.AccountLedger;
@@ -19,6 +20,7 @@ import com.zuhoocms.modules.finance.reports.dto.TrialBalanceReport;
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.security.SecurityUtil;
+import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.enums.InvoiceStatus;
 import lombok.RequiredArgsConstructor;
@@ -26,7 +28,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,20 +51,20 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public ProfitLossReport generateProfitLossReport(LocalDate startDate, LocalDate endDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        validateRange(startDate, endDate);
         Long companyId = securityUtil.getCurrentCompanyId();
 
-        // Revenue/Expense are period ("flow") figures - sum ledger movement within the
-        // requested window, not the account's live all-time balance.
-        List<GeneralLedger> transactions = glRepository.findTransactionsBetweenDates(companyId, startDate, endDate);
+        // Revenue/Expense are flow figures: sum ledger movement within the window, not the account's live all-time balance.
+        // YEAR_END_CLOSE rows are excluded, or a closed year's P&L reports as zero and a window spanning the close double-counts.
+        List<GeneralLedger> transactions = glRepository.findTransactionsBetweenDatesExcludingReferenceType(
+                companyId, startDate, endDate, GlReferenceType.YEAR_END_CLOSE.name());
 
         BigDecimal grossRevenue = transactions.stream()
                 .filter(gl -> gl.getAccount().getType() == AccountType.REVENUE)
                 .map(gl -> nz(gl.getCreditAmount()).subtract(nz(gl.getDebitAmount())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Contra-revenue (returns, discounts, allowances) is debit-normal and reduces
-        // revenue - previously excluded entirely, which overstated revenue by however
-        // much had been recorded against a contra-revenue account.
+        // Contra-revenue (returns, discounts, allowances) is debit-normal and reduces revenue; excluding it overstated revenue.
         BigDecimal contraRevenue = transactions.stream()
                 .filter(gl -> gl.getAccount().getType() == AccountType.CONTRA_REVENUE)
                 .map(gl -> nz(gl.getDebitAmount()).subtract(nz(gl.getCreditAmount())))
@@ -89,23 +93,26 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public BalanceSheetReport generateBalanceSheetReport(LocalDate asOfDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        requireDate(asOfDate, "asOfDate");
         Long companyId = securityUtil.getCurrentCompanyId();
 
-        // Assets/Liabilities/Equity are point-in-time balances - rebuild each from the
-        // ledger up to asOfDate rather than trusting the account's *current* live balance,
-        // which would be wrong for any asOfDate other than today.
-        // Contra-asset (e.g. Accumulated Depreciation) and contra-liability accounts were
-        // previously never queried at all, overstating assets/liabilities by whatever had
-        // been recorded against them - net them out here.
+        // Point-in-time balances rebuilt from the ledger up to asOfDate: the account's live balance is wrong for any asOfDate other than today.
+        // Contra-asset (e.g. Accumulated Depreciation) and contra-liability accounts are netted out here, or assets/liabilities are overstated.
         BigDecimal totalAssets = balanceAsOf(companyId, AccountType.ASSET, asOfDate)
                 .subtract(balanceAsOf(companyId, AccountType.CONTRA_ASSET, asOfDate));
         BigDecimal totalLiabilities = balanceAsOf(companyId, AccountType.LIABILITY, asOfDate)
                 .subtract(balanceAsOf(companyId, AccountType.CONTRA_LIABILITY, asOfDate));
-        BigDecimal totalEquity = balanceAsOf(companyId, AccountType.EQUITY, asOfDate);
+        BigDecimal postedEquity = balanceAsOf(companyId, AccountType.EQUITY, asOfDate);
 
-        // Assets = Liabilities + Equity is the fundamental accounting identity - if this
-        // doesn't hold, something posted an unbalanced entry (or period-end closing hasn't
-        // run), and the report should say so loudly rather than silently show wrong numbers.
+        // Not-yet-closed earnings: profit only reaches Retained Earnings at year-end close, so without this equity is short and the sheet never balances mid-year.
+        // Computed from the residual P&L balance with YEAR_END_CLOSE rows INCLUDED on purpose: a closed year's accounts were zeroed, so the remainder is exactly the unclosed portion.
+        BigDecimal unclosedEarnings = balanceAsOf(companyId, AccountType.REVENUE, asOfDate)
+                .subtract(balanceAsOf(companyId, AccountType.CONTRA_REVENUE, asOfDate))
+                .subtract(balanceAsOf(companyId, AccountType.EXPENSE, asOfDate));
+
+        BigDecimal totalEquity = postedEquity.add(unclosedEarnings);
+
+        // Assets = Liabilities + Equity: if the identity fails something posted an unbalanced entry, and the report must say so rather than show wrong numbers silently.
         BigDecimal outOfBalanceAmount = totalAssets.subtract(totalLiabilities.add(totalEquity));
         boolean balanced = outOfBalanceAmount.abs().compareTo(new BigDecimal("0.01")) <= 0;
 
@@ -116,6 +123,7 @@ public class FinancialReportServiceImpl implements FinancialReportService {
                 .totalEquity(totalEquity)
                 .balanced(balanced)
                 .outOfBalanceAmount(outOfBalanceAmount)
+                .generatedDate(LocalDate.now())
                 .build();
     }
 
@@ -132,10 +140,26 @@ public class FinancialReportServiceImpl implements FinancialReportService {
         return sumSigned(transactions, type.isCreditNormal());
     }
 
-    private BigDecimal accountBalanceAsOf(Long companyId, Long accountId, boolean creditNormal, LocalDate asOfDate) {
-        List<GeneralLedger> transactions = glRepository.findByCompanyIdAndAccountIdsUpToDate(
-                companyId, List.of(accountId), asOfDate);
-        return sumSigned(transactions, creditNormal);
+    /** Aggregate SUMs come back as whatever numeric type the JPA provider picked (COALESCE(..., 0) can widen it), so normalise instead of casting to BigDecimal. */
+    private static BigDecimal toBigDecimal(Object value) {
+        if (value == null) return BigDecimal.ZERO;
+        if (value instanceof BigDecimal bd) return bd;
+        return new BigDecimal(value.toString());
+    }
+
+    /** Reports are reachable from other services too, and a reversed or missing range returned a zero report that looked like real data - fail with a 400 instead. */
+    private static void validateRange(LocalDate startDate, LocalDate endDate) {
+        requireDate(startDate, "startDate");
+        requireDate(endDate, "endDate");
+        if (startDate.isAfter(endDate)) {
+            throw new BadRequestException("startDate (" + startDate + ") must not be after endDate (" + endDate + ")");
+        }
+    }
+
+    private static void requireDate(LocalDate date, String fieldName) {
+        if (date == null) {
+            throw new BadRequestException(fieldName + " is required");
+        }
     }
 
     private static BigDecimal sumSigned(List<GeneralLedger> transactions, boolean creditNormal) {
@@ -150,34 +174,43 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public TrialBalanceReport generateTrialBalanceReport(LocalDate asOfDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        requireDate(asOfDate, "asOfDate");
         Long companyId = securityUtil.getCurrentCompanyId();
 
-        List<ChartOfAccount> accounts = coaRepository.findByCompanyIdAndActive(companyId, true);
+        // One aggregate query keyed by account, replacing an N+1 over the chart of accounts that also skipped inactive accounts - a deactivated account still carrying a balance stopped the columns footing.
+        List<Object[]> rows = glRepository.sumByAccountUpToDate(companyId, asOfDate);
 
-        // Previously read ChartOfAccount.balance (the account's *current* live balance)
-        // split by normal side - asOfDate was accepted but silently ignored, so a Trial
-        // Balance "as of" any past date returned today's numbers. Replay the ledger up to
-        // asOfDate per account instead, same as Balance Sheet already does.
-        List<TrialBalanceReport.AccountBalance> balances = accounts.stream()
-                .map(acc -> {
-                    boolean creditNormal = acc.getType().isCreditNormal();
-                    // Positive = sitting on its normal side; negative means this particular
-                    // account is abnormally balanced (e.g. an overdrawn bank account) - it
-                    // still has to land in *some* column, just the opposite one, or
-                    // totalDebit would stop equalling totalCredit for no real reason.
-                    BigDecimal balance = accountBalanceAsOf(companyId, acc.getId(), creditNormal, asOfDate);
-                    boolean normalSide = balance.signum() >= 0;
-                    BigDecimal amount = balance.abs();
-                    boolean showsAsDebit = creditNormal != normalSide; // XOR: flips to the other column when abnormal
-                    return TrialBalanceReport.AccountBalance.builder()
-                            .accountId(acc.getId())
-                            .accountCode(acc.getAccountCode())
-                            .accountName(acc.getAccountName())
-                            .debitBalance(showsAsDebit ? amount : BigDecimal.ZERO)
-                            .creditBalance(showsAsDebit ? BigDecimal.ZERO : amount)
-                            .build();
-                })
-                .collect(Collectors.toList());
+        Map<Long, ChartOfAccount> accountsById = new HashMap<>();
+        for (ChartOfAccount acc : coaRepository.findByCompanyId(companyId)) {
+            accountsById.put(acc.getId(), acc);
+        }
+
+        List<TrialBalanceReport.AccountBalance> balances = new ArrayList<>();
+        for (Object[] row : rows) {
+            Long accountId = ((Number) row[0]).longValue();
+            BigDecimal debitTotal = toBigDecimal(row[1]);
+            BigDecimal creditTotal = toBigDecimal(row[2]);
+
+            // Net each account onto whichever side it actually sits, so an abnormal balance (e.g. an overdrawn bank account) lands in the opposite column and the columns still foot by double entry.
+            BigDecimal net = debitTotal.subtract(creditTotal);
+            boolean showsAsDebit = net.signum() >= 0;
+            BigDecimal amount = net.abs();
+
+            ChartOfAccount acc = accountsById.get(accountId);
+            balances.add(TrialBalanceReport.AccountBalance.builder()
+                    .accountId(accountId)
+                    .accountCode(acc != null ? acc.getAccountCode() : null)
+                    // An account row can be soft-deleted out from under its ledger entries; still list it, or the columns stop footing.
+                    .accountName(acc != null ? acc.getAccountName() : "(deleted account)")
+                    .debitBalance(showsAsDebit ? amount : BigDecimal.ZERO)
+                    .creditBalance(showsAsDebit ? BigDecimal.ZERO : amount)
+                    .build());
+        }
+
+        // Stable, human-readable ordering by account code (the aggregate query groups by id).
+        balances.sort(java.util.Comparator.comparing(
+                TrialBalanceReport.AccountBalance::getAccountCode,
+                java.util.Comparator.nullsLast(java.util.Comparator.<String>naturalOrder())));
 
         BigDecimal totalDebit = balances.stream()
                 .map(TrialBalanceReport.AccountBalance::getDebitBalance)
@@ -200,6 +233,7 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public AgeingReport generateAgeingReport(LocalDate asOfDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        requireDate(asOfDate, "asOfDate");
         Long companyId = securityUtil.getCurrentCompanyId();
         List<InvoiceStatus> outstandingStatuses = List.of(
                 InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID, InvoiceStatus.OVERDUE);
@@ -250,22 +284,26 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public CashFlowReport generateCashFlowReport(LocalDate startDate, LocalDate endDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        validateRange(startDate, endDate);
         Long companyId = securityUtil.getCurrentCompanyId();
-        ChartOfAccount cash = accountResolver.cash(companyId);
 
-        // Cash is debit-normal (ASSET) - same opening/closing logic as generateAccountLedger.
-        List<GeneralLedger> priorTransactions = glRepository
-                .findByCompanyIdAndAccountIdBeforeDate(companyId, cash.getId(), startDate);
-        BigDecimal openingBalance = priorTransactions.stream()
-                .map(gl -> nz(gl.getDebitAmount()).subtract(nz(gl.getCreditAmount())))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // "Cash" is every bank/cash account on the chart, not just the auto-created 1000 account, or a second bank/petty-cash/card account's movement goes missing. Inactive ones count too.
+        List<Long> cashAccountIds = coaRepository.findByCompanyId(companyId).stream()
+                .filter(ChartOfAccount::isBankAccount)
+                .map(ChartOfAccount::getId)
+                .collect(Collectors.toList());
+        if (cashAccountIds.isEmpty()) {
+            // Nothing flagged yet (a brand-new company) - fall back to the system cash account, which the resolver flags as a bank account on the way out.
+            cashAccountIds = List.of(accountResolver.cash(companyId).getId());
+        }
+
+        // Cash accounts are debit-normal (ASSET) - same opening/closing logic as generateAccountLedger.
+        BigDecimal openingBalance = nz(glRepository.sumSignedBeforeDateForAccounts(companyId, cashAccountIds, startDate));
 
         List<GeneralLedger> periodEntries = glRepository
-                .findTransactionsBetweenDates(companyId, startDate, endDate)
-                .stream()
-                .filter(gl -> gl.getAccount().getId().equals(cash.getId()))
-                .collect(Collectors.toList());
+                .findByAccountsAndDateRangeOrdered(companyId, cashAccountIds, startDate, endDate);
 
+        // A transfer between two of the company's own bank accounts appears as both an inflow and an outflow; that is gross movement, and netChange is unaffected since the legs cancel.
         Map<String, BigDecimal[]> byCategory = new LinkedHashMap<>(); // [inflow, outflow]
         BigDecimal totalInflows = BigDecimal.ZERO, totalOutflows = BigDecimal.ZERO;
 
@@ -320,6 +358,7 @@ public class FinancialReportServiceImpl implements FinancialReportService {
     @Transactional(readOnly = true)
     public AccountLedger generateAccountLedger(Long accountId, LocalDate startDate, LocalDate endDate) {
         authorizationService.checkPermission(PermissionCode.FINANCIAL_REPORT_VIEW);
+        validateRange(startDate, endDate);
         Long companyId = securityUtil.getCurrentCompanyId();
 
         ChartOfAccount account = coaRepository.findByIdAndCompanyId(accountId, companyId)
@@ -327,9 +366,7 @@ public class FinancialReportServiceImpl implements FinancialReportService {
 
         boolean creditNormal = account.getType().isCreditNormal();
 
-        // Opening balance = everything before the period start; closing = opening plus
-        // this period's movement. Previously both were the account's current live balance,
-        // so a report for last month looked identical to one for last year.
+        // Opening = everything before the period start, closing = opening plus this period's movement; using the live balance made last month's report identical to last year's.
         List<GeneralLedger> priorTransactions = glRepository.findByCompanyIdAndAccountIdBeforeDate(companyId, accountId, startDate);
         BigDecimal openingBalance = priorTransactions.stream()
                 .map(gl -> creditNormal
@@ -337,11 +374,9 @@ public class FinancialReportServiceImpl implements FinancialReportService {
                         : nz(gl.getDebitAmount()).subtract(nz(gl.getCreditAmount())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        // Filtered and ordered (date, then id) in SQL: a ledger must read chronologically for its running balance to make sense.
         List<GeneralLedger> periodEntries = glRepository
-                .findTransactionsBetweenDates(companyId, startDate, endDate)
-                .stream()
-                .filter(gl -> gl.getAccount().getId().equals(accountId))
-                .collect(Collectors.toList());
+                .findByAccountAndDateRangeOrdered(companyId, accountId, startDate, endDate);
 
         BigDecimal periodMovement = periodEntries.stream()
                 .map(gl -> creditNormal

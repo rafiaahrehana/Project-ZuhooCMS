@@ -16,10 +16,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
 
     Page<JournalEntry> findByCompanyId(Long companyId, Pageable pageable);
 
-    /**
-     * Used by JournalEntryServiceImpl.generateJENumber - MAX-based (not COUNT) and
-     * scoped per company, same reasoning as ExpenseRepository's equivalent query.
-     */
+    /** Used by JournalEntryServiceImpl.generateJENumber: MAX-based, not COUNT, and scoped per company - same reasoning as ExpenseRepository's equivalent query. */
     @Query("SELECT MAX(j.journalEntryNumber) FROM JournalEntry j WHERE j.companyId = :companyId AND j.journalEntryNumber LIKE CONCAT(:prefix, '%')")
     Optional<String> findMaxJENumberByCompanyAndPrefix(@Param("companyId") Long companyId, @Param("prefix") String prefix);
 }

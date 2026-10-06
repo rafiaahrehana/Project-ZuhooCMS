@@ -34,10 +34,17 @@ public class ProposalServiceImpl implements ProposalService {
     @Transactional(readOnly = true)
     public ProposalResponse get(Long serviceRequestId) {
         ServiceRequest sr = findRequestInTenant(serviceRequestId);
+        User user = securityUtil.getCurrentUser();
+        boolean isClient = user != null && user.getRole() != null && user.getRole().name().equals("CLIENT");
         return proposalRepository.findByServiceRequestIdAndCompanyId(sr.getId(), requireCompanyId())
+            // A client sees a proposal only once sent; a DRAFT returns the same "nothing yet" response as no proposal.
+            .filter(p -> !isClient || CLIENT_VISIBLE_STATUSES.contains(p.getStatus()))
             .map(ProposalMapper::toResponse)
             .orElse(null);
     }
+
+    private static final java.util.Set<ProposalStatus> CLIENT_VISIBLE_STATUSES = java.util.EnumSet.of(
+        ProposalStatus.SENT, ProposalStatus.CHANGES_REQUESTED, ProposalStatus.ACCEPTED);
 
     @Override
     @Transactional
@@ -163,7 +170,7 @@ public class ProposalServiceImpl implements ProposalService {
             .proposal(proposal)
             .company(sr.getCompany())
             .fileName(request.getFileName())
-            .fileUrl(request.getFileUrl())
+            .fileUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getFileUrl()))
             .label(request.getLabel())
             .build();
 
@@ -175,14 +182,17 @@ public class ProposalServiceImpl implements ProposalService {
     @Transactional
     public void deleteAttachment(Long serviceRequestId, Long attachmentId) {
         requireStaff();
-        findRequestInTenant(serviceRequestId);
+        ServiceRequest sr = findRequestInTenant(serviceRequestId);
         ProposalAttachment attachment = attachmentRepository.findByIdAndCompanyId(attachmentId, requireCompanyId())
             .orElseThrow(() -> new ResourceNotFoundException("Attachment not found"));
+        // The attachment must belong to THIS request's proposal, not just the same company.
+        if (attachment.getProposal() == null || attachment.getProposal().getServiceRequest() == null
+                || !attachment.getProposal().getServiceRequest().getId().equals(sr.getId())) {
+            throw new ResourceNotFoundException("Attachment not found");
+        }
         attachment.softDelete();
         attachmentRepository.save(attachment);
     }
-
-    // ── Helpers ──────────────────────────────────────────────────
 
     private ServiceProposal requireProposal(ServiceRequest sr, Long companyId) {
         return proposalRepository.findByServiceRequestIdAndCompanyId(sr.getId(), companyId)

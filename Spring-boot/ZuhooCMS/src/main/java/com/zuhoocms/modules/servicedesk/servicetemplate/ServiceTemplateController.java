@@ -17,13 +17,14 @@ public class ServiceTemplateController {
 
     private final ServiceTemplateService templateService;
 
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    // Templates are platform-owned (no company column; tenant services point at them), so only platform admins may write them. Reads stay open.
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
     @PostMapping
     public ResponseEntity<ServiceTemplateResponse> create(@Valid @RequestBody ServiceTemplateRequest request) {
         return ResponseEntity.ok(templateService.create(request));
     }
 
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
     @PutMapping("/{id}")
     public ResponseEntity<ServiceTemplateResponse> update(@PathVariable Long id, @Valid @RequestBody ServiceTemplateRequest request) {
         return ResponseEntity.ok(templateService.update(id, request));
@@ -46,7 +47,7 @@ public class ServiceTemplateController {
         return ResponseEntity.ok(templateService.listByCategory(categoryId));
     }
 
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @PreAuthorize("hasRole('SUPER_ADMIN')")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         templateService.delete(id);

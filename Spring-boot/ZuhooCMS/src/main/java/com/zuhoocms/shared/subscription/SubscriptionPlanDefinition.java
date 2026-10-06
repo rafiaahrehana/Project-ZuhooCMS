@@ -6,13 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * Super Admin-managed catalog of subscription tiers. `code` is the stable
- * identifier stored on Company.subscriptionPlan (a plain String, not this
- * entity's id) - it's what SubscriptionHistory.fromPlan/toPlan record too, so
- * a plan's row can be edited/disabled without invalidating past history or
- * requiring every company row to change.
- */
+/** Catalog of subscription tiers; `code`, not this entity's id, is what Company.subscriptionPlan and SubscriptionHistory record, so a plan row can be edited or disabled without invalidating past history. */
 @Entity
 @Table(name = "subscription_plan_definitions",
        indexes = @Index(name = "idx_spd_code", columnList = "code", unique = true))

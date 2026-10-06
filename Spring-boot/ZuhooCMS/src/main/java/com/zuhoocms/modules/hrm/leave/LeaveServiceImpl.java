@@ -14,7 +14,10 @@ import com.zuhoocms.auth.user.User;
 import com.zuhoocms.enums.LeaveRequestStatus;
 import java.util.List;
 
+import com.zuhoocms.modules.hrm.attendance.shift.EmployeeShiftAssignment;
+import com.zuhoocms.modules.hrm.attendance.shift.WeeklyOffDays;
 import com.zuhoocms.shared.exception.BadRequestException;
+import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.shared.email.EmailBranding;
 import com.zuhoocms.shared.email.EmailService;
@@ -43,6 +46,7 @@ public class LeaveServiceImpl implements LeaveService {
 
     private final LeaveRequestRepository leaveRequestRepository;
     private final LeaveBalanceRepository leaveBalanceRepository;
+    private final com.zuhoocms.modules.hrm.leave.leavebalance.LeaveBalanceService leaveBalanceService;
     private final EmployeeRepository employeeRepository;
     private final CompanyRepository companyRepository;
     private final SecurityUtil securityUtil;
@@ -59,18 +63,14 @@ public class LeaveServiceImpl implements LeaveService {
     @Transactional
     public LeaveRequestResponse apply(LeaveRequestDto request) {
         Long companyId = requireCompanyId();
-        User currentUser = securityUtil.getCurrentUser();
-        Employee employee = employeeRepository.findByUserId(currentUser.getId())
-                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
+        // Must be the record for the ACTIVE company: otherwise the request row is stamped with company A while
+        // drawing down company B's leave balance.
+        Employee employee = currentEmployeeInCompany(companyId);
 
         if (request.getEndDate().isBefore(request.getStartDate())) {
             throw new BadRequestException("End date must be on or after start date");
         }
-        // Previously unblocked entirely: an employee already marked ABSENT for a
-        // past date could submit-and-get-approved a leave request for those exact
-        // dates, reclassifying an unexcused absence after the fact right before
-        // payroll runs. HR/managers (LEAVE_APPROVE) can still backdate deliberately
-        // - e.g. logging a sick day an employee only reported after the fact.
+        // Blocks self-service backdating: an employee could otherwise reclassify an unexcused ABSENT day as leave just before payroll. LEAVE_APPROVE holders may still backdate.
         if (request.getStartDate().isBefore(java.time.LocalDate.now())
                 && !authorizationService.hasPermission(PermissionCode.LEAVE_APPROVE)) {
             throw new BadRequestException(
@@ -83,20 +83,15 @@ public class LeaveServiceImpl implements LeaveService {
             throw new BadRequestException("You already have a leave request overlapping this period");
         }
 
-        // Chargeable days exclude the employee's weekly off days and company
-        // holidays - a Thursday-to-Sunday request over a FRI/SAT weekend
-        // charges 2 days of balance, not 4.
+        // Chargeable days exclude weekly off days and holidays: Thursday-to-Sunday over a FRI/SAT weekend charges 2 days, not 4.
         int totalDays = countChargeableDays(employee, companyId, request.getStartDate(), request.getEndDate());
         if (totalDays == 0) {
             throw new BadRequestException(
                     "The selected period contains only weekends and holidays - no leave balance is needed");
         }
 
-        // maxConsecutiveDays is configurable in the UI but was never enforced -
-        // a "max 10 consecutive days" policy didn't stop a 60-day single
-        // request. Non-blocking lookup: no applicable policy just means no cap
-        // to enforce here (provisionBalanceFromPolicy below still requires one
-        // to exist for paid types).
+        // Enforces maxConsecutiveDays, which was configurable but ignored - a "max 10 days" policy did not stop a 60-day request.
+        // Non-blocking: no applicable policy means no cap here, though provisionBalanceFromPolicy still requires one for paid types.
         leavePolicyRepository.findApplicablePolicy(companyId, request.getLeaveType(), employee.getEmploymentType())
                 .map(CompanyLeavePolicy::getMaxConsecutiveDays)
                 .filter(max -> max != null && max > 0 && totalDays > max)
@@ -106,17 +101,10 @@ public class LeaveServiceImpl implements LeaveService {
                                     + "-day consecutive limit for " + request.getLeaveType() + " leave.");
                 });
 
-        // Check leave balance - skipped only for UNPAID, which by definition
-        // isn't drawn from any entitlement. Previously the check for every
-        // OTHER type silently did nothing when no LeaveBalance row existed -
-        // the default for any new hire nobody has manually provisioned - so
-        // unlimited paid leave went completely unenforced. Now a missing row
-        // is auto-provisioned from the company's leave policy (if one exists
-        // for this leave type + the employee's employment type) rather than
-        // silently skipped; with no applicable policy either, the request is
-        // rejected until HR sets one up.
+        // Balance check, skipped only for UNPAID, which draws on no entitlement.
+        // A missing LeaveBalance row (the default for an unprovisioned new hire) used to skip the check entirely, leaving paid leave unenforced; it is now auto-provisioned from the policy, or the request is rejected.
         if (request.getLeaveType() != com.zuhoocms.enums.LeaveType.UNPAID) {
-            LeaveBalance balance = leaveBalanceRepository.findByEmployeeIdAndLeaveTypeAndYear(
+            LeaveBalance balance = leaveBalanceRepository.findForUpdate(
                     employee.getId(), request.getLeaveType(), request.getStartDate().getYear())
                     .orElseGet(() -> provisionBalanceFromPolicy(employee, companyId, request.getLeaveType(),
                             request.getStartDate().getYear()));
@@ -145,12 +133,7 @@ public class LeaveServiceImpl implements LeaveService {
         return LeaveRequestMapper.toLeaveRequestResponse(lr);
     }
 
-    /**
-     * Previously nobody was told a leave request needed action - a manager
-     * only found out by opening the queue themselves, so requests could sit
-     * PENDING indefinitely with no one prompted to act. Notifies the
-     * employee's reporting manager if they have one, else the company owner.
-     */
+    /** Notifies the employee's reporting manager, else the company owner; without it requests sat PENDING until someone opened the queue. */
     private void notifyApprover(LeaveRequest lr, Employee employee, Long companyId) {
         Employee manager = employee.getReportingManager();
         User recipient = manager != null ? manager.getUser() : null;
@@ -172,12 +155,8 @@ public class LeaveServiceImpl implements LeaveService {
     }
 
     /**
-     * Creates the employee's LeaveBalance row for this type/year the first
-     * time it's needed, sized from the company's applicable leave policy
-     * (matched on leave type + the employee's employment type, company-wide
-     * policies with no employment type preferred over one). No applicable
-     * policy means the company hasn't set one up for this leave type -
-     * refuse the request rather than letting it through unbounded.
+     * Creates the LeaveBalance row for this type/year on first use, sized from the policy matching leave type + employment type (a company-wide policy wins over an employment-type one).
+     * No applicable policy means none was set up, so the request is refused rather than let through unbounded.
      */
     private LeaveBalance provisionBalanceFromPolicy(Employee employee, Long companyId,
                                                      com.zuhoocms.enums.LeaveType leaveType, int year) {
@@ -197,21 +176,17 @@ public class LeaveServiceImpl implements LeaveService {
         return leaveBalanceRepository.save(balance);
     }
 
-    /**
-     * Working days in [start, end]: skips the employee's weekly off days
-     * (from their shift, defaulting to FRI/SAT like the Shift entity) and
-     * company holidays.
-     */
+    /** Working days in [start, end], skipping the shift's weekly off days (FRI/SAT by default, like the Shift entity) and company holidays. */
     private int countChargeableDays(Employee employee, Long companyId,
                                     java.time.LocalDate start, java.time.LocalDate end) {
-        java.util.Set<java.time.DayOfWeek> offDays = weeklyOffDays(employee);
+        java.util.Map<Long, java.util.Set<java.time.DayOfWeek>> offDaysByAssignment = new java.util.HashMap<>();
         java.util.Set<java.time.LocalDate> holidays = new java.util.HashSet<>();
         holidayRepository.findByCompanyAndDateRange(companyId, start, end)
                 .forEach(h -> holidays.add(h.getDate()));
 
         int days = 0;
         for (java.time.LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
-            if (offDays.contains(d.getDayOfWeek())) continue;
+            if (weeklyOffDays(employee, companyId, d, offDaysByAssignment).contains(d.getDayOfWeek())) continue;
             if (holidays.contains(d)) continue;
             days++;
         }
@@ -220,15 +195,19 @@ public class LeaveServiceImpl implements LeaveService {
 
     @Override
     @Transactional(readOnly = true)
-    public int unpaidLeaveDays(Long employeeId, int month, int year) {
-        Employee employee = employeeRepository.findById(employeeId).orElse(null);
+    public int unpaidLeaveDays(Long employeeId, Long companyId, int month, int year) {
+        // Scoped by id AND company: findById is an em.find, which Hibernate's tenantFilter never touches, so without
+        // this an employee id from another tenant would be priced into this company's payroll.
+        Employee employee = companyId != null
+            ? employeeRepository.findByIdAndCompanyId(employeeId, companyId).orElse(null)
+            : employeeRepository.findById(employeeId).orElse(null);
         if (employee == null || employee.getCompany() == null) return 0;
         java.time.LocalDate monthStart = java.time.LocalDate.of(year, month, 1);
         java.time.LocalDate monthEnd = monthStart.withDayOfMonth(monthStart.lengthOfMonth());
 
         int days = 0;
         for (var lr : leaveRequestRepository.findApprovedOverlapping(
-                employeeId, com.zuhoocms.enums.LeaveType.UNPAID, monthStart, monthEnd)) {
+                employee.getCompany().getId(), employeeId, com.zuhoocms.enums.LeaveType.UNPAID, monthStart, monthEnd)) {
             java.time.LocalDate from = lr.getStartDate().isBefore(monthStart) ? monthStart : lr.getStartDate();
             java.time.LocalDate to = lr.getEndDate().isAfter(monthEnd) ? monthEnd : lr.getEndDate();
             days += countChargeableDays(employee, employee.getCompany().getId(), from, to);
@@ -236,30 +215,15 @@ public class LeaveServiceImpl implements LeaveService {
         return days;
     }
 
-    private java.util.Set<java.time.DayOfWeek> weeklyOffDays(Employee employee) {
-        // Read the employee's shift from EmployeeShiftAssignment, the same source
-        // AttendanceServiceImpl/AbsenteeMarkingService use for late detection and
-        // weekly-off calculation - Employee.shift is a second, unsynced field that
-        // can silently drift from the shift roster.
-        String csv = employeeShiftAssignmentRepository
-                .findByCompanyIdAndEmployeeIdAndActive(employee.getCompany().getId(), employee.getId())
-                .map(esa -> esa.getShift().getWeeklyOffDays())
+    private java.util.Set<java.time.DayOfWeek> weeklyOffDays(Employee employee, Long companyId, java.time.LocalDate date,
+                                                             java.util.Map<Long, java.util.Set<java.time.DayOfWeek>> cache) {
+        // Shift comes from EmployeeShiftAssignment, as in AttendanceServiceImpl/AbsenteeMarkingService; Employee.shift is a second, unsynced field that drifts from the roster.
+        // Resolved per date because the shift can change inside the leave period.
+        EmployeeShiftAssignment esa = employeeShiftAssignmentRepository
+                .findEffectiveOn(companyId, employee.getId(), date)
                 .orElse(null);
-        if (csv == null || csv.isBlank()) csv = "FRI,SAT";
-        java.util.Set<java.time.DayOfWeek> out = new java.util.HashSet<>();
-        for (String token : csv.split(",")) {
-            switch (token.trim().toUpperCase()) {
-                case "MON" -> out.add(java.time.DayOfWeek.MONDAY);
-                case "TUE" -> out.add(java.time.DayOfWeek.TUESDAY);
-                case "WED" -> out.add(java.time.DayOfWeek.WEDNESDAY);
-                case "THU" -> out.add(java.time.DayOfWeek.THURSDAY);
-                case "FRI" -> out.add(java.time.DayOfWeek.FRIDAY);
-                case "SAT" -> out.add(java.time.DayOfWeek.SATURDAY);
-                case "SUN" -> out.add(java.time.DayOfWeek.SUNDAY);
-                default -> { /* unknown token - ignore */ }
-            }
-        }
-        return out;
+        if (esa == null) return WeeklyOffDays.parse(null);
+        return cache.computeIfAbsent(esa.getId(), k -> WeeklyOffDays.parse(esa.getShift().getWeeklyOffDays()));
     }
 
     @Override
@@ -282,8 +246,9 @@ public class LeaveServiceImpl implements LeaveService {
     @Transactional(readOnly = true)
     public Page<LeaveRequestResponse> listMyLeaves(Pageable pageable) {
         Long companyId = requireCompanyId();
-        Employee emp = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
-                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
+        // Company-scoped below anyway, but resolving the other tenant's record here returned a silent empty page
+        // instead of saying the profile is for a different company.
+        Employee emp = currentEmployeeInCompany(companyId);
         return leaveRequestRepository.findByCompanyIdAndEmployeeId(companyId, emp.getId(), pageable)
                 .map(LeaveRequestMapper::toLeaveRequestResponse);
     }
@@ -295,20 +260,34 @@ public class LeaveServiceImpl implements LeaveService {
         if (lr.getStatus() != LeaveRequestStatus.PENDING) {
             throw new BadRequestException("Only PENDING leave requests can be reviewed");
         }
+        if (request.getStatus() != LeaveRequestStatus.APPROVED && request.getStatus() != LeaveRequestStatus.REJECTED) {
+            throw new BadRequestException("Leave requests can only be approved or rejected");
+        }
         if (request.getStatus() == LeaveRequestStatus.REJECTED
                 && (request.getRejectionReason() == null || request.getRejectionReason().isBlank())) {
             throw new BadRequestException("Rejection reason is required when rejecting a leave requeststatus");
         }
 
         User reviewer = securityUtil.getCurrentUser();
+        // Scoped to the request's company: resolving the reviewer's OTHER tenant's employee record gave a
+        // non-matching id and waved the self-review guard through.
+        Employee reviewerEmployee = reviewer != null
+                ? employeeRepository.findByUserId(reviewer.getId())
+                        .filter(e -> e.getCompany() != null && lr.getCompany() != null
+                                && e.getCompany().getId().equals(lr.getCompany().getId()))
+                        .orElse(null)
+                : null;
+        if (reviewerEmployee != null && lr.getEmployee() != null
+                && reviewerEmployee.getId().equals(lr.getEmployee().getId())) {
+            throw new ForbiddenException("You cannot review your own leave request");
+        }
 
         lr.setStatus(request.getStatus());
-        lr.setRejectionReason(request.getRejectionReason());
+        lr.setRejectionReason(request.getStatus() == LeaveRequestStatus.APPROVED ? null : request.getRejectionReason());
         lr.setReviewedBy(reviewer);
         lr.setReviewedAt(LocalDateTime.now());
 
-        // Update leave balance
-        leaveBalanceRepository.findByEmployeeIdAndLeaveTypeAndYear(
+        leaveBalanceRepository.findForUpdate(
                 lr.getEmployee().getId(), lr.getLeaveType(), lr.getStartDate().getYear())
                 .ifPresent(balance -> {
                     balance.setPendingDays(Math.max(0, balance.getPendingDays() - lr.getTotalDays()));
@@ -318,9 +297,7 @@ public class LeaveServiceImpl implements LeaveService {
                 });
 
         if (request.getStatus() == LeaveRequestStatus.APPROVED) {
-            // Backdated approval can cover days already marked ABSENT by the
-            // nightly absentee job. Flip those specific rows to ON_LEAVE so
-            // payroll deductions and attendance reports reflect the approval.
+            // Backdated approval can cover days the nightly job already marked ABSENT; flip those rows to ON_LEAVE so payroll and reports reflect the approval.
             attendanceRepository.reconcileAbsentToOnLeave(
                     lr.getEmployee().getId(), lr.getStartDate(), lr.getEndDate(),
                     com.zuhoocms.modules.hrm.attendance.attendance.AttendanceStatus.ABSENT,
@@ -335,8 +312,7 @@ public class LeaveServiceImpl implements LeaveService {
                             lr.getEmployee().getUser().getEmail(),
                             lr.getEmployee().getUser().getFirstName(), branding);
                 } else if (request.getStatus() == LeaveRequestStatus.REJECTED) {
-                    // Previously there was no email method for this at all - a rejected
-                    // employee found out only by re-checking the leave list themselves.
+                    // Without this a rejected employee only finds out by re-checking the leave list.
                     emailService.sendLeaveRejectionEmail(
                             lr.getEmployee().getUser().getEmail(),
                             lr.getEmployee().getUser().getFirstName(),
@@ -354,11 +330,13 @@ public class LeaveServiceImpl implements LeaveService {
     @Transactional
     public void cancel(Long id) {
         LeaveRequest lr = findInTenant(id);
-        if (lr.getStatus() == LeaveRequestStatus.APPROVED
-                && lr.getStartDate().isBefore(java.time.LocalDate.now())) {
-            throw new BadRequestException("Cannot cancel a leave that has already started");
+        boolean cancellable = lr.getStatus() == LeaveRequestStatus.PENDING
+                || (lr.getStatus() == LeaveRequestStatus.APPROVED
+                        && lr.getStartDate().isAfter(java.time.LocalDate.now()));
+        if (!cancellable) {
+            throw new BadRequestException("Only pending or not-yet-started approved leave can be cancelled");
         }
-        leaveBalanceRepository.findByEmployeeIdAndLeaveTypeAndYear(
+        leaveBalanceRepository.findForUpdate(
                 lr.getEmployee().getId(), lr.getLeaveType(), lr.getStartDate().getYear())
                 .ifPresent(balance -> {
                     if (lr.getStatus() == LeaveRequestStatus.PENDING) {
@@ -370,13 +348,16 @@ public class LeaveServiceImpl implements LeaveService {
         lr.setStatus(LeaveRequestStatus.CANCELLED);
     }
 
+    /**
+     * GET /api/hr/leaves/balances/my. Delegates to {@link LeaveBalanceService#listMine(int)}, which serves the
+     * identical GET /api/hr/leave-balances/my: both paths must stay (Angular calls this one, Flutter the other),
+     * but only one may own the query, so the tenant rule cannot drift between them again. This copy previously
+     * resolved the employee by user id alone and read whatever company that record belonged to.
+     */
     @Override
     @Transactional(readOnly = true)
     public List<LeaveBalanceResponse> getMyBalances(int year) {
-        Employee emp = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
-                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
-        return leaveBalanceRepository.findByEmployeeIdAndYear(emp.getId(), year)
-                .stream().map(LeaveBalanceMapper::toLeaveBalanceResponse).toList();
+        return leaveBalanceService.listMine(year);
     }
 
     @Override
@@ -399,6 +380,20 @@ public class LeaveServiceImpl implements LeaveService {
         if (id == null)
             throw new BadRequestException("No company context");
         return id;
+    }
+
+    /**
+     * The caller's employee record in the active company. findByUserId alone is not enough: a user may hold an
+     * employee record in more than one tenant, and the one it returns is whichever the database hands back.
+     * Same rule as LeaveBalanceServiceImpl.listMine.
+     */
+    private Employee currentEmployeeInCompany(Long companyId) {
+        Employee me = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
+                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
+        if (me.getCompany() == null || !me.getCompany().getId().equals(companyId)) {
+            throw new BadRequestException("Employee profile does not belong to the active company");
+        }
+        return me;
     }
 
     private Company companyRef(Long companyId) {

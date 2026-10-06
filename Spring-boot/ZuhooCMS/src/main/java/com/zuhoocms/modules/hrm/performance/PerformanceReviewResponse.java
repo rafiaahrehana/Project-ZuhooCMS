@@ -36,7 +36,6 @@ public class PerformanceReviewResponse {
     private String recognition;
     private String goals;
 
-    // Approval chain
     private String stage;
     private LocalDateTime selfAssessmentAt;
     private String selfAssessmentBy;

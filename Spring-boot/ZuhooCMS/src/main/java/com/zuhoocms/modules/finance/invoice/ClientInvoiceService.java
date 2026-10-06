@@ -9,18 +9,14 @@ public interface ClientInvoiceService {
 
     ClientInvoiceResponse create(ClientInvoiceRequest request);
 
-    /**
-     * System entry point for auto-generating an invoice as a side effect of a
-     * client's own authorized action (e.g. submitting a paid service request) -
-     * skips the staff-only INVOICE_CREATE permission check that create() enforces.
-     */
+    /** System entry point for an invoice raised as a side effect of a client's own authorized action; skips the staff-only INVOICE_CREATE check create() enforces. */
     ClientInvoiceResponse createForServiceRequest(Long companyId, ClientInvoiceRequest request);
+
+    /** System entry point with no security context (async listeners, schedulers), the create-side twin of sendInvoiceForCompany(); never exposed by a controller. */
+    ClientInvoiceResponse createForCompany(Long companyId, ClientInvoiceRequest request);
     ClientInvoiceResponse getById(Long id);
 
-    /**
-     * Renders the invoice as a PDF. Staff (INVOICE_VIEW) may download any invoice in
-     * their company; a CLIENT may only download their own.
-     */
+    /** Staff (INVOICE_VIEW) may download any invoice in their company; a CLIENT may only download their own. */
     byte[] generatePdf(Long id);
     ClientInvoiceResponse getByInvoiceNumber(String number);
     Page<ClientInvoiceResponse> getAll(Pageable pageable);
@@ -34,13 +30,15 @@ public interface ClientInvoiceService {
 
     /** Same system-entry-point exemption as createForServiceRequest() - see its javadoc. */
     void sendInvoiceForServiceRequest(Long id);
+
+    /** System entry point with no security context: issues the invoice by explicit company id instead of the caller's tenant. */
+    void sendInvoiceForCompany(Long companyId, Long id);
     void recordPayment(Long id, java.math.BigDecimal amount);
 
     /** System entry point (e.g. payment gateway callbacks) - no security context. */
     void recordPaymentForCompany(Long companyId, Long id, java.math.BigDecimal amount);
 
-    /** Same as above, but posts the GL entry on the given date instead of today - for
-     *  callers whose source document (e.g. a payment receipt) carries its own date. */
+    /** Posts the GL entry on the given date instead of today, for callers whose source document carries its own date. */
     void recordPaymentForCompany(Long companyId, Long id, java.math.BigDecimal amount, java.time.LocalDate paymentDate);
     void markAsOverdue(Long id);
     List<ClientInvoiceResponse> getOverdueInvoices();
@@ -51,13 +49,14 @@ public interface ClientInvoiceService {
     /** DRAFT only - anything already sent/posted must go through cancelInvoice(). */
     void delete(Long id);
 
-    /**
-     * System entry point called when a client cancels their own service request
-     * (see ServiceRequestServiceImpl#cancel). If the invoice was already fully
-     * PAID, files a Refund request for staff review instead of touching the
-     * ledger; otherwise cancels and reverses it immediately, same as cancelInvoice().
-     */
+    /** Called when a client cancels their own service request (see ServiceRequestServiceImpl#cancel): a paid invoice files a Refund request for staff review, otherwise it is cancelled and reversed immediately. */
     void cancelOrRefundForServiceRequest(Long companyId, Long invoiceId);
+
+    /** Used when an accepted quotation replaces an earlier invoice: as cancelOrRefundForServiceRequest(), but marks the superseded invoice VOIDED rather than CANCELLED. */
+    void voidSupersededForServiceRequest(Long companyId, Long invoiceId);
+
+    /** Staff-raised refund (INVOICE_REFUND) against a PAID/PARTIALLY_PAID invoice for up to the paid amount, filed as REQUESTED and completed by processRefund(). */
+    RefundResponse requestRefund(Long invoiceId, RefundCreateRequest request);
 
     /** Pending (or any status) refund requests for staff review - permission INVOICE_VIEW. */
     Page<RefundResponse> listRefunds(com.zuhoocms.enums.RefundStatus status, Pageable pageable);
@@ -71,12 +70,7 @@ public interface ClientInvoiceService {
     /** Draft a concise invoice summary note with AI from the invoice's real client/amount/service data - not persisted */
     InvoiceSummaryDraftResponse draftSummaryWithAi(Long id);
 
-    /**
-     * Issues a credit note against an invoice - a partial write-down of what's owed,
-     * without reversing cash/revenue like a refund. Posts Dr Sales Revenue / Cr
-     * Accounts Receivable for the credited amount. Amount must not exceed the
-     * invoice's current outstanding balance.
-     */
+    /** A partial write-down of what's owed without moving cash: posts Dr Sales Revenue / Cr Accounts Receivable, capped at the invoice's outstanding balance. */
     CreditNoteResponse issueCreditNote(CreditNoteRequest request);
 
     Page<CreditNoteResponse> listCreditNotes(Long invoiceId, Pageable pageable);

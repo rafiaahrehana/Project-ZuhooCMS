@@ -11,13 +11,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 
-/**
- * A capitalized asset (equipment, furniture, vehicles...) depreciated straight-line
- * over its useful life. Registering one posts Dr Fixed Assets / Cr Cash; each monthly
- * depreciation run posts Dr Depreciation Expense / Cr Accumulated Depreciation.
- * Previously buying a laptop either hit Operating Expenses in full (wrong for a
- * multi-year asset) or never touched the books at all (the ITAM module).
- */
+/** A capitalized asset depreciated straight-line over its useful life: registration posts Dr Fixed Assets / Cr Cash, and each monthly run posts Dr Depreciation Expense / Cr Accumulated Depreciation. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
@@ -25,7 +19,7 @@ import java.time.LocalDate;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class FixedAsset extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @Column(nullable = false)
     private String name;

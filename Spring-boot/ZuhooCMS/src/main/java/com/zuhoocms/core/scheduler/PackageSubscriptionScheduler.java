@@ -12,11 +12,8 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Daily sweep for PackageSubscription lifecycle transitions that ServicePackageServiceImpl
- * otherwise only performs on explicit API calls (activate/suspend/cancel/reactivate).
- * Runs across all tenants — a @Scheduled method never goes through DispatcherServlet, so
- * Hibernate's tenantFilter (enabled per-request by TenantFilterInterceptor) is never active
- * on this thread, same as the existing SubscriptionScheduler for platform-tier billing.
+ * Daily sweep for PackageSubscription lifecycle transitions that ServicePackageServiceImpl otherwise only performs on explicit API calls.
+ * Runs across all tenants: a @Scheduled thread has no authentication, so Hibernate's tenantFilter is never active here.
  */
 @Slf4j
 @Component

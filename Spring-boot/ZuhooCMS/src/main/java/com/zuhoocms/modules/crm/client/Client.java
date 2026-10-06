@@ -41,7 +41,6 @@ public class Client extends BaseEntity {
     @Builder.Default
     private boolean portalAccessEnabled = false; // was missing
 
-    // ==================== Account-level fields (Salesforce-style Account) ====================
     private String shippingAddress;
 
     // Comma-separated tags, e.g. "vip,enterprise,renewal-risk"
@@ -61,14 +60,12 @@ public class Client extends BaseEntity {
     @JoinColumn(name = "company_id", nullable = false)
     private Company company;
 
-    // Null when the Client was created without provisioning a portal login
-    // (see CreateClientRequest.provisionPortalLogin).
+    // Null when the Client was created without a portal login (see CreateClientRequest.provisionPortalLogin).
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = true)
     private User user;
 
-    // Normalized shared-taxonomy tags. Named distinctly from the legacy free-text
-    // `tags` field above (kept for backward compatibility, not replaced).
+    // Normalized shared-taxonomy tags, named distinctly from the legacy free-text `tags` field above, which is kept alongside it.
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(name = "client_tags",
         joinColumns = @JoinColumn(name = "client_id"),

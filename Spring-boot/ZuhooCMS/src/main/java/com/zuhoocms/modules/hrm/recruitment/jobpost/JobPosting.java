@@ -76,9 +76,7 @@ public class JobPosting extends BaseEntity {
     @JoinColumn(name = "assigned_recruiter_id")
     private Employee assignedRecruiter;
 
-    // ── ATS matching requirements (all optional) ─────────────────
-    // Drives CvScoringService's automated match score - a posting with none
-    // of these set simply never gets scored (AtsParseStatus.NOT_APPLICABLE).
+    // ATS matching requirements, all optional: they drive CvScoringService's match score, and a posting with none set never gets scored (AtsParseStatus.NOT_APPLICABLE).
     /** Comma-separated skill tags - same convention as Candidate.skills. Weighted 40% of the ATS match score. */
     @Column(length = 500)
     private String requiredSkills;

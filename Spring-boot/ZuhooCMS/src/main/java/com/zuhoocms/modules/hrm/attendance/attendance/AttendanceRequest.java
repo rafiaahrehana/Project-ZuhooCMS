@@ -5,9 +5,7 @@ import lombok.*;
 import java.time.LocalDate;
 import java.time.LocalTime;
 
-// AllArgsConstructor access is package-private: see ChartOfAccountRequest for why -
-// a public one is picked up by Jackson as a deserialization creator, which fails on
-// any missing primitive field instead of defaulting it.
+// AllArgsConstructor is package-private (see ChartOfAccountRequest): a public one becomes Jackson's creator and fails on any missing primitive field.
 @Data
 @NoArgsConstructor
 @AllArgsConstructor(access = AccessLevel.PACKAGE)

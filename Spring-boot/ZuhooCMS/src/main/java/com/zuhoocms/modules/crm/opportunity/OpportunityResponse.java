@@ -42,7 +42,6 @@ public class OpportunityResponse {
 
     private java.util.List<com.zuhoocms.modules.crm.tag.TagResponse> tags;
 
-    // Set only when this Opportunity just reached Won and a possible-duplicate Client was
-    // linked automatically (informational - see OpportunityServiceImpl.resolveClientForWonDeal).
+    // Set only when this Opportunity just reached Won and a possible-duplicate Client was auto-linked; informational, see OpportunityServiceImpl.resolveClientForWonOpportunity.
     private com.zuhoocms.modules.crm.duplicate.DuplicateMatch possibleDuplicate;
 }

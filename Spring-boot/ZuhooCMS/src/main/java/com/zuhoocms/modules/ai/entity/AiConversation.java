@@ -20,7 +20,8 @@ import org.hibernate.annotations.ParamDef;
     name = "ai_conversations",
     indexes = {
         @Index(name = "idx_ai_conv_company",  columnList = "company_id"),
-        @Index(name = "idx_ai_conv_feature",  columnList = "company_id, feature")
+        @Index(name = "idx_ai_conv_feature",  columnList = "company_id, feature"),
+        @Index(name = "idx_ai_conv_user",     columnList = "company_id, user_id")
     }
 )
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
@@ -54,14 +55,14 @@ public class AiConversation extends BaseEntity {
     @JoinColumn(name = "company_id", nullable = false)
     private Company company;
 
-    // Nullable: only set when generate()/streamGenerate() was called with a
-    // threadId. Every pre-existing generateRaw() caller (the *PromptBuilder
-    // integrations) never sets this and is unaffected. requestPayload/
-    // responsePayload already carry both sides of one exchange, so replaying
-    // a thread's history is just reading these rows oldest-to-newest - no
-    // separate per-message role column needed.
+    // Nullable: set only when generate() was called with a threadId. requestPayload/responsePayload carry both sides of an exchange, so history replay needs no per-message role column.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "thread_id")
     private AiConversationThread thread;
+
+    // Nullable only for rows written before this column existed; those are visible to AI_ADMIN only (see AiServiceImpl#listConversations).
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private com.zuhoocms.auth.user.User user;
 
 }

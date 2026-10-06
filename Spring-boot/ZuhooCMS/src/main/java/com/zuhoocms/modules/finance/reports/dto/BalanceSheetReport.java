@@ -16,9 +16,7 @@ public class BalanceSheetReport {
     private BigDecimal totalAssets;
     private BigDecimal totalLiabilities;
     private BigDecimal totalEquity;
-    // Assets should equal Liabilities + Equity - if not, either an unbalanced entry was
-    // posted somewhere or a fiscal year hasn't been closed yet (net income not yet rolled
-    // into Retained Earnings). See AccountingPeriodService.closeFiscalYear.
+    // Assets should equal Liabilities + Equity; otherwise an unbalanced entry was posted or a fiscal year is unclosed (net income not yet in Retained Earnings) - see AccountingPeriodService.closeFiscalYear.
     private boolean balanced;
     private BigDecimal outOfBalanceAmount;
     private LocalDate generatedDate;

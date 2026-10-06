@@ -9,12 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
-/**
- * One-time startup fix for employees created before employeeNumber became
- * server-generated (EmployeeNumberGenerator) - assigns each a sequential
- * EMP-NNNN number, per company, in id order. New employees already get one
- * at creation time so this only ever finds pre-existing gaps.
- */
+/** One-time startup backfill: assigns a sequential EMP-NNNN per company, in id order, to employees predating server-generated numbers. */
 @Component
 @RequiredArgsConstructor
 public class EmployeeNumberBackfillInitializer implements CommandLineRunner {

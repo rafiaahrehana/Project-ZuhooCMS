@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Refund extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "client_invoice_id", nullable = false)
@@ -42,4 +42,9 @@ public class Refund extends BaseEntity {
     private LocalDateTime processedAt;
 
     private String rejectionReason;
+
+    /** true = credited to the company wallet as REFUND_CREDIT, false/null = paid out externally and only recorded; nullable so ddl-auto can add it to existing rows, which all predate wallet refunds. */
+    @org.hibernate.annotations.ColumnDefault("false")
+    @Column(name = "refund_to_wallet")
+    private Boolean refundToWallet;
 }

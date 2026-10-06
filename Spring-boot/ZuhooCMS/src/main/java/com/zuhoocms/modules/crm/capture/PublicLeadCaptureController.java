@@ -24,20 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * Anonymous lead capture - the endpoint the marketing site's contact form and
- * tenant portal contact forms post to.
+ * Anonymous lead capture for the marketing site and tenant portal contact forms; unauthenticated by design (see PUBLIC_ENDPOINTS in SecurityConfig).
  *
- * Unauthenticated by design (see PUBLIC_ENDPOINTS in SecurityConfig), which
- * shapes everything about it:
- *
- *  - It always answers with the same generic success body. Field-level errors
- *    from validation are fine, but "this email already exists" is not - that
- *    would let anyone probe which addresses are in a company's CRM.
- *  - Duplicate submissions (same email or phone, same company) are silently
- *    accepted and dropped rather than creating a second lead: the repeat
- *    visitor pressing submit twice should not double the pipeline.
- *  - A honeypot field swallows the bulk of dumb form spam. It is not real rate
- *    limiting; put the endpoint behind one (e.g. AWS WAF) in production.
+ *  - Always answers with the same generic success body: "this email already exists" would let anyone probe a company's CRM.
+ *  - Duplicate submissions (same email or phone, same company) are accepted and dropped, so a double submit does not double the pipeline.
+ *  - The honeypot field is not rate limiting; put the endpoint behind one (e.g. AWS WAF) in production.
  */
 @Slf4j
 @RestController
@@ -50,13 +41,7 @@ public class PublicLeadCaptureController {
     private final WebsiteService websiteService;
     private final NotificationService notificationService;
 
-    /**
-     * Which company receives leads from the PLATFORM's own landing page (tenant
-     * portals are resolved by subdomain instead). Unset means the landing-page
-     * form accepts submissions but has nowhere to put them, which is logged
-     * loudly rather than failed loudly - the visitor is not the right audience
-     * for a configuration error.
-     */
+    /** Which company receives leads from the PLATFORM's landing page (tenant portals resolve by subdomain); unset, submissions are logged and dropped rather than failed at the visitor. */
     @Value("${app.crm.platform-lead-company-id:}")
     private String platformLeadCompanyId;
 
@@ -81,19 +66,26 @@ public class PublicLeadCaptureController {
             return ok();
         }
 
+        // Normalised exactly as the manual-create and CSV-import paths do, or "Bob@X.com " and "bob@x.com" become two leads for one person.
+        String email = com.zuhoocms.modules.crm.support.EmailMatching.normalise(request.getEmail());
+        String phone = com.zuhoocms.modules.crm.support.PhoneMatching.normaliseForStorage(request.getPhone());
+
         // Same-company dedupe; the visitor is told nothing either way.
-        if (hasEmail && leadRepository.existsByEmailAndCompanyIdAndDeletedFalse(request.getEmail().trim(), company.getId())) {
+        if (email != null
+                && leadRepository.existsByEmailIgnoringCase(email, company.getId(), null)) {
             return ok();
         }
-        if (hasPhone && leadRepository.existsByPhoneAndCompanyIdAndDeletedFalse(request.getPhone().trim(), company.getId())) {
+        String phoneKey = com.zuhoocms.modules.crm.support.PhoneMatching.matchKey(phone);
+        if (phoneKey != null
+                && leadRepository.existsByNormalisedPhone(phoneKey, company.getId(), null)) {
             return ok();
         }
 
         Lead lead = new Lead();
         lead.setContactName(request.getName().trim());
         lead.setCompanyName(trimOrNull(request.getCompanyName()));
-        lead.setEmail(hasEmail ? request.getEmail().trim() : null);
-        lead.setPhone(hasPhone ? request.getPhone().trim() : null);
+        lead.setEmail(email);
+        lead.setPhone(phone);
         lead.setNotes(trimOrNull(request.getMessage()));
         lead.setStatus(LeadStatus.NEW);
         lead.setSource(LeadSource.WEBSITE);

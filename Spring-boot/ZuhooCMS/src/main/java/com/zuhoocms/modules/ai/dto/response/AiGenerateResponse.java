@@ -12,10 +12,11 @@ public class AiGenerateResponse {
     private String result;
     private long executionTimeMs;
     private Long threadId;
-    // True when `result` is a proposed write-action awaiting the employee's
-    // next message to confirm or cancel it - the frontend renders this turn
-    // as a distinct confirm/cancel card instead of a plain chat bubble.
+    // True when `result` is a write-action proposal awaiting confirmation; the frontend renders it as a confirm/cancel card instead of a chat bubble.
     private boolean awaitingConfirmation;
+    // The user's own message for this exchange, set only when replaying a thread's history (see AiServiceImpl#getThreadMessages);
+    // without it the chat replays assistant-side only. Null on a live generate(), where the client already has the text it just sent.
+    private String requestPayload;
 
     public String getConversationUuid() { return conversationUuid; }
     public void setConversationUuid(String conversationUuid) { this.conversationUuid = conversationUuid; }
@@ -33,4 +34,6 @@ public class AiGenerateResponse {
     public void setThreadId(Long threadId) { this.threadId = threadId; }
     public boolean isAwaitingConfirmation() { return awaitingConfirmation; }
     public void setAwaitingConfirmation(boolean awaitingConfirmation) { this.awaitingConfirmation = awaitingConfirmation; }
+    public String getRequestPayload() { return requestPayload; }
+    public void setRequestPayload(String requestPayload) { this.requestPayload = requestPayload; }
 }

@@ -19,6 +19,9 @@ public class ServiceRequestResponse {
     private BigDecimal agreedPrice;
     private LocalDateTime slaDeadline;
     private boolean slaBreach;
+    private Integer slaBreachCount;
+    private LocalDateTime firstSlaBreachedAt;
+    private LocalDateTime slaPausedAt;
     private LocalDateTime assignedAt;
     private LocalDateTime completedAt;
     private int resubmitCount;
@@ -33,7 +36,7 @@ public class ServiceRequestResponse {
     private long taskCount;
     private long completedTaskCount;
 
-    // Subscription info — null for standalone (pay-per-request) requests
+    // Null for standalone (pay-per-request) requests.
     private Long subscriptionId;
     private String packageName;
 
@@ -43,20 +46,17 @@ public class ServiceRequestResponse {
     private String paymentRedirectUrl;
     private Long invoiceId;
 
-    // Filing reference once staff submits this request to a government
-    // authority (RJSC, City Corporation, NBR, ...) - e.g. type "Trade License
-    // Application" / number "TL-2026-4471".
+    // Filing reference from the government authority, e.g. type "Trade License Application" / number "TL-2026-4471".
     private String govRefNumber;
     private String govRefType;
 
-    // Quotation fields
     private BigDecimal quotationAmount;
     private String quotationCurrency;
     private String quotationNotes;
     private LocalDateTime quotationValidUntil;
     private com.zuhoocms.enums.QuotationStatus quotationStatus;
 
-    // Client answers to the service's dynamic form fields, keyed by field id
+    // Keyed by ServiceFormField id.
     private java.util.Map<String, String> formData;
 
     private String aiSummary;

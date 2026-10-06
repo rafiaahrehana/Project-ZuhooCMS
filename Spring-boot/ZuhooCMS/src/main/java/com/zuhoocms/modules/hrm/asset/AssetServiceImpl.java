@@ -4,6 +4,7 @@ import com.zuhoocms.modules.company.Company;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.enums.AssetStatus;
 import com.zuhoocms.shared.exception.BadRequestException;
+import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
@@ -34,15 +35,14 @@ public class AssetServiceImpl implements AssetService {
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
     private final NotificationService notificationService;
+    private final com.zuhoocms.modules.itam.shared.ItamEmployeeGuard employeeGuard;
 
     @Override
     @Transactional
     public AssetResponse create(AssetRequest request) {
         authorizationService.checkPermission(PermissionCode.HARDWARE_CREATE);
         Long companyId = requireCompanyId();
-        // The CSV importer already checks this (existsByCompanyIdAndSerialNumber/
-        // AssetTag exist specifically for it) - manual entry through this form
-        // never did.
+        // The CSV importer already checks this; manual entry through this form never did.
         if (request.getSerialNumber() != null && !request.getSerialNumber().isBlank()
                 && assetRepository.existsByCompanyIdAndSerialNumber(companyId, request.getSerialNumber())) {
             throw new BadRequestException("An asset with this serial number already exists");
@@ -51,7 +51,7 @@ public class AssetServiceImpl implements AssetService {
                 && assetRepository.existsByCompanyIdAndAssetTag(companyId, request.getAssetTag())) {
             throw new BadRequestException("An asset with this asset tag already exists");
         }
-        Asset asset = new Asset(); asset.setName(request.getName()); asset.setCategory(request.getCategory()); asset.setSerialNumber(request.getSerialNumber()); asset.setNotes(request.getDescription()); asset.setPurchaseDate(request.getPurchaseDate()); asset.setPurchasePrice(request.getPurchaseCost()); asset.setStatus(AssetStatus.AVAILABLE); asset.setCompany(companyRef(companyId));
+        Asset asset = new Asset(); asset.setName(request.getName()); asset.setCategory(request.getCategory()); asset.setSerialNumber(request.getSerialNumber()); asset.setNotes(request.getDescription() != null ? request.getDescription() : request.getNotes()); asset.setPurchaseDate(request.getPurchaseDate()); asset.setPurchasePrice(request.getPurchaseCost()); asset.setStatus(AssetStatus.AVAILABLE); asset.setCompany(companyRef(companyId));
         asset.setAssetTag(request.getAssetTag());
         asset.setBrand(request.getBrand());
         asset.setModel(request.getModel());
@@ -80,11 +80,12 @@ public class AssetServiceImpl implements AssetService {
     @Override
     @Transactional(readOnly = true)
     public AssetResponse getById(Long id) {
-        return AssetMapper.toAssetResponse(findInTenant(id));
+        Asset asset = findInTenant(id);
+        requireViewOrOwn(asset.getAssignedTo() != null ? asset.getAssignedTo().getId() : null);
+        return AssetMapper.toAssetResponse(asset);
     }
 
-    // This single endpoint backs both the ITAM Hardware admin page and the HRM Assets
-    // page, so either permission unlocks it.
+    // One endpoint backs both the ITAM Hardware admin page and the HRM Assets page, so either permission unlocks it.
     @Override
     @Transactional(readOnly = true)
     public Page<AssetResponse> listAll(AssetStatus status, Pageable pageable) {
@@ -99,6 +100,7 @@ public class AssetServiceImpl implements AssetService {
     @Override
     @Transactional(readOnly = true)
     public List<AssetResponse> listForEmployee(Long employeeId) {
+        requireViewOrOwn(employeeId);
         return assetRepository.findByCompanyIdAndAssignedToId(requireCompanyId(), employeeId)
             .stream().map(AssetMapper::toAssetResponse).toList();
     }
@@ -135,7 +137,12 @@ public class AssetServiceImpl implements AssetService {
         if (request.getRamSize()         != null) asset.setRamSize(request.getRamSize());
         if (request.getStorageSize()     != null) asset.setStorageSize(request.getStorageSize());
         if (request.getOperatingSystem() != null) asset.setOperatingSystem(request.getOperatingSystem());
-        if (request.getWarrantyExpiry()  != null) asset.setWarrantyExpiry(request.getWarrantyExpiry());
+        if (request.getWarrantyExpiry()  != null && !request.getWarrantyExpiry().equals(asset.getWarrantyExpiry())) {
+            asset.setWarrantyExpiry(request.getWarrantyExpiry());
+            // A new warranty date is a new warranty, so WarrantyExpiryScheduler must be free to alert on it again.
+            asset.setWarrantyExpiringSoonAlertedAt(null);
+            asset.setWarrantyExpiredAlertedAt(null);
+        }
         return AssetMapper.toAssetResponse(asset);
     }
 
@@ -144,14 +151,13 @@ public class AssetServiceImpl implements AssetService {
     public AssetResponse assign(Long id, Long employeeId) {
         authorizationService.checkPermission(PermissionCode.HARDWARE_UPDATE);
         Long companyId = requireCompanyId();
-        // Locked read-then-write: two admins assigning the same asset to two
-        // different new hires at once previously raced, silently losing one
-        // assignment with an orphaned open history row. Matches
-        // SoftwareLicenseServiceImpl's assignSeat()/releaseSeat() pattern.
+        // Locked read-then-write: concurrent assigns raced, silently losing one assignment and leaving an orphaned open history row. Matches SoftwareLicenseServiceImpl.assignSeat().
         Asset asset = assetRepository.findByIdAndCompanyIdForUpdate(id, companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Asset not found: " + id));
-        if (asset.getStatus() == AssetStatus.ASSIGNED) {
-            throw new BadRequestException("Asset is already assigned. Unassign it first.");
+        if (asset.getStatus() != AssetStatus.AVAILABLE) {
+            throw new BadRequestException(asset.getStatus() == AssetStatus.ASSIGNED
+                ? "Asset is already assigned. Unassign it first."
+                : "Only an available asset can be assigned (current status: " + asset.getStatus() + ")");
         }
         Employee emp = findEmployee(employeeId, companyId);
         asset.setAssignedTo(emp);
@@ -167,7 +173,7 @@ public class AssetServiceImpl implements AssetService {
     @Transactional
     public AssetResponse setMaintenance(Long id, boolean underMaintenance) {
         authorizationService.checkPermission(PermissionCode.HARDWARE_UPDATE);
-        Asset asset = findInTenant(id);
+        Asset asset = lockInTenant(id);
         if (asset.getStatus() == AssetStatus.ASSIGNED) {
             throw new BadRequestException("Cannot change maintenance status on an assigned asset. Unassign it first.");
         }
@@ -192,7 +198,8 @@ public class AssetServiceImpl implements AssetService {
     @Transactional
     public AssetResponse dispose(Long id, String reason) {
         authorizationService.checkPermission(PermissionCode.HARDWARE_UPDATE);
-        Asset asset = findInTenant(id);
+        // Same row lock as assign(): an assign racing a dispose could hand out an asset in the instant it is written off.
+        Asset asset = lockInTenant(id);
         if (asset.getStatus() == AssetStatus.ASSIGNED) {
             throw new BadRequestException("Cannot dispose an assigned asset. Unassign it first.");
         }
@@ -210,11 +217,10 @@ public class AssetServiceImpl implements AssetService {
     public AssetResponse unassign(Long id) {
         authorizationService.checkPermission(PermissionCode.HARDWARE_UPDATE);
         Long companyId = requireCompanyId();
-        Asset asset = findInTenant(id);
+        Asset asset = lockInTenant(id);
         if (asset.getStatus() != AssetStatus.ASSIGNED) {
             throw new BadRequestException("Asset is not currently assigned");
         }
-        // Close the open history record
         historyRepository.findTopByAssetIdAndCompanyIdAndReturnedAtIsNullOrderByAssignedAtDesc(id, companyId)
             .ifPresent(h -> {
                 h.setReturnedAt(LocalDate.now());
@@ -237,8 +243,7 @@ public class AssetServiceImpl implements AssetService {
         asset.softDelete();
     }
 
-    // Previously nobody was told when an asset was handed to them - they only
-    // found out by checking "My Assets" themselves.
+    // Without this an employee only learns of an assigned asset by checking "My Assets".
     private void notifyAssigned(Asset asset, Employee emp, Long companyId) {
         if (emp.getUser() == null) return;
         notificationService.send(CreateNotificationRequest.of(
@@ -265,12 +270,33 @@ public class AssetServiceImpl implements AssetService {
         historyRepository.save(history);
     }
 
+    private Asset lockInTenant(Long id) {
+        return assetRepository.findByIdAndCompanyIdForUpdate(id, requireCompanyId())
+            .orElseThrow(() -> new ResourceNotFoundException("Asset not found: " + id));
+    }
+
+    /** Reading an asset needed no permission at all; HARDWARE_VIEW (ITAM) or ASSET_VIEW (HRM) unlock any employee, everyone else sees only their own. */
+    private void requireViewOrOwn(Long assignedEmployeeId) {
+        if (authorizationService.hasPermission(PermissionCode.HARDWARE_VIEW)
+                || authorizationService.hasPermission(PermissionCode.ASSET_VIEW)) {
+            return;
+        }
+        var user = securityUtil.getCurrentUser();
+        Long myEmployeeId = user == null ? null
+            : employeeRepository.findByUserId(user.getId()).map(Employee::getId).orElse(null);
+        if (myEmployeeId == null || assignedEmployeeId == null || !myEmployeeId.equals(assignedEmployeeId)) {
+            throw new ForbiddenException("You can only view assets assigned to you");
+        }
+    }
+
     private Asset findInTenant(Long id) {
         return assetRepository.findByIdAndCompanyId(id, requireCompanyId())
             .orElseThrow(() -> new ResourceNotFoundException("Asset not found: " + id));
     }
 
+    /** Locks the employee row and rejects (400) an inactive/terminated employee or one with an open offboarding checklist, as licence seats do, serialised against offboarding completion. */
     private Employee findEmployee(Long employeeId, Long companyId) {
+        employeeGuard.requireAssignable(employeeId, companyId);
         return employeeRepository.findByIdAndCompanyId(employeeId, companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + employeeId));
     }

@@ -11,16 +11,18 @@ public class ChangeStageRequest {
     @NotNull(message = "Stage is required")
     private OpportunityStage stage;
 
-    // Required when moving to LOST. The code carries the analysis; the text is
-    // the optional detail (required only when the code is OTHER, or "other"
-    // becomes a bucket that explains nothing).
+    // Required when moving to LOST: the code carries the analysis, the text is detail, mandatory only for OTHER.
     private com.zuhoocms.enums.LostReason lostReasonCode;
 
     @Size(max = 255)
     private String lostReason;
 
-    // Populated by the frontend's duplicate-detection modal when moving a client-less
-    // Opportunity to WON: either link to an existing Client match, or force-create a new one.
+    /** Optional per-deal override: omitted, the new stage's default applies (what the pipeline board sends on a drag); supplied, the rep's own figure survives later moves. */
+    @jakarta.validation.constraints.Min(0)
+    @jakarta.validation.constraints.Max(100)
+    private Integer probability;
+
+    // Populated by the duplicate-detection modal when moving a client-less Opportunity to WON: link an existing Client match, or force-create a new one.
     private Long linkToExistingClientId;
     private boolean forceCreateNewClient;
 }

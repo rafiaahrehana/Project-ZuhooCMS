@@ -17,12 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * The mirror image of InvoiceOverdueScheduler for the payables side. Vendor
- * bills previously had no OVERDUE status and no automation at all - a bill
- * 30 days late sat silently in APPROVED/PARTIALLY_PAID with nothing to flag
- * it short of someone manually opening the AP Ageing report.
- */
+/** Flags overdue vendor bills, which otherwise sat in APPROVED/PARTIALLY_PAID unnoticed unless someone opened the AP Ageing report. */
 @Component
 @RequiredArgsConstructor
 public class VendorBillOverdueScheduler {
@@ -34,7 +29,7 @@ public class VendorBillOverdueScheduler {
     private static final List<VendorBillStatus> OVERDUE_ELIGIBLE =
             List.of(VendorBillStatus.APPROVED, VendorBillStatus.PARTIALLY_PAID);
 
-    /** Runs daily at 01:45, offset from the client-invoice job at 01:30. */
+    /** Offset from the client-invoice job at 01:30. */
     @Scheduled(cron = "0 45 1 * * *")
     @Transactional
     public void markOverdueBills() {

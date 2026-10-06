@@ -5,7 +5,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import com.zuhoocms.modules.support.SupportPaging;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -47,7 +47,7 @@ public class SupportCategoryController {
     public ResponseEntity<Page<SupportCategoryResponse>> getAll(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getAll(PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getAll(SupportPaging.of(page, size)));
     }
 
     @GetMapping("/active")

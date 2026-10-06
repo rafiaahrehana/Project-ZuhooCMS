@@ -27,7 +27,7 @@ public class RecruitmentController {
     @PostMapping("/jobs/{jobPostingId}/apply")
     public ResponseEntity<JobApplicationResponse> apply(
             @PathVariable Long jobPostingId,
-            @RequestBody JobApplicationRequest request) {
+            @jakarta.validation.Valid @RequestBody JobApplicationRequest request) {
         return new ResponseEntity<>(recruitmentService.apply(jobPostingId, request), HttpStatus.CREATED);
     }
 
@@ -71,7 +71,10 @@ public class RecruitmentController {
     @PostMapping("/applications/{id}/hire")
     public ResponseEntity<EmployeeResponse> hire(
             @PathVariable Long id,
-            @RequestBody HireApplicationRequest request) {
+            // @Valid: the portal password goes straight to passwordEncoder.encode() inside EmployeeServiceImpl, whose
+            // own @NotBlank/@Size(min=8) only fire on its own endpoint - so a missing one 500'd and a 1-character one
+            // was accepted. The UI already enforces 8+; this makes the API agree.
+            @jakarta.validation.Valid @RequestBody HireApplicationRequest request) {
         return new ResponseEntity<>(recruitmentService.hire(id, request), HttpStatus.CREATED);
     }
 

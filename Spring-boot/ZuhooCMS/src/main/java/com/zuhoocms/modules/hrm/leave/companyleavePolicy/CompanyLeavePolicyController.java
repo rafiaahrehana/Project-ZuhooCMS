@@ -1,5 +1,6 @@
 package com.zuhoocms.modules.hrm.leave.companyleavePolicy;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -19,7 +20,7 @@ public class CompanyLeavePolicyController {
     private final CompanyLeavePolicyService policyService;
 
     @PostMapping
-    public ResponseEntity<CompanyLeavePolicyResponse> create(@RequestBody CompanyLeavePolicyRequest request) {
+    public ResponseEntity<CompanyLeavePolicyResponse> create(@Valid @RequestBody CompanyLeavePolicyRequest request) {
         return new ResponseEntity<>(policyService.create(request), HttpStatus.CREATED);
     }
 
@@ -48,7 +49,7 @@ public class CompanyLeavePolicyController {
     @PutMapping("/{id}")
     public ResponseEntity<CompanyLeavePolicyResponse> update(
             @PathVariable Long id,
-            @RequestBody CompanyLeavePolicyRequest request) {
+            @Valid @RequestBody CompanyLeavePolicyRequest request) {
         return ResponseEntity.ok(policyService.update(id, request));
     }
 

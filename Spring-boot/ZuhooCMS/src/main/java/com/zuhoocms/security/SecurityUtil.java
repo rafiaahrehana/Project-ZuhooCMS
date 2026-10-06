@@ -6,11 +6,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
-/**
- * Provides convenient access to the currently authenticated platformuser and
- * their resolved company ID (stored as authentication details by the
- * JWT filter after token validation).
- */
+/** While impersonating, the principal is the admin's own User flagged with the tenant role (see JwtAuthFilter) and the credentials hold the impersonated company id, so getCurrentCompanyId() is the effective company and isPlatformUser() is false. */
 @Component
 public class SecurityUtil {
 
@@ -31,11 +27,28 @@ public class SecurityUtil {
     }
 
     public boolean isImpersonating() {
+        User user = getCurrentUser();
+        if (user != null && user.isImpersonationPrincipal()) {
+            return true;
+        }
         return MDC.get("impersonatedBy") != null;
     }
 
     public Long getImpersonatedByUserId() {
+        User user = getCurrentUser();
+        if (user != null && user.isImpersonationPrincipal()) {
+            return user.getId();
+        }
         String raw = MDC.get("impersonatedBy");
         return raw != null ? Long.parseLong(raw) : null;
+    }
+
+    /** The impersonation session id of the current request, or null when not impersonating. */
+    public String getImpersonationSessionId() {
+        User user = getCurrentUser();
+        if (user != null && user.getImpersonationSessionId() != null) {
+            return user.getImpersonationSessionId();
+        }
+        return MDC.get("impersonationSessionId");
     }
 }

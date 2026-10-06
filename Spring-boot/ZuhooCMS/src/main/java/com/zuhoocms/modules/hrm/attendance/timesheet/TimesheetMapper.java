@@ -6,13 +6,7 @@ import java.time.LocalDateTime;
 
 public class TimesheetMapper {
 
-    /**
-     * emp.getUser() forces Hibernate to initialize the Employee proxy, which
-     * re-runs the entity's own @SQLRestriction("deleted = false") - a
-     * terminated (soft-deleted) employee's proxy throws EntityNotFoundException
-     * on any field access beyond its id, which list endpoints hit for every
-     * row. Falls back to a label rather than 500ing the whole page.
-     */
+    /** emp.getUser() initializes the Employee proxy, re-running @SQLRestriction("deleted = false"), so a terminated employee throws EntityNotFoundException; falls back to a label instead of 500ing the list. */
     private static User safeUser(Employee emp) {
         if (emp == null) return null;
         try {

@@ -10,6 +10,10 @@ import com.zuhoocms.modules.company.Company;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.enums.*;
+import com.zuhoocms.modules.crm.support.CrmSortWhitelist;
+import com.zuhoocms.modules.crm.support.EmailMatching;
+import com.zuhoocms.modules.crm.support.PhoneMatching;
+import com.zuhoocms.modules.crm.support.TagResolver;
 import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.security.SecurityUtil;
@@ -52,32 +56,26 @@ public class LeadServiceImpl implements LeadService {
     private final com.zuhoocms.modules.crm.tag.TagRepository tagRepository;
     private final com.zuhoocms.modules.crm.opportunity.OpportunityService opportunityService;
 
+    // Bound an open-ended date range; never compared unless the matching "...Set" flag is true, they exist only so Postgres can infer the parameter type. See LeadRepository.filterLeads.
+    private static final java.time.LocalDate UNBOUNDED_EARLIEST = java.time.LocalDate.of(1900, 1, 1);
+    private static final java.time.LocalDate UNBOUNDED_LATEST = java.time.LocalDate.of(9999, 12, 31);
+
     @Override
     @Transactional
     public LeadResponse createLead(LeadRequest request) {
         authorizationService.checkPermission(PermissionCode.LEAD_CREATE);
-        validateLeadRequest(request);
         Long companyId = requireCompanyId();
 
-        // Check for duplicate email/phone - CSV import (LeadCsvImportService) already
-        // checks both; manual/API creation only checked email, so two reps entering
-        // the same walk-in lead by phone around the same time went undetected.
-        if (request.getEmail() != null && !request.getEmail().isBlank()) {
-            if (leadRepository.existsByEmailAndCompanyIdAndDeletedFalse(request.getEmail(), companyId)) {
-                throw new BadRequestException("A lead with this email already exists in your company");
-            }
-        }
-        if (request.getPhone() != null && !request.getPhone().isBlank()) {
-            if (leadRepository.existsByPhoneAndCompanyIdAndDeletedFalse(request.getPhone(), companyId)) {
-                throw new BadRequestException("A lead with this phone number already exists in your company");
-            }
-        }
+        // Normalised before both the check and the write, so the stored value and the duplicate query can never disagree - see EmailMatching / PhoneMatching.
+        String email = EmailMatching.normalise(request.getEmail());
+        String phone = PhoneMatching.normaliseForStorage(request.getPhone());
+        checkLeadNotDuplicate(email, phone, companyId, null);
 
         Lead lead = Lead.builder()
                 .contactName(request.getContactName())
                 .companyName(request.getCompanyName())
-                .email(request.getEmail())
-                .phone(request.getPhone())
+                .email(email)
+                .phone(phone)
                 .industry(request.getIndustry())
                 .jobTitle(request.getJobTitle())
                 .notes(request.getNotes())
@@ -104,7 +102,7 @@ public class LeadServiceImpl implements LeadService {
         }
 
         if (request.getTagIds() != null && !request.getTagIds().isEmpty()) {
-            lead.setTags(tagRepository.findByIdInAndCompanyId(request.getTagIds(), companyId));
+            lead.setTags(TagResolver.resolve(tagRepository, request.getTagIds(), companyId));
         }
 
         Lead saved = leadRepository.save(lead);
@@ -120,6 +118,7 @@ public class LeadServiceImpl implements LeadService {
     @Override
     @Transactional(readOnly = true)
     public LeadResponse getLeadById(Long id) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         return leadMapper.toLeadResponse(findLeadInTenant(id));
     }
 
@@ -128,9 +127,10 @@ public class LeadServiceImpl implements LeadService {
     public Page<LeadResponse> listLeads(LeadStatus status, Pageable pageable) {
         authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
+        Pageable paged = CrmSortWhitelist.withIdTiebreaker(pageable);
         return (status != null
-                ? leadRepository.findByCompanyIdAndStatus(companyId, status, pageable)
-                : leadRepository.findByCompanyId(companyId, pageable))
+                ? leadRepository.findByCompanyIdAndStatus(companyId, status, paged)
+                : leadRepository.findByCompanyId(companyId, paged))
                 .map(leadMapper::toLeadResponse);
     }
 
@@ -141,70 +141,72 @@ public class LeadServiceImpl implements LeadService {
         Long companyId = requireCompanyId();
         Employee emp = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
                 .orElseThrow(() -> new BadRequestException("Employee profile not found"));
-        return leadRepository.findByCompanyIdAndAssignedToId(companyId, emp.getId(), pageable)
+        return leadRepository.findByCompanyIdAndAssignedToId(companyId, emp.getId(),
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional
-    public LeadResponse updateLead(Long id, LeadRequest request) {
+    public LeadResponse updateLead(Long id, LeadUpdateRequest request) {
         authorizationService.checkPermission(PermissionCode.LEAD_UPDATE);
-        validateLeadRequest(request);
         Long companyId = requireCompanyId();
         Lead lead = findLeadInTenant(id);
 
-        if (request.getEmail() != null && !request.getEmail().equalsIgnoreCase(lead.getEmail())) {
-            if (leadRepository.existsByEmailAndCompanyIdAndDeletedFalse(request.getEmail(), companyId)) {
-                throw new BadRequestException("A lead with this email already exists in your company");
-            }
+        // DISQUALIFIED is frozen entirely; a CONVERTED lead still accepts who-the-contact-is and who-owns-it fields (typos, reassignment after a rep leaves) but not the commercial ones, which are the opportunity's job now.
+        boolean converted = lead.isConverted();
+        if (lead.getStatus() == LeadStatus.DISQUALIFIED) {
+            throw new BadRequestException("Cannot edit a disqualified lead");
         }
 
-        // Prevent editing closed leads
-        if (lead.isConverted() || lead.getStatus() == LeadStatus.DISQUALIFIED) {
-            throw new BadRequestException("Cannot edit a closed lead");
-        }
+        String email = EmailMatching.normalise(request.getEmail());
+        String phone = PhoneMatching.normaliseForStorage(request.getPhone());
+        // Both email and phone checked here as on create: update used to check only email, against a case-SENSITIVE query, so two leads could end up with the same address.
+        checkLeadNotDuplicate(
+                email != null && !email.equalsIgnoreCase(lead.getEmail()) ? email : null,
+                phone != null && !samePhone(phone, lead.getPhone()) ? phone : null,
+                companyId, lead.getId());
 
-        // Update fields if provided
         if (request.getContactName() != null)
             lead.setContactName(request.getContactName());
-        if (request.getCompanyName() != null)
-            lead.setCompanyName(request.getCompanyName());
-        if (request.getEmail() != null)
-            lead.setEmail(request.getEmail());
-        if (request.getPhone() != null)
-            lead.setPhone(request.getPhone());
-        if (request.getIndustry() != null)
-            lead.setIndustry(request.getIndustry());
+        if (email != null)
+            lead.setEmail(email);
+        if (phone != null)
+            lead.setPhone(phone);
         if (request.getJobTitle() != null)
             lead.setJobTitle(request.getJobTitle());
-        if (request.getNotes() != null)
-            lead.setNotes(request.getNotes());
-        if (request.getDescription() != null)
-            lead.setDescription(request.getDescription());
-        if (request.getStatus() != null)
-            lead.setStatus(request.getStatus());
-        if (request.getSource() != null)
-            lead.setSource(request.getSource());
-        if (request.getSourceOther() != null)
-            lead.setSourceOther(request.getSourceOther());
-        if (request.getPriority() != null)
-            lead.setPriority(request.getPriority());
-        if (request.getEstimatedValue() != null)
-            lead.setEstimatedValue(request.getEstimatedValue());
-        if (request.getExpectedCloseDate() != null)
-            lead.setExpectedCloseDate(request.getExpectedCloseDate());
+
+        if (!converted) {
+            if (request.getCompanyName() != null)
+                lead.setCompanyName(request.getCompanyName());
+            if (request.getIndustry() != null)
+                lead.setIndustry(request.getIndustry());
+            if (request.getNotes() != null)
+                lead.setNotes(request.getNotes());
+            if (request.getDescription() != null)
+                lead.setDescription(request.getDescription());
+            if (request.getStatus() != null)
+                lead.setStatus(request.getStatus());
+            if (request.getSource() != null)
+                lead.setSource(request.getSource());
+            if (request.getSourceOther() != null)
+                lead.setSourceOther(request.getSourceOther());
+            if (request.getPriority() != null)
+                lead.setPriority(request.getPriority());
+            if (request.getEstimatedValue() != null)
+                lead.setEstimatedValue(request.getEstimatedValue());
+            if (request.getExpectedCloseDate() != null)
+                lead.setExpectedCloseDate(request.getExpectedCloseDate());
+            if (request.getTagIds() != null) {
+                lead.setTags(TagResolver.resolve(tagRepository, request.getTagIds(), companyId));
+            }
+        }
 
         boolean reassigned = false;
         if (request.getAssignedToId() != null) {
             Employee assignee = findEmployee(request.getAssignedToId(), companyId);
             reassigned = lead.getAssignedTo() == null || !lead.getAssignedTo().getId().equals(assignee.getId());
             lead.setAssignedTo(assignee);
-        }
-
-        if (request.getTagIds() != null) {
-            lead.setTags(request.getTagIds().isEmpty()
-                    ? new java.util.ArrayList<>()
-                    : tagRepository.findByIdInAndCompanyId(request.getTagIds(), companyId));
         }
 
         Lead saved = leadRepository.save(lead);
@@ -217,30 +219,40 @@ public class LeadServiceImpl implements LeadService {
     public void deleteLead(Long id) {
         authorizationService.checkPermission(PermissionCode.LEAD_DELETE);
         Lead lead = findLeadInTenant(id);
+        // A converted lead is the Opportunity's sourceLead: soft-deleting it left that reference pointing at a row @SQLRestriction hides, breaking the lead-to-client trail.
+        if (lead.isConverted()) {
+            throw new BadRequestException(
+                    "This lead has been converted to an opportunity and cannot be deleted. "
+                            + "Delete the opportunity instead if it is no longer wanted.");
+        }
         lead.setDeleted(true);
         lead.setDeletedAt(LocalDateTime.now());
         leadRepository.save(lead);
 
-        // Also soft delete associated activities
-        lead.getActivities().forEach(activity -> {
-            activity.setDeleted(true);
-            activity.setDeletedAt(LocalDateTime.now());
-        });
+        // Saved explicitly, like the lead above: relying on dirty checking left the soft-delete at the mercy of whether the
+        // activities were still managed when the transaction flushed, so a deleted lead could keep live activities.
+        LocalDateTime deletedAt = LocalDateTime.now();
+        List<com.zuhoocms.modules.crm.activity.CrmActivity> activities = lead.getActivities();
+        if (activities != null && !activities.isEmpty()) {
+            activities.forEach(activity -> {
+                activity.setDeleted(true);
+                activity.setDeletedAt(deletedAt);
+            });
+            leadActivityRepository.saveAll(activities);
+        }
     }
-
-    // ==================== Search & Filter ====================
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> searchLeads(String keyword, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
-        return leadRepository.searchLeads(companyId, escapeLikeKeyword(keyword), pageable)
+        return leadRepository.searchLeads(companyId, escapeLikeKeyword(keyword),
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
-    // '!' is the LIKE escape character used by LeadRepository's ESCAPE '!' queries -
-    // an unescaped keyword containing '!' throws, and '%'/'_' match wrong rows.
-    // Mirrors GlobalSearchServiceImpl.escapeLikeKeyword.
+    // '!' is the escape character in LeadRepository's ESCAPE '!' queries: unescaped, '!' throws and '%'/'_' match wrong rows. Mirrors GlobalSearchServiceImpl.escapeLikeKeyword.
     private String escapeLikeKeyword(String keyword) {
         if (keyword == null) return null;
         return keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_");
@@ -249,30 +261,28 @@ public class LeadServiceImpl implements LeadService {
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> filterLeads(LeadFilterRequest filter, Pageable pageable) {
+        // Was ungated: a user blocked from GET /api/crm/leads got the same list by POSTing an empty body to /api/crm/leads/filter.
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
 
-        // Handle custom sorting
-        if (filter.getSortBy() != null && filter.getSortDirection() != null) {
-            Sort.Direction direction = Sort.Direction.fromString(filter.getSortDirection());
-            pageable = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(),
-                    Sort.by(direction, filter.getSortBy()));
+        // Whitelisted with an id tiebreaker: sortBy handed straight to Sort.by threw PropertyReferenceException (a 500) and leaked which entity fields exist.
+        if (filter.getSortBy() != null && !filter.getSortBy().isBlank()) {
+            pageable = CrmSortWhitelist.pageable(pageable.getPageNumber(), pageable.getPageSize(),
+                    CrmSortWhitelist.LEAD, filter.getSortBy(), filter.getSortDirection());
+        } else {
+            pageable = CrmSortWhitelist.withIdTiebreaker(pageable);
         }
 
-        // If keyword is provided, use search instead
-        if (filter.getKeyword() != null && !filter.getKeyword().isBlank()) {
-            return searchLeads(filter.getKeyword(), pageable);
-        }
+        // The keyword is one predicate among many: it used to short-circuit to searchLeads() and silently discard status, source, priority, assignee and tag while the UI still showed them active.
+        // "" rather than null when absent - see LeadRepository.filterLeads on Postgres being unable to type a null LIKE parameter.
+        String keyword = filter.getKeyword() != null && !filter.getKeyword().isBlank()
+                ? escapeLikeKeyword(filter.getKeyword().trim())
+                : "";
 
-        // Handle special filters
-        if (Boolean.TRUE.equals(filter.getIsUnassigned())) {
-            return findUnassignedLeads(companyId, pageable);
-        }
+        // Predicates, not short-circuits to their own repository methods, so they compose with the other filters; both views mean "still worth acting on", hence openOnly.
+        boolean unassignedOnly = Boolean.TRUE.equals(filter.getIsUnassigned());
+        boolean highPriorityOnly = Boolean.TRUE.equals(filter.getIsHighPriority());
 
-        if (Boolean.TRUE.equals(filter.getIsHighPriority())) {
-            return findHighPriorityOpenLeads(companyId, pageable);
-        }
-
-        // Standard filter
         return leadRepository.filterLeads(
                 companyId,
                 filter.getStatus(),
@@ -280,70 +290,95 @@ public class LeadServiceImpl implements LeadService {
                 filter.getPriority(),
                 filter.getAssignedToId(),
                 filter.getTagId(),
+                keyword,
+                // Flag plus a never-null date - see the note on filterLeads.
+                filter.getExpectedCloseDateFrom() != null,
+                filter.getExpectedCloseDateFrom() != null
+                        ? filter.getExpectedCloseDateFrom() : UNBOUNDED_EARLIEST,
+                filter.getExpectedCloseDateTo() != null,
+                filter.getExpectedCloseDateTo() != null
+                        ? filter.getExpectedCloseDateTo() : UNBOUNDED_LATEST,
+                Boolean.TRUE.equals(filter.getHasActivity()),
+                Boolean.FALSE.equals(filter.getHasActivity()),
+                Boolean.TRUE.equals(filter.getIsConverted()),
+                Boolean.FALSE.equals(filter.getIsConverted()),
+                unassignedOnly,
+                highPriorityOnly,
+                unassignedOnly || highPriorityOnly,
                 pageable).map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findLeadsBySource(LeadSource source, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
-        return leadRepository.findByCompanyIdAndSource(companyId, source, pageable)
+        return leadRepository.findByCompanyIdAndSource(companyId, source,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findLeadsByPriority(Priority priority, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
-        return leadRepository.findByCompanyIdAndPriority(companyId, priority, pageable)
+        return leadRepository.findByCompanyIdAndPriority(companyId, priority,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findUnassignedLeads(Long companyId, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         if (companyId == null) {
             companyId = requireCompanyId();
         }
         List<LeadStatus> closedStatuses = List.of(LeadStatus.DISQUALIFIED);
-        return leadRepository.findUnassignedLeads(companyId, closedStatuses, pageable)
+        return leadRepository.findUnassignedLeads(companyId, closedStatuses,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findHighPriorityOpenLeads(Long companyId, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         if (companyId == null) {
             companyId = requireCompanyId();
         }
         List<LeadStatus> closedStatuses = List.of(LeadStatus.DISQUALIFIED);
-        return leadRepository.findHighPriorityOpenLeads(companyId, closedStatuses, pageable)
+        // expectedCloseDate is nullable and not a total order, so without withIdTiebreaker's id ASC rows repeat on one page and vanish from another.
+        return leadRepository.findHighPriorityOpenLeads(companyId, closedStatuses,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findNeverContactedLeads(Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
-        return leadRepository.findNeverContactedLeads(companyId, pageable)
+        return leadRepository.findNeverContactedLeads(companyId,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<LeadResponse> findStalLeads(Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         Long companyId = requireCompanyId();
         java.time.LocalDate stalDate = java.time.LocalDate.now().minusDays(30);
         List<LeadStatus> closedStatuses = List.of(LeadStatus.DISQUALIFIED);
-        return leadRepository.findStalLeads(companyId, stalDate, closedStatuses, pageable)
+        // Same cutoff in both column types: lastContactDate is a DATE, createdAt a timestamp the query falls back to; sorted by nullable lastActivityAt, so it needs the id tiebreaker.
+        return leadRepository.findStalLeads(companyId, stalDate, stalDate.atStartOfDay(), closedStatuses,
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toLeadResponse);
     }
 
-    // ==================== Lead Conversion ====================
-
-    // Converts a Qualified Lead into an Opportunity - no Client or portal login is
-    // created here. A Client is created/linked later, when the Opportunity reaches Won
-    // (see OpportunityServiceImpl.changeStage).
+    // No Client or portal login is created here: a Client is created/linked when the Opportunity reaches Won (see OpportunityServiceImpl.changeStage).
     @Override
     @Transactional
     public com.zuhoocms.modules.crm.opportunity.OpportunityResponse convertToOpportunity(Long id, ConvertToOpportunityRequest request) {
@@ -366,21 +401,15 @@ public class LeadServiceImpl implements LeadService {
             opportunityRequest.setOwnerId(lead.getAssignedTo().getId());
         }
 
-        com.zuhoocms.modules.crm.opportunity.OpportunityResponse opportunity =
-                opportunityService.createFromLead(id, opportunityRequest);
-
-        lead.setConverted(true);
-        lead.setConvertedAt(LocalDateTime.now());
-        leadRepository.save(lead);
-
-        return opportunity;
+        // createFromLead() re-checks converted/Qualified and marks the lead converted itself; the checks above only fail this path faster.
+        return opportunityService.createFromLead(id, opportunityRequest);
     }
-
-    // ==================== Activity Management ====================
 
     @Override
     @Transactional
     public com.zuhoocms.modules.crm.activity.CrmActivityResponse addActivity(Long leadId, com.zuhoocms.modules.crm.activity.CrmActivityRequest request) {
+        // LEAD_UPDATE, not LEAD_VIEW: logging an activity writes lastActivityAt, lastContactDate and the staleness clock.
+        authorizationService.checkPermission(PermissionCode.LEAD_UPDATE);
         Long companyId = requireCompanyId();
         Lead lead = findLeadInTenant(leadId);
 
@@ -391,12 +420,13 @@ public class LeadServiceImpl implements LeadService {
                 .subject(request.getSubject())
                 .description(request.getDescription())
                 .activityDate(request.getActivityDate() != null ? request.getActivityDate() : LocalDateTime.now())
+                // Without this, no endpoint wrote followUpAt, so the scheduler and the "Upcoming follow-ups" widget read a column only the demo seeder filled.
+                .followUpAt(request.getFollowUpAt())
                 .company(companyRef(companyId))
                 .build();
 
         com.zuhoocms.modules.crm.activity.CrmActivity saved = leadActivityRepository.save(activity);
 
-        // Update lead's last activity
         lead.setLastActivityAt(LocalDateTime.now());
         lead.setStaleNotifiedAt(null);
         if (request.getType() == com.zuhoocms.modules.crm.activity.CrmActivityType.CALL ||
@@ -412,14 +442,17 @@ public class LeadServiceImpl implements LeadService {
     @Override
     @Transactional(readOnly = true)
     public Page<com.zuhoocms.modules.crm.activity.CrmActivityResponse> getActivities(Long leadId, Pageable pageable) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         findLeadInTenant(leadId);
-        return leadActivityRepository.findByLeadIdAndCompanyId(leadId, requireCompanyId(), pageable)
+        return leadActivityRepository.findByLeadIdAndCompanyId(leadId, requireCompanyId(),
+                        CrmSortWhitelist.withIdTiebreaker(pageable))
                 .map(leadMapper::toActivityResponse);
     }
 
     @Override
     @Transactional
     public void deleteActivity(Long leadId, Long activityId) {
+        authorizationService.checkPermission(PermissionCode.LEAD_UPDATE);
         findLeadInTenant(leadId);
         com.zuhoocms.modules.crm.activity.CrmActivity activity = leadActivityRepository.findById(activityId)
                 .orElseThrow(() -> new ResourceNotFoundException("Activity not found"));
@@ -432,8 +465,6 @@ public class LeadServiceImpl implements LeadService {
         activity.setDeletedAt(LocalDateTime.now());
         leadActivityRepository.save(activity);
     }
-
-    // ==================== Dashboard & Reporting ====================
 
     @Override
     @Transactional(readOnly = true)
@@ -460,13 +491,11 @@ public class LeadServiceImpl implements LeadService {
         return leadRepository.countActiveByAssignee(companyId, emp.getId(), closedStatuses);
     }
 
-    // NOT_SUPPORTED overrides this class's @Transactional so the provider call
-    // isn't wrapped in a transaction - see AiTransactionBoundary. The reads and
-    // the mapping happen inside aiTx.load(), which commits before the AI call;
-    // lead.getActivities() is lazy, so it has to be touched in there too.
+    // NOT_SUPPORTED overrides the class @Transactional so the provider call runs outside a transaction (see AiTransactionBoundary); reads and mapping, including lazy lead.getActivities(), must happen inside aiTx.load().
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public LeadResponse summariseLead(Long id) {
+        authorizationService.checkPermission(PermissionCode.LEAD_VIEW);
         PreparedPrompt<LeadResponse> prepared = aiTx.load(() -> {
             Lead lead = findLeadInTenant(id);
             return new PreparedPrompt<>(
@@ -518,9 +547,29 @@ public class LeadServiceImpl implements LeadService {
         return companyId;
     }
 
+    // Restricted to still-employed staff: company membership alone let leads be assigned to leavers, notifying a deactivated login.
     private Employee findEmployee(Long employeeId, Long companyId) {
-        return employeeRepository.findByIdAndCompanyId(employeeId, companyId)
-                .orElseThrow(() -> new ResourceNotFoundException("Employee not found with id: " + employeeId));
+        return employeeRepository.findAssignableByIdAndCompanyId(employeeId, companyId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Employee not found, or is no longer an active employee: " + employeeId));
+    }
+
+    /** Rejects a duplicate email (IgnoreCase) or phone (digits only, so "+966 50 123 4567" matches "0501234567"); values arrive normalised, null skips one, and {@code excludeId} stops an update colliding with itself. */
+    private void checkLeadNotDuplicate(String email, String phone, Long companyId, Long excludeId) {
+        if (email != null && leadRepository.existsByEmailIgnoringCase(email, companyId, excludeId)) {
+            throw new BadRequestException("A lead with this email already exists in your company");
+        }
+        String phoneKey = PhoneMatching.matchKey(phone);
+        if (phoneKey != null && leadRepository.existsByNormalisedPhone(phoneKey, companyId, excludeId)) {
+            throw new BadRequestException("A lead with this phone number already exists in your company");
+        }
+    }
+
+    /** Two phone strings that reduce to the same digits are the same number. */
+    private boolean samePhone(String a, String b) {
+        String keyA = PhoneMatching.matchKey(a);
+        String keyB = PhoneMatching.matchKey(b);
+        return keyA != null && keyA.equals(keyB);
     }
 
     private Company companyRef(Long companyId) {
@@ -529,19 +578,5 @@ public class LeadServiceImpl implements LeadService {
         return company;
     }
 
-    private void validateLeadRequest(LeadRequest request) {
-        if (request.getContactName() == null || request.getContactName().isBlank()) {
-            throw new BadRequestException("Contact name is required");
-        }
-        if (request.getContactName().length() < 2) {
-            throw new BadRequestException("Contact name must be at least 2 characters");
-        }
-        if (request.getEmail() != null && !request.getEmail().isBlank() && !isValidEmail(request.getEmail())) {
-            throw new BadRequestException("Email format is invalid");
-        }
-    }
-
-    private boolean isValidEmail(String email) {
-        return email.matches("^[A-Za-z0-9+_.-]+@(.+)$");
-    }
+    // No hand-rolled validation here: LeadRequest's @NotBlank/@Size/@Email under the controller's @Valid is the single authority, and the old ^[A-Za-z0-9+_.-]+@(.+)$ regex disagreed with @Email in both directions.
 }

@@ -2,20 +2,22 @@ package com.zuhoocms.modules.itam.software;
 
 public class SoftwareLicenseMapper {
 
-    public static SoftwareLicenseResponse toResponse(SoftwareLicense entity) {
+    /** activeSeats is the real count from software_license_seats (the stored columns are not trusted); showSecrets gates licenseKey/accountEmail to callers who may edit the licence. */
+    public static SoftwareLicenseResponse toResponse(SoftwareLicense entity, long activeSeats, boolean showSecrets) {
         if (entity == null) return null;
 
+        int used = (int) activeSeats;
         return SoftwareLicenseResponse.builder()
                 .id(entity.getId())
                 .companyId(entity.getCompanyId())
-                .licenseKey(entity.getLicenseKey())
+                .licenseKey(showSecrets ? entity.getLicenseKey() : null)
                 .softwareName(entity.getSoftwareName())
                 .publisher(entity.getPublisher())
                 .version(entity.getVersion())
                 .licenseType(entity.getLicenseType())
                 .totalSeatsLicensed(entity.getTotalSeatsLicensed())
-                .seatsUsed(entity.getSeatsUsed())
-                .seatsAvailable(entity.getSeatsAvailable())
+                .seatsUsed(used)
+                .seatsAvailable(Math.max(0, entity.getTotalSeatsLicensed() - used))
                 .licensePurchaseDate(entity.getLicensePurchaseDate())
                 .licenseCost(entity.getLicenseCost())
                 .licenseExpiryDate(entity.getLicenseExpiryDate())
@@ -27,7 +29,7 @@ public class SoftwareLicenseMapper {
                 .nextRenewalDate(entity.getNextRenewalDate())
                 .renewalCost(entity.getRenewalCost())
                 .vendor(entity.getVendor())
-                .accountEmail(entity.getAccountEmail())
+                .accountEmail(showSecrets ? entity.getAccountEmail() : null)
                 .licenseUrl(entity.getLicenseUrl())
                 .installationLocation(entity.getInstallationLocation())
                 .estimatedUserCount(entity.getEstimatedUserCount())
@@ -45,7 +47,7 @@ public class SoftwareLicenseMapper {
         if (request == null) return null;
 
         return SoftwareLicense.builder()
-                .licenseKey(request.getLicenseKey())
+                .licenseKey(request.getLicenseKey().trim())
                 .softwareName(request.getSoftwareName())
                 .publisher(request.getPublisher())
                 .version(request.getVersion())
@@ -60,7 +62,6 @@ public class SoftwareLicenseMapper {
                 .vendor(request.getVendor())
                 .accountEmail(request.getAccountEmail())
                 .licenseUrl(request.getLicenseUrl())
-                .username(request.getUsername())
                 .installationLocation(request.getInstallationLocation())
                 .estimatedUserCount(request.getEstimatedUserCount())
                 .complianceNotes(request.getComplianceNotes())

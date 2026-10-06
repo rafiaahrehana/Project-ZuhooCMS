@@ -4,7 +4,6 @@ import com.zuhoocms.modules.ai.exception.AiProviderException;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.*;
@@ -16,8 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-// Groq exposes an OpenAI-compatible chat completions API, so the request/response
-// shape here mirrors OpenAiClient - only the base URL and auth differ.
+// Groq's chat completions API is OpenAI-compatible, so the wire shape mirrors OpenAiClient; only the base URL and auth differ.
 @Component
 @RequiredArgsConstructor
 public class GroqClient implements AiHttpClient {
@@ -27,11 +25,8 @@ public class GroqClient implements AiHttpClient {
     @Qualifier("aiRestTemplate")
     private final RestTemplate aiRestTemplate;
 
-    @Setter
-    private String apiKey;
-
     @Override
-    public String call(String prompt, String model, double temperature, int maxTokens) {
+    public String call(String apiKey, String prompt, String model, double temperature, int maxTokens) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(apiKey);
@@ -65,18 +60,14 @@ public class GroqClient implements AiHttpClient {
     }
 
     private boolean isRetryable(Exception e) {
-        if (e instanceof HttpClientErrorException client) {
-            return client.getStatusCode().value() == 429;
-        }
-        return true;
+        return AiRetryPolicy.isRetryable(e);
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    // Identical wire format to OpenAiClient (Groq's chat completions API is
-    // OpenAI-compatible, tool-calling included) - only BASE_URL differs.
+    // Identical wire format to OpenAiClient, tool-calling included; only BASE_URL differs.
     @Override
-    public AiToolCallOrText callWithTools(String prompt, String model, double temperature, int maxTokens,
+    public AiToolCallOrText callWithTools(String apiKey, String prompt, String model, double temperature, int maxTokens,
                                            List<AiTool> tools, List<AiToolExchange> priorExchanges) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

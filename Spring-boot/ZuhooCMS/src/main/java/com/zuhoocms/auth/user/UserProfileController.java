@@ -34,13 +34,7 @@ public class UserProfileController {
     private final EmployeeRepository employeeRepository;
     private final PasswordEncoder passwordEncoder;
 
-    /**
-     * The current user's fully-resolved permission set (COMPANY_OWNER gets every
-     * code, a custom-role employee gets their role's assigned codes). Drives
-     * permission-based frontend UI (dashboard widgets, sidebar) - the frontend filter
-     * is a UX convenience only, every endpoint still enforces its own permission
-     * check server-side regardless of what this returns.
-     */
+    /** Resolved permission set driving frontend UI only - a UX convenience; every endpoint still enforces its own permission check server-side regardless of what this returns. */
     @GetMapping("/permissions")
     public ResponseEntity<List<String>> getMyPermissions() {
         return ResponseEntity.ok(authorizationService.getMyPermissionCodes());
@@ -96,13 +90,12 @@ public class UserProfileController {
             user.setPhone(request.getPhone().trim());
         }
         if (request.getImage() != null) {
-            user.setImage(request.getImage().trim());
+            user.setImage(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getImage().trim(), user.getImage()));
         }
         if (request.getLanguagePreference() != null) {
             user.setLanguagePreference(request.getLanguagePreference().trim());
         }
 
-        // Handle Address update
         if (request.getLocation() != null) {
             AddressRequest locReq = request.getLocation();
             if (user.getLocation() == null) {
@@ -113,7 +106,6 @@ public class UserProfileController {
             }
         }
 
-        // Handle Company Email update
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId != null && request.getCompanyEmail() != null) {
             Company company = companyRepository.findById(companyId)
@@ -134,11 +126,10 @@ public class UserProfileController {
                     .map(Company::getCompanyEmail)
                     .orElse(null);
         }
-        // Fallback: if the user's own image field is blank, try their employee profileImageUrl.
-        // This handles employees created before the two fields were kept in sync.
+        // Falls back to the employee profileImageUrl for employees created before the two fields were kept in sync.
         String imageUrl = user.getImage();
         if ((imageUrl == null || imageUrl.isBlank()) && companyId != null) {
-            imageUrl = employeeRepository.findByUserId(user.getId())
+            imageUrl = employeeRepository.findByUserIdAndCompanyId(user.getId(), companyId)
                     .map(emp -> emp.getProfileImageUrl())
                     .orElse(null);
         }

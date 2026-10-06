@@ -44,9 +44,7 @@ public class AuthorizationServiceImpl implements AuthorizationService {
 
         User user = securityUtil.getCurrentUser();
 
-        // While impersonating a company, act as its owner for fine-grained permission
-        // checks too - the real admin's own role (checked below) must not gate tenant
-        // modules like Leave/Payroll/AI that use checkPermission() instead of @PreAuthorize.
+        // Impersonation must act as owner here too, or tenant modules using checkPermission() instead of @PreAuthorize (Leave/Payroll/AI) get gated by the real admin's own role.
         if (securityUtil.isImpersonating()) {
             return true;
         }
@@ -56,7 +54,6 @@ public class AuthorizationServiceImpl implements AuthorizationService {
             return isPlatformPermission(permission);
         }
 
-        // Company Owner can do everything inside the company
         if (user.getRole() == Role.COMPANY_OWNER) {
             return true;
         }
@@ -90,10 +87,7 @@ public class AuthorizationServiceImpl implements AuthorizationService {
             return List.of();
         }
 
-        // Mirrors hasPermission() above: impersonation and COMPANY_OWNER both act as
-        // "everything" - enumerate every known code rather than a single wildcard string
-        // so the frontend's hasPermission(code) check stays a plain list-membership test
-        // with no special-casing needed for the owner.
+        // Enumerates every code rather than a wildcard so the frontend's hasPermission(code) stays a plain list-membership test with no owner special-casing.
         if (securityUtil.isImpersonating() || user.getRole() == Role.COMPANY_OWNER) {
             return Arrays.stream(PermissionCode.values()).map(Enum::name).toList();
         }

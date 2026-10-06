@@ -9,14 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-/**
- * Turns a Firebase ID token from the Android app into a verified identity.
- *
- * This is the security boundary of the whole Google sign-in feature. The token is signed by
- * Google; verifying it proves the caller really did authenticate as that Google account. Every
- * value used afterwards — above all the email — is read from the *verified* token and never from
- * anything else the client sent.
- */
+/** Security boundary of Google sign-in: every value used afterwards, above all the email, must be read from the *verified* token and never from anything else the client sent. */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -31,8 +24,7 @@ public class GoogleTokenVerifier {
     public GoogleIdentity verify(String idToken) {
 
         if (!firebase.isAvailable()) {
-            // Configuration problem, not the user's fault — say so plainly rather than
-            // pretending the sign-in failed.
+            // A configuration problem, not a failed sign-in - reported as such.
             throw new BadRequestException(
                     "Google sign-in is not configured on this server. Contact the administrator.");
         }
@@ -52,8 +44,7 @@ public class GoogleTokenVerifier {
             throw new BadRequestException("Your Google account has no email address attached.");
         }
 
-        // A Google account whose email Google itself has not verified must not be trusted to
-        // claim an existing account with the same address.
+        // An email Google itself has not verified must not be trusted to claim an existing account with the same address.
         if (!token.isEmailVerified()) {
             throw new UnauthorizedException("Your Google account's email is not verified.");
         }
@@ -63,11 +54,7 @@ public class GoogleTokenVerifier {
         return new GoogleIdentity(email.toLowerCase().trim(), names[0], names[1]);
     }
 
-    /**
-     * Google gives one display name; the User entity wants first and last separately. A single
-     * word becomes the first name, and a missing name falls back to the email's local part so the
-     * account is never created nameless.
-     */
+    /** Splits Google's single display name: one word becomes the first name, and a missing name falls back to the email's local part so the account is never nameless. */
     private String[] splitName(String displayName, String email) {
 
         if (displayName == null || displayName.isBlank()) {

@@ -4,6 +4,8 @@ package com.zuhoocms.modules.company;
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.enums.Role;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.auth.token.TokenRepository;
+import com.zuhoocms.auth.token.TokenType;
 import com.zuhoocms.auth.user.User;
 import com.zuhoocms.auth.user.UserRepository;
 import com.zuhoocms.modules.crm.client.ClientRepository;
@@ -59,6 +61,10 @@ public class CompanyServiceImpl implements CompanyService {
     private final AuthorizationService authorizationService;
     private final AuditService auditService;
     private final com.zuhoocms.shared.notification.NotificationService notificationService;
+    private final TokenRepository tokenRepository;
+    private final com.zuhoocms.modules.finance.generalledger.GeneralLedgerRepository generalLedgerRepository;
+    private final com.zuhoocms.modules.demo.DemoAccount demoAccount;
+    private final com.zuhoocms.core.interceptor.UnfilteredReads unfilteredReads;
 
     @Override
     @Transactional(readOnly = true)
@@ -66,29 +72,38 @@ public class CompanyServiceImpl implements CompanyService {
         Company company = companyRepository.findBySubdomain(subdomain)
                 .orElseThrow(() -> new ResourceNotFoundException("Company not found with subdomain: " + subdomain));
         CompanyPublicResponse publicResponse = CompanyMapper.toPublicResponse(company);
-        applyBranding(publicResponse, company.getId());
+        unfilteredReads.run(() -> { applyBranding(publicResponse, company.getId()); return null; });
         return publicResponse;
     }
 
     @Override
     @Transactional(readOnly = true)
-    public java.util.List<CompanyPublicResponse> getPublicList() {
-        return companyRepository
-                .findByStatusInOrderByCompanyNameAsc(List.of(CompanyStatus.ACTIVE, CompanyStatus.TRIAL))
-                .stream()
-                .map(CompanyMapper::toPublicResponse)
-                .toList();
+    public java.util.List<CompanyPublicListItem> getPublicList() {
+        // Verified tenants only, four fields, one query, capped - not every ACTIVE/TRIAL row with contact details.
+        Long demoOwner = demoAccount.demoUserId();
+        return unfilteredReads.run(() -> companyRepository.findPublicList(
+                List.of(CompanyStatus.ACTIVE, CompanyStatus.TRIAL),
+                demoOwner != null ? demoOwner : -1L,
+                org.springframework.data.domain.PageRequest.of(0, PUBLIC_LIST_LIMIT)));
     }
+
+    private static final int PUBLIC_LIST_LIMIT = 500;
 
     @Override
     @Transactional(readOnly = true)
     public java.util.List<com.zuhoocms.modules.servicedesk.companyservice.CompanyServiceResponse> getPublicServices(String subdomain) {
         Company company = companyRepository.findBySubdomain(subdomain)
                 .orElseThrow(() -> new ResourceNotFoundException("Company not found with subdomain: " + subdomain));
-        return hubServiceRepository.findByCompanyIdAndActiveTrue(company.getId())
+        // Explicit company id with the tenant filter off, so a logged-in user of another company sees this company's services.
+        return unfilteredReads.run(() -> hubServiceRepository.findByCompanyIdAndActiveTrue(company.getId())
                 .stream()
                 .map(com.zuhoocms.modules.servicedesk.companyservice.CompanyServiceMapper::toResponse)
-                .toList();
+                .toList());
+    }
+
+    private static boolean changes(String requested, String current) {
+        return requested != null && !requested.equals(current == null ? "" : current)
+                && !(requested.isEmpty() && current == null);
     }
 
     @Override
@@ -99,6 +114,10 @@ public class CompanyServiceImpl implements CompanyService {
         CompanyResponse response = CompanyMapper.toResponse(company);
         response.setLocationDetail(addressMapper.toResponse(company.getLocationDetail()));
         applyBranding(response, company.getId());
+        if (demoAccount.isDemoCompany(company)) {
+            // The demo tenant has no trial window by design; never show it as expired.
+            response.setTrialExpired(false);
+        }
         return response;
     }
 
@@ -115,6 +134,19 @@ public class CompanyServiceImpl implements CompanyService {
         if (request.getWebsite() != null) company.setWebsite(request.getWebsite());
         if (request.getPortalAbout() != null) company.setPortalAbout(request.getPortalAbout());
         if (request.getTaxRegistrationNumber() != null) company.setTaxRegistrationNumber(request.getTaxRegistrationNumber());
+
+        // Bank details and ledger currency need COMPANY_SETTINGS, not COMPANY_BRANDING, or a branding-only user could redirect client payments.
+        // Only an actual change is gated, so a form echoing the current values back still works.
+        boolean bankChange = changes(request.getBankName(), company.getBankName())
+                || changes(request.getBankAccountName(), company.getBankAccountName())
+                || changes(request.getBankAccountNumber(), company.getBankAccountNumber())
+                || changes(request.getBankBranch(), company.getBankBranch());
+        String newCurrency = request.getBaseCurrency() != null && !request.getBaseCurrency().isBlank()
+                ? request.getBaseCurrency().trim().toUpperCase(java.util.Locale.ROOT) : null;
+        boolean currencyChange = newCurrency != null && !newCurrency.equals(company.getBaseCurrency());
+        if (bankChange || currencyChange) {
+            authorizationService.checkPermission(PermissionCode.COMPANY_SETTINGS);
+        }
         if (request.getBankName() != null) company.setBankName(request.getBankName());
         if (request.getBankAccountName() != null) company.setBankAccountName(request.getBankAccountName());
         if (request.getBankAccountNumber() != null) company.setBankAccountNumber(request.getBankAccountNumber());
@@ -125,8 +157,18 @@ public class CompanyServiceImpl implements CompanyService {
             }
             company.setFiscalYearStartMonth(request.getFiscalYearStartMonth());
         }
-        if (request.getBaseCurrency() != null && !request.getBaseCurrency().isBlank()) {
-            company.setBaseCurrency(request.getBaseCurrency().trim().toUpperCase());
+        if (currencyChange) {
+            try {
+                java.util.Currency.getInstance(newCurrency);
+            } catch (IllegalArgumentException ex) {
+                throw new BadRequestException("'" + newCurrency + "' is not a valid ISO-4217 currency code");
+            }
+            // Every posted amount is in the base currency, so switching it would silently re-denominate the whole ledger.
+            if (generalLedgerRepository.existsByCompanyId(company.getId())) {
+                throw new BadRequestException(
+                        "The base currency cannot be changed once the company has ledger transactions");
+            }
+            company.setBaseCurrency(newCurrency);
         }
 
         if (request.getLogo() != null || request.getPrimaryColor() != null
@@ -137,14 +179,14 @@ public class CompanyServiceImpl implements CompanyService {
                                     .companyId(company.getId())
                                     .companyName(company.getCompanyName())
                                     .build());
-            if (request.getLogo() != null) settings.setLogoUrl(request.getLogo());
+            if (request.getLogo() != null) settings.setLogoUrl(
+                    com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getLogo(), settings.getLogoUrl()));
             if (request.getPrimaryColor() != null) settings.setPrimaryColor(request.getPrimaryColor());
             if (request.getSecondaryColor() != null) settings.setSecondaryColor(request.getSecondaryColor());
             if (request.getTagline() != null) settings.setTagline(request.getTagline());
             websiteSettingsRepository.save(settings);
         }
 
-        // Structured address - same create-or-update pattern as the user profile
         if (request.getLocationDetail() != null) {
             if (company.getLocationDetail() == null) {
                 company.setLocationDetail(addressMapper.toEntity(request.getLocationDetail()));
@@ -162,10 +204,11 @@ public class CompanyServiceImpl implements CompanyService {
 
     @Override
     public CompanyResponse registerByAdmin(RegisterCompanyRequest request) {
-        if (companyRepository.existsBySubdomain(request.getSubdomain())) {
+        ReservedSubdomains.requireAllowed(request.getSubdomain());
+        if (companyRepository.existsAnyBySubdomain(request.getSubdomain().trim())) {
             throw new BadRequestException("Subdomain already exists.");
         }
-        if (userRepository.existsByEmail(request.getOwnerEmail())) {
+        if (userRepository.existsAnyByEmailIgnoreCase(request.getOwnerEmail().trim())) {
             throw new BadRequestException("Email already exists.");
         }
 
@@ -177,11 +220,13 @@ public class CompanyServiceImpl implements CompanyService {
         owner.setRole(Role.COMPANY_OWNER);
         owner.setPhone(request.getCompanyPhone());
         owner.setActive(true);
+        // Created by platform staff, not a self sign-up: nothing to verify, and login() refuses unverified owners.
+        owner.setEmailVerified(true);
         owner = userRepository.save(owner);
 
         Company company = new Company();
         company.setCompanyName(request.getCompanyName());
-        company.setSubdomain(request.getSubdomain());
+        company.setSubdomain(request.getSubdomain().toLowerCase().trim());
         company.setCompanyPhone(request.getCompanyPhone());
         company.setCompanyEmail(request.getOwnerEmail().toLowerCase().trim());
         company.setOwner(owner);
@@ -213,15 +258,11 @@ public class CompanyServiceImpl implements CompanyService {
         String fromPlan = company.getSubscriptionPlan();
         LocalDate today = LocalDate.now();
         company.setSubscriptionPlan(planDef.getCode());
-        // Admin-assigned plan changes previously never set a subscription window at
-        // all (subscriptionEnd stayed whatever it was, often null) - the billing
-        // cycle now drives a real one, same as the self-service paid upgrade does.
+        // An admin-assigned plan gets a real subscription window from the billing cycle, as the self-service upgrade does.
         company.setSubscriptionStart(today);
         company.setSubscriptionEnd(planDef.getBillingCycle() == BillingCycle.YEARLY
                 ? today.plusYears(1) : today.plusMonths(1));
-        // findTrialExpiringBetween() permanently excludes any company with this
-        // set - without resetting it here, a company reminded once in an earlier
-        // cycle would never be reminded again in any future cycle.
+        // findTrialExpiringBetween() excludes any company with this set, so without the reset one reminder would be the last ever.
         company.setTrialReminderSentAt(null);
         Company saved = companyRepository.save(company);
 
@@ -263,21 +304,17 @@ public class CompanyServiceImpl implements CompanyService {
         company.setSubscriptionStart(today);
         company.setSubscriptionEnd(plan.getBillingCycle() == BillingCycle.YEARLY
                 ? today.plusYears(1) : today.plusMonths(1));
-        // Same reasoning as changePlan(): without this reset the company would be
-        // permanently excluded from future reminder runs after being reminded once.
+        // Same reset as changePlan(), or one reminder would exclude the company from every future run.
         company.setTrialReminderSentAt(null);
         company.setActive(true);
-        // A paid upgrade should lift the company out of TRIAL/SUSPENDED immediately -
-        // ENTERPRISE/PENDING_VERIFICATION-only setups aside, this is the same de-facto
-        // "reactivate on payment" behavior SubscriptionScheduler's suspension implies.
+        // A paid upgrade reactivates immediately, matching the "reactivate on payment" behaviour SubscriptionScheduler's suspension implies.
         if (company.getStatus() == CompanyStatus.TRIAL || company.getStatus() == CompanyStatus.SUSPENDED
                 || company.getStatus() == CompanyStatus.PENDING_VERIFICATION) {
             company.setStatus(CompanyStatus.ACTIVE);
         }
         Company saved = companyRepository.save(company);
 
-        // changedBy comes from the transaction's initiatedByUserId, not SecurityUtil -
-        // this runs from a payment gateway callback, which has no security context.
+        // changedBy comes from initiatedByUserId, not SecurityUtil: this runs from a payment gateway callback with no security context.
         subscriptionHistoryRepository.save(SubscriptionHistory.builder()
                 .company(saved)
                 .fromPlan(fromPlan)
@@ -311,18 +348,17 @@ public class CompanyServiceImpl implements CompanyService {
             company.setActive(true);
         } else if (status == CompanyStatus.SUSPENDED || status == CompanyStatus.DEACTIVATED) {
             company.setActive(false);
+            // login() blocks new logins, but an existing refresh token would keep minting access tokens past the suspension.
+            revokeSessionsForCompany(company);
         }
         CompanyResponse response = CompanyMapper.toResponse(companyRepository.save(company));
 
-        // Suspending/reactivating an entire tenant is one of the highest-blast-radius
-        // actions a platform admin can take - it previously left no audit trail at all.
+        // Suspending/reactivating a whole tenant is high blast radius, so it must leave an audit trail.
         auditService.log(AuditEntityType.COMPANY, id, AuditAction.UPDATE,
                 oldStatus != null ? oldStatus.name() : null, status.name(),
                 securityUtil.getCurrentUser(), id, null);
 
-        // Previously the owner found out their company was suspended only when
-        // features started disappearing - no email/notification existed on any
-        // admin-driven plan or status change.
+        // Tell the owner, or they only discover an admin-driven status change when features start disappearing.
         if (company.getOwner() != null && oldStatus != status) {
             notificationService.send(com.zuhoocms.shared.notification.CreateNotificationRequest.of(
                     com.zuhoocms.enums.NotificationType.GENERAL,
@@ -372,8 +408,21 @@ public class CompanyServiceImpl implements CompanyService {
                 securityUtil.getCurrentUser(), id, null);
     }
 
-    // Overrides the legacy Company branding columns with the authoritative
-    // values from WebsiteSettings when a settings row exists.
+    // Revokes every REFRESH token for the tenant's owner, employees and clients so none can refresh past a suspension.
+    private void revokeSessionsForCompany(Company company) {
+        java.util.List<Long> userIds = new java.util.ArrayList<>();
+        if (company.getOwner() != null) {
+            userIds.add(company.getOwner().getId());
+        }
+        userIds.addAll(employeeRepository.findUserIdsByCompanyId(company.getId()));
+        userIds.addAll(clientRepository.findUserIdsByCompanyId(company.getId()));
+        userIds.removeIf(java.util.Objects::isNull);
+        if (!userIds.isEmpty()) {
+            tokenRepository.revokeAllByUserIdInAndType(userIds, TokenType.REFRESH);
+        }
+    }
+
+    // WebsiteSettings is authoritative over the legacy Company branding columns when a settings row exists.
     private void applyBranding(CompanyResponse response, Long companyId) {
         websiteSettingsRepository.findByCompanyId(companyId).ifPresent(settings -> {
             if (settings.getLogoUrl() != null) response.setLogo(settings.getLogoUrl());

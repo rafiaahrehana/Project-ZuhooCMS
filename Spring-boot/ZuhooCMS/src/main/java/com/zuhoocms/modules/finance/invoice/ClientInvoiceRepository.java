@@ -23,12 +23,7 @@ public interface ClientInvoiceRepository extends JpaRepository<ClientInvoice, Lo
     @EntityGraph(attributePaths = {"client"})
     Page<ClientInvoice> findByCompanyId(Long companyId, Pageable pageable);
 
-    /**
-     * Invoices for one company in a date window, with the client joined in.
-     *
-     * The entity graph matters here: the finance dashboard reads a client name
-     * per row, and without it each row triggers its own select.
-     */
+    /** Invoices for one company in a date window with the client joined in: the finance dashboard reads a client name per row, which otherwise triggers a select per row. */
     @EntityGraph(attributePaths = {"client"})
     List<ClientInvoice> findByCompanyIdAndInvoiceDateBetween(Long companyId, java.time.LocalDate start, java.time.LocalDate end);
 
@@ -45,18 +40,23 @@ public interface ClientInvoiceRepository extends JpaRepository<ClientInvoice, Lo
     Page<ClientInvoice> findByCompanyIdAndInvoiceNumberContainingIgnoreCase(Long companyId, String keyword, Pageable pageable);
 
     /**
-     * Used for per-company sequential invoice number generation.
-     * Returns the highest invoice number for a given company and year prefix.
+     * Seed for the INV- number counter (see DocumentNumberService): the highest running number under this company/prefix, <b>soft-deleted rows included</b>.
+     * Native on purpose - JPQL MAX goes through BaseEntity's {@code @SQLRestriction("deleted = false")}, so a deleted highest draft vanished from MAX while the (company_id, invoice_number) unique constraint still counted it.
+     * Parsed numerically so a number widening past six digits still sorts right.
      */
-    @Query("SELECT MAX(i.invoiceNumber) FROM ClientInvoice i WHERE i.companyId = :companyId AND i.invoiceNumber LIKE :prefix%")
-    Optional<String> findMaxInvoiceNumberByCompanyAndPrefix(
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(invoice_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(invoice_number FROM :start) AS BIGINT) END)
+        FROM client_invoices
+        WHERE company_id = :companyId AND invoice_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxInvoiceSequenceIncludingDeleted(
         @Param("companyId") Long companyId,
-        @Param("prefix") String prefix
+        @Param("prefix") String prefix,
+        @Param("start") int start
     );
 
-    /**
-     * Returns all overdue invoices for a company — due date passed, not yet paid/cancelled.
-     */
+    /** All overdue invoices for a company: due date passed, not yet paid/cancelled. */
     @Query("""
         SELECT i FROM ClientInvoice i
         WHERE i.companyId = :companyId
@@ -84,19 +84,9 @@ public interface ClientInvoiceRepository extends JpaRepository<ClientInvoice, Lo
 
     long countByCompanyIdAndClientIdAndStatusIn(Long companyId, Long clientId, List<InvoiceStatus> statuses);
 
-    @org.springframework.data.jpa.repository.Modifying
-    @Query("UPDATE ClientInvoice i SET i.status = :newStatus WHERE i.dueDate < :currentDate AND i.status IN :oldStatuses")
-    int markOverdueInvoices(
-        @Param("currentDate") java.time.LocalDate currentDate,
-        @Param("newStatus") InvoiceStatus newStatus,
-        @Param("oldStatuses") List<InvoiceStatus> oldStatuses
-    );
+    // No bulk "UPDATE ... SET status = OVERDUE" here: it had no deleted filter, bypassed @Version and could overwrite a just-committed payment, and hit a different row set than findNewlyOverdue() read for notifications.
 
-    /**
-     * Used by InvoiceOverdueScheduler to know exactly which invoices are about to
-     * flip to OVERDUE - queried BEFORE markOverdueInvoices() runs, so each one can
-     * be notified once rather than every day it stays overdue.
-     */
+    /** Invoices past due and still in one of the given open statuses; InvoiceOverdueScheduler marks exactly these OVERDUE and notifies once each. */
     @Query("SELECT i FROM ClientInvoice i WHERE i.dueDate < :currentDate AND i.status IN :oldStatuses AND i.deleted = false")
     List<ClientInvoice> findNewlyOverdue(
         @Param("currentDate") java.time.LocalDate currentDate,

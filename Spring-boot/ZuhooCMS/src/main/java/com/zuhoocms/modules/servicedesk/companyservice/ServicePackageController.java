@@ -20,11 +20,6 @@ public class ServicePackageController {
 
     private final ServicePackageService packageService;
 
-    // ── Package catalog ───────────────────────────────────────────
-
-    /**
-     * ADMIN creates a new service package in the company catalog.
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PostMapping
     public ResponseEntity<ServicePackageResponse> create(
@@ -32,9 +27,7 @@ public class ServicePackageController {
         return new ResponseEntity<>(packageService.create(request), HttpStatus.CREATED);
     }
 
-    /**
-     * ADMIN/STAFF list all packages (includes inactive).
-     */
+    /** Includes inactive packages. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @GetMapping
     public ResponseEntity<Page<ServicePackageResponse>> listAll(
@@ -44,25 +37,17 @@ public class ServicePackageController {
             PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
-    /**
-     * Any authenticated platformuser can browse the active package catalog.
-     */
+    /** Intentionally open to any authenticated user, including CLIENT. */
     @GetMapping("/active")
     public ResponseEntity<List<ServicePackageResponse>> listActive() {
         return ResponseEntity.ok(packageService.listActive());
     }
 
-    /**
-     * Get a single package by ID.
-     */
     @GetMapping("/{id}")
     public ResponseEntity<ServicePackageResponse> getById(@PathVariable Long id) {
         return ResponseEntity.ok(packageService.getById(id));
     }
 
-    /**
-     * ADMIN updates package details and included services.
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PutMapping("/{id}")
     public ResponseEntity<ServicePackageResponse> update(
@@ -71,18 +56,13 @@ public class ServicePackageController {
         return ResponseEntity.ok(packageService.update(id, request));
     }
 
-    /**
-     * ADMIN toggles a package active/inactive.
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PatchMapping("/{id}/toggle")
     public ResponseEntity<ServicePackageResponse> toggle(@PathVariable Long id) {
         return ResponseEntity.ok(packageService.toggleActive(id));
     }
 
-    /**
-     * ADMIN soft-deletes a package (only if no active subscriptions).
-     */
+    /** Soft-delete, refused while the package has active subscriptions. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @DeleteMapping("/{id}")
     public ResponseEntity<String> delete(@PathVariable Long id) {
@@ -90,31 +70,20 @@ public class ServicePackageController {
         return ResponseEntity.ok("Package deleted successfully");
     }
 
-    // ── Subscriptions ─────────────────────────────────────────────
-
-    /**
-     * CLIENT subscribes themselves to a package.
-     * ADMIN/STAFF can subscribe on behalf of a client by providing clientId in body.
-     */
+    /** A CLIENT subscribes themselves; staff subscribe on a client's behalf by passing clientId in the body. */
     @PostMapping("/subscribe")
     public ResponseEntity<PackageSubscriptionResponse> subscribe(
             @Valid @RequestBody SubscribeRequest request) {
         return new ResponseEntity<>(packageService.subscribe(request), HttpStatus.CREATED);
     }
 
-    /**
-     * ADMIN activates a PENDING_PAYMENT subscription (simulates payment confirmation).
-     * In production, this would be called by a payment webhook.
-     */
+    /** Activates a PENDING_PAYMENT subscription by hand, standing in for the payment webhook. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PatchMapping("/subscriptions/{id}/activate")
     public ResponseEntity<PackageSubscriptionResponse> activate(@PathVariable Long id) {
         return ResponseEntity.ok(packageService.activate(id));
     }
 
-    /**
-     * ADMIN suspends an active subscription (e.g. overdue payment).
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PatchMapping("/subscriptions/{id}/suspend")
     public ResponseEntity<PackageSubscriptionResponse> suspend(
@@ -123,18 +92,13 @@ public class ServicePackageController {
         return ResponseEntity.ok(packageService.suspend(id, reason));
     }
 
-    /**
-     * ADMIN reactivates a suspended subscription.
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PatchMapping("/subscriptions/{id}/reactivate")
     public ResponseEntity<PackageSubscriptionResponse> reactivate(@PathVariable Long id) {
         return ResponseEntity.ok(packageService.reactivate(id));
     }
 
-    /**
-     * ADMIN or CLIENT cancels a subscription.
-     */
+    /** Intentionally open to CLIENT as well as staff. */
     @PatchMapping("/subscriptions/{id}/cancel")
     public ResponseEntity<PackageSubscriptionResponse> cancel(
             @PathVariable Long id,
@@ -142,18 +106,12 @@ public class ServicePackageController {
         return ResponseEntity.ok(packageService.cancel(id, reason));
     }
 
-    /**
-     * Get a single subscription by ID.
-     */
     @GetMapping("/subscriptions/{id}")
     public ResponseEntity<PackageSubscriptionResponse> getSubscriptionById(
             @PathVariable Long id) {
         return ResponseEntity.ok(packageService.getSubscriptionById(id));
     }
 
-    /**
-     * ADMIN/STAFF list all subscriptions for the company, optionally filtered by status.
-     */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @GetMapping("/subscriptions")
     public ResponseEntity<Page<PackageSubscriptionResponse>> listSubscriptions(
@@ -164,9 +122,6 @@ public class ServicePackageController {
             PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
-    /**
-     * CLIENT lists their own subscriptions.
-     */
     @GetMapping("/subscriptions/my")
     public ResponseEntity<Page<PackageSubscriptionResponse>> listMySubscriptions(
             @RequestParam(defaultValue = "0") int page,

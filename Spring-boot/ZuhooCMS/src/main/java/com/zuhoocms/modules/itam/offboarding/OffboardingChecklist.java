@@ -28,38 +28,32 @@ public class OffboardingChecklist extends BaseEntity {
     private LocalDate offboardingDate;
     private LocalDate targetCompletionDate;
 
-    // Hardware
     @Builder.Default
     private boolean hardwareCollected = false;
     private LocalDate hardwareCollectedDate;
     private String hardwareCollectedBy;
     private String hardwareNotes;
 
-    // Software Licenses
     @Builder.Default
     private boolean licensesRevoked = false;
     private LocalDate licensesRevokedDate;
     private String licensesNotes;
 
-    // Access Revocation
     @Builder.Default
     private boolean accessRevoked = false;
     private LocalDate accessRevokedDate;
     private String accessNotes;
 
-    // Data Handover
     @Builder.Default
     private boolean dataHandedOver = false;
     private LocalDate dataHandoverDate;
     private String dataHandoverNotes;
 
-    // Exit Interview
     @Builder.Default
     private boolean exitInterviewCompleted = false;
     private LocalDate exitInterviewDate;
     private String exitInterviewNotes;
 
-    // Overall Status
     @Builder.Default
     private boolean completed = false;
     private LocalDate completionDate;

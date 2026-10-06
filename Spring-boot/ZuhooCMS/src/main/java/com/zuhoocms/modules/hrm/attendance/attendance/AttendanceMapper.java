@@ -8,13 +8,10 @@ public class AttendanceMapper {
         return AttendanceResponse.builder()
                 .id(entity.getId())
                 .companyId(entity.getCompanyId())
-                // Employee
                 .employeeId(entity.getEmployee() != null ? entity.getEmployee().getId() : null)
                 .employeeName(entity.getEmployee() != null ? entity.getEmployee().getFullName() : null)
                 .employeeNumber(entity.getEmployee() != null ? entity.getEmployee().getEmployeeNumber() : null)
-                // Date
                 .attendanceDate(entity.getAttendanceDate())
-                // Check-in
                 .checkInTime(entity.getCheckInTime())
                 .checkInDateTime(entity.getCheckInDateTime())
                 .checkInMethod(entity.getCheckInMethod())
@@ -22,37 +19,32 @@ public class AttendanceMapper {
                 .checkInLatitude(entity.getCheckInLatitude())
                 .checkInLongitude(entity.getCheckInLongitude())
                 .checkInReason(entity.getCheckInReason())
-                // Check-out
                 .checkOutTime(entity.getCheckOutTime())
                 .checkOutDateTime(entity.getCheckOutDateTime())
                 .checkOutMethod(entity.getCheckOutMethod())
                 .checkOutLocation(entity.getCheckOutLocation())
-                // Status
+                .checkInSelfieUrl(entity.getCheckInSelfieUrl())
+                .checkOutSelfieUrl(entity.getCheckOutSelfieUrl())
+                .locationFlagged(entity.isLocationFlagged())
+                .locationFlagReason(entity.getLocationFlagReason())
+                .distanceFromOfficeMeters(entity.getDistanceFromOfficeMeters())
                 .status(entity.getStatus())
                 .shiftType(entity.getShiftType())
-                // Late
                 .isLate(entity.isLate())
                 .lateMinutes(entity.getLateMinutes())
                 .lateReason(entity.getLateReason())
-                // Overtime
                 .isOvertime(entity.isOvertime())
                 .overtimeHours(entity.getOvertimeHours())
-                // Early departure
                 .leftEarly(entity.isLeftEarly())
                 .earlyMinutes(entity.getEarlyMinutes())
                 .earlyDepartureReason(entity.getEarlyDepartureReason())
-                // Hours
                 .totalWorkingHours(entity.getTotalWorkingHours())
-                // Biometric
                 .isVerified(entity.isVerified())
                 .verificationScore(entity.getVerificationScore())
-                // Approval
                 .approved(entity.isApproved())
                 .approvedBy(entity.getApprovedBy())
                 .approvedDateTime(entity.getApprovedDateTime())
-                // Notes
                 .notes(entity.getAdminNotes())
-                // Audit
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();

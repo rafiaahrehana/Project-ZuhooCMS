@@ -3,6 +3,8 @@ package com.zuhoocms.modules.hrm.recruitment.candidate;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRepository;
 import com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationResponse;
 import com.zuhoocms.modules.hrm.recruitment.RecruitmentMapper;
+import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,7 @@ public class CandidateController {
 
     private final CandidateService candidateService;
     private final JobApplicationRepository applicationRepository;
+    private final AuthorizationService authorizationService;
     private final SecurityUtil securityUtil;
 
     @GetMapping
@@ -44,6 +47,12 @@ public class CandidateController {
     @GetMapping("/{id}/applications")
     @Transactional(readOnly = true)
     public ResponseEntity<List<JobApplicationResponse>> applications(@PathVariable Long id) {
+        // Checked HERE rather than in a service, because this is the one method on this controller that goes
+        // straight to the repository - so it had no check at all, while list, getById, update and delete each open
+        // with one inside CandidateServiceImpl. Any employee could read a candidate's whole application history and
+        // every status without APPLICATION_VIEW, and nothing in this file showed it: all five methods look equally
+        // unguarded from here. APPLICATION_VIEW is what its three sibling reads already require.
+        authorizationService.checkPermission(PermissionCode.APPLICATION_VIEW);
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId == null) throw new BadRequestException("No company context");
         return ResponseEntity.ok(applicationRepository.findByCompanyIdAndCandidateId(companyId, id).stream()

@@ -23,18 +23,10 @@ public interface AiService {
     /** Generate text for a given feature using the company's resolved provider */
     AiGenerateResponse generate(AiGenerateRequest request);
 
-    /**
-     * Internal use by HRM, CRM, Finance — takes a pre-built prompt string
-     */
+    /** Internal use by HRM, CRM, Finance — takes a pre-built prompt string */
     String generateFromPrompt(AiFeature feature, String prompt);
 
-    /**
-     * Like generateFromPrompt, but skips company Prompt Template merging.
-     * For callers whose prompt is already fully self-contained (e.g. a
-     * structured builder with explicit output-format instructions) where a
-     * saved template being silently prepended would break the expected
-     * output shape rather than add useful context.
-     */
+    /** Like generateFromPrompt but skips template merging: for self-contained prompts whose output shape a silently prepended template would break. */
     String generateRaw(AiFeature feature, String prompt);
 
     /** OWNER / ADMIN: configure a custom AI provider for the company */
@@ -79,11 +71,6 @@ public interface AiService {
     /** Soft-delete one of the current user's own threads. */
     void deleteThread(Long threadId);
 
-    /**
-     * One turn of the tool-calling agent: the model may answer directly,
-     * propose a write action (awaitingConfirmation=true, nothing executed
-     * yet), or execute a read tool and answer from its real result. See
-     * AiServiceImpl#runAgentTurn for the full state machine.
-     */
+    /** One turn of the tool-calling agent: answer directly, propose a write action (awaitingConfirmation=true), or run a read tool; see AiServiceImpl#runAgentTurn. */
     AiGenerateResponse runAgentTurn(AiAgentTurnRequest request);
 }

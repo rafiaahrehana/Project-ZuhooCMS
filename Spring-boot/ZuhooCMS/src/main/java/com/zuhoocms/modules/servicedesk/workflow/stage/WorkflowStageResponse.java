@@ -5,13 +5,6 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/**
- * BUG-FIX SUMMARY
- * ───────────────
- * assigneeRole changed from Role enum to String — matches WorkflowStage base field
- * type and WorkflowStageRequest. The mapper sets r.setAssigneeRole(s.getAssigneeRole())
- * where s.getAssigneeRole() returns String. Using Role here would be a compile error.
- */
 @Getter
 @Setter
 public class WorkflowStageResponse {
@@ -22,7 +15,8 @@ public class WorkflowStageResponse {
     private Integer estimatedDays;
     private Integer slaHours;
     private Boolean requiresApproval;
-    private String assigneeRole;        // fixed: was Role enum
+    // String, not the Role enum, to match WorkflowStage and WorkflowStageRequest.
+    private String assigneeRole;
     private Boolean requiresPayment;
     private Integer paymentPercent;
     private LocalDateTime createdAt;

@@ -47,10 +47,7 @@ public class CheckLeaveBalanceTool implements AiTool {
         int year = args != null && args.get("year") instanceof Number n
             ? n.intValue() : LocalDate.now().getYear();
 
-        // getMyBalances() resolves the caller from SecurityUtil internally -
-        // userId/companyId aren't passed through, they're just this tool's
-        // proof (per AiTool's contract) that the agent loop already
-        // authenticated the caller before reaching here.
+        // getMyBalances() resolves the caller from SecurityUtil itself, so userId/companyId are not passed through - they only evidence AiTool's contract.
         List<LeaveBalanceResponse> balances = leaveService.getMyBalances(year);
         if (balances.isEmpty()) {
             return AiToolResult.ok("No leave balance records found for " + year + ".", balances);

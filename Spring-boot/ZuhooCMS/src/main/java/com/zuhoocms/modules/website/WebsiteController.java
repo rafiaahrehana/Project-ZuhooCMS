@@ -128,9 +128,10 @@ public class WebsiteController {
     }
 
     @GetMapping("/service-requests/track/{code}")
-    public ServiceRequest track(HttpServletRequest request,
+    public WebsiteService.TrackedRequest track(HttpServletRequest request,
                                @RequestParam(required = false) String subdomain,
-                               @PathVariable String code) {
-        return websiteService.trackRequest(companyId(request, subdomain), code);
+                               @PathVariable String code,
+                               @RequestParam(required = false) String email) {
+        return websiteService.trackRequest(companyId(request, subdomain), code, email);
     }
 }

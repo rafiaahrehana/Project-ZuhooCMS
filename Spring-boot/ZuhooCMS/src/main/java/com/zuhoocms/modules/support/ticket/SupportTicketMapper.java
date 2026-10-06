@@ -19,18 +19,25 @@ public class SupportTicketMapper {
                 .status(entity.getStatus())
                 .priority(entity.getPriority())
                 .source(entity.getSource())
-                .assignedToAgentName(entity.getAssignedToAgent() != null ?
-                        entity.getAssignedToAgent().getUser().getFullName() : null)
-                .assignedEmployeeName(entity.getAssignedEmployee() != null ?
-                        entity.getAssignedEmployee().getUser().getFullName() : null)
+                // getId() on a lazy proxy doesn't initialise it - no extra query.
+                .assignedToAgentId(entity.getAssignedToAgent() != null ? entity.getAssignedToAgent().getId() : null)
+                .assignedToAgentName(entity.getAssignedToAgent() != null && entity.getAssignedToAgent().getUser() != null
+                        ? entity.getAssignedToAgent().getUser().getFullName() : null)
+                .assignedEmployeeName(entity.getAssignedEmployee() != null && entity.getAssignedEmployee().getUser() != null
+                        ? entity.getAssignedEmployee().getUser().getFullName() : null)
                 .assignedDate(entity.getAssignedDate())
                 .firstResponseTime(entity.getFirstResponseTime())
                 .firstResponseDeadline(entity.getFirstResponseDeadline())
                 .resolutionTime(entity.getResolutionTime())
                 .resolutionDeadline(entity.getResolutionDeadline())
-                .slaBreached(entity.isSlaBreached())
-                .escalationLevel(entity.getEscalationLevel())
+                // Either deadline missed counts as an SLA breach for the UI.
+                .slaBreached(entity.isSlaBreached() || entity.isFirstResponseBreached())
+                .resolutionNotes(entity.getResolutionNotes())
+                .closedDate(entity.getClosedDate())
+                .escalationLevel(entity.getEscalationLevel() != null ? entity.getEscalationLevel() : 1)
+                .escalatedDate(entity.getEscalatedDate())
                 .satisfactionRating(entity.getSatisfactionRating())
+                .satisfactionFeedback(entity.getSatisfactionFeedback())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();

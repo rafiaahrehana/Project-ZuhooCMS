@@ -21,10 +21,7 @@ public interface ServicePackageRepository extends JpaRepository<ServicePackage, 
 
     boolean existsByCompanyIdAndName(Long companyId, String name);
 
-    /**
-     * Returns packages that include a given service — used to check
-     * whether deactivating a service breaks any active package.
-     */
+    /** Packages including a service - checks whether deactivating it breaks an active package. */
     @Query("""
         SELECT p FROM ServicePackage p
         JOIN p.services s

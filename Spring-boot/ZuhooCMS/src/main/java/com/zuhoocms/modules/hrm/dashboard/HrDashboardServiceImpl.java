@@ -45,13 +45,12 @@ public class HrDashboardServiceImpl implements HrDashboardService {
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
     private final com.zuhoocms.modules.hrm.recruitment.jobapplication.JobApplicationRepository jobApplicationRepository;
+    private final jakarta.persistence.EntityManager entityManager;
 
     @Override
     @Transactional(readOnly = true)
     public HrDashboardResponse getSummary() {
-        // One gate for the whole dashboard. EMPLOYEE_VIEW is the marker for
-        // "may see the workforce" - an ordinary employee has their own dashboard
-        // and must not read company-wide headcount, payroll or salary totals.
+        // One gate for the whole dashboard: EMPLOYEE_VIEW marks "may see the workforce"; ordinary employees have their own dashboard.
         authorizationService.checkPermission(PermissionCode.EMPLOYEE_VIEW);
         Long companyId = requireCompanyId();
 
@@ -60,7 +59,13 @@ public class HrDashboardServiceImpl implements HrDashboardService {
         LocalDate monthStart = month.atDay(1);
         LocalDate monthEnd = month.atEndOfMonth();
 
-        long totalEmployees = employeeRepository.countByCompanyId(companyId);
+        // Active employees only: countByCompanyId counted resigned/deactivated people, disagreeing with every other widget.
+        long totalEmployees = entityManager.createQuery("""
+                SELECT COUNT(e) FROM Employee e
+                 WHERE e.company.id = :companyId AND e.active = true AND e.deleted = false
+                """, Long.class)
+                .setParameter("companyId", companyId)
+                .getSingleResult();
         long newHires = employeeRepository
                 .countByCompanyIdAndActiveTrueAndHireDateBetween(companyId, monthStart, monthEnd);
 
@@ -70,9 +75,7 @@ public class HrDashboardServiceImpl implements HrDashboardService {
         long onLeave = attendanceRepository.countByCompanyIdAndStatusAndDate(companyId, AttendanceStatus.ON_LEAVE, today);
         long absent = attendanceRepository.countByCompanyIdAndStatusAndDate(companyId, AttendanceStatus.ABSENT, today);
 
-        // Percentages are of RECORDED attendance, not of headcount: early in the
-        // day most rows don't exist yet, and dividing by headcount would show a
-        // near-zero attendance rate every morning.
+        // Percentages are of RECORDED attendance, not headcount: most rows don't exist early in the day, which would show a near-zero rate every morning.
         long recorded = present + onLeave + absent;
         Double presentPct = recorded == 0 ? null : round1(present * 100.0 / recorded);
         Double leavePct = recorded == 0 ? null : round1(onLeave * 100.0 / recorded);
@@ -159,29 +162,32 @@ public class HrDashboardServiceImpl implements HrDashboardService {
                 .toList();
     }
 
-    /**
-     * Birthdays and probation endings in the next 30 days.
-     *
-     * The birthday window is skipped when it wraps across new year (e.g. 20 Dec
-     * to 19 Jan), because the MM-DD string comparison cannot express that range.
-     * Returning nothing for those few days is preferable to returning wrong rows.
-     */
+    /** Birthdays and probation endings in the next 30 days; a window wrapping across new year is queried as two MM-DD ranges, since one string comparison cannot express it. */
     private List<HrDashboardResponse.UpcomingItem> upcomingItems(Long companyId, LocalDate today) {
         LocalDate horizon = today.plusDays(UPCOMING_WINDOW_DAYS);
         List<HrDashboardResponse.UpcomingItem> items = new ArrayList<>();
 
-        if (!horizon.isBefore(today) && horizon.getYear() == today.getYear()) {
-            for (Employee e : employeeRepository.findBirthdaysBetween(
-                    companyId, today.format(MM_DD), horizon.format(MM_DD))) {
-                LocalDate next = e.getDateOfBirth().withYear(today.getYear());
-                items.add(HrDashboardResponse.UpcomingItem.builder()
-                        .kind("BIRTHDAY")
-                        .title(displayName(e) + "'s birthday")
-                        .subtitle(e.getDepartment() != null ? e.getDepartment().getName() : e.getJobTitle())
-                        .date(next)
-                        .daysAway(ChronoUnit.DAYS.between(today, next))
-                        .build());
-            }
+        List<Employee> birthdays = new ArrayList<>();
+        if (horizon.getYear() == today.getYear()) {
+            birthdays.addAll(employeeRepository.findBirthdaysBetween(
+                    companyId, today.format(MM_DD), horizon.format(MM_DD)));
+        } else {
+            birthdays.addAll(employeeRepository.findBirthdaysBetween(companyId, today.format(MM_DD), "12-31"));
+            birthdays.addAll(employeeRepository.findBirthdaysBetween(companyId, "01-01", horizon.format(MM_DD)));
+        }
+        for (Employee e : birthdays) {
+            // Next occurrence on or after today; MonthDay.atYear maps 29 Feb to 28 Feb in non-leap years.
+            java.time.MonthDay md = java.time.MonthDay.from(e.getDateOfBirth());
+            LocalDate next = md.atYear(today.getYear());
+            if (next.isBefore(today)) next = md.atYear(today.getYear() + 1);
+            if (next.isAfter(horizon)) continue;
+            items.add(HrDashboardResponse.UpcomingItem.builder()
+                    .kind("BIRTHDAY")
+                    .title(displayName(e) + "'s birthday")
+                    .subtitle(e.getDepartment() != null ? e.getDepartment().getName() : e.getJobTitle())
+                    .date(next)
+                    .daysAway(ChronoUnit.DAYS.between(today, next))
+                    .build());
         }
 
         for (Employee e : employeeRepository.findProbationEndingBetween(companyId, today, horizon)) {
@@ -199,29 +205,44 @@ public class HrDashboardServiceImpl implements HrDashboardService {
     }
 
     /**
-     * Month-to-date headcount, reconstructed from hire dates.
-     *
-     * This is NOT a stored daily snapshot, so it cannot show historical
-     * departures - someone who left mid-month was never counted on the earlier
-     * days either. It answers "how has the team grown this month", which is what
-     * the chart is for. A true history would need a daily headcount table.
+     * Month-to-date headcount of ACTIVE employees, reconstructed from hire dates in one grouped query.
+     * Employee has no termination date, so someone deactivated mid-month is counted on no day; active employees with no hire date form the baseline, so the last point equals totalEmployees.
      */
     private List<HrDashboardResponse.TrendPoint> headcountTrend(Long companyId, LocalDate from, LocalDate today) {
+        List<Object[]> rows = entityManager.createQuery("""
+                SELECT e.hireDate, COUNT(e) FROM Employee e
+                 WHERE e.company.id = :companyId AND e.active = true AND e.deleted = false
+                   AND (e.hireDate IS NULL OR e.hireDate <= :today)
+                 GROUP BY e.hireDate
+                """, Object[].class)
+                .setParameter("companyId", companyId)
+                .setParameter("today", today)
+                .getResultList();
+
+        long running = 0;
+        java.util.Map<LocalDate, Long> hiredOn = new java.util.HashMap<>();
+        for (Object[] row : rows) {
+            LocalDate hireDate = (LocalDate) row[0];
+            long count = ((Number) row[1]).longValue();
+            if (hireDate == null || hireDate.isBefore(from)) {
+                running += count;
+            } else {
+                hiredOn.merge(hireDate, count, Long::sum);
+            }
+        }
+
         List<HrDashboardResponse.TrendPoint> points = new ArrayList<>();
         for (LocalDate d = from; !d.isAfter(today); d = d.plusDays(1)) {
+            running += hiredOn.getOrDefault(d, 0L);
             points.add(HrDashboardResponse.TrendPoint.builder()
                     .date(d)
-                    .headcount(employeeRepository.countHiredOnOrBefore(companyId, d))
+                    .headcount(running)
                     .build());
         }
         return points;
     }
 
-    /**
-     * An employee's name lives on their linked User, not on Employee itself.
-     * Falls back to the employee number so a record with no user still renders
-     * something identifiable rather than a blank row.
-     */
+    /** An employee's name lives on their linked User; falls back to the employee number so a record with no user isn't a blank row. */
     private String displayName(Employee e) {
         if (e.getUser() != null) {
             String full = e.getUser().getFullName();
@@ -240,26 +261,18 @@ public class HrDashboardServiceImpl implements HrDashboardService {
         return id;
     }
 
-    /**
-     * The spec's Applied -> Screening -> Interview -> Offer -> Hired funnel.
-     * Interview merges the scheduled and completed stages; screening merges
-     * shortlisted - five readable stages instead of nine raw statuses.
-     */
+    /** Applied -> Screening -> Interview -> Offer -> Hired: five readable stages folded from nine raw statuses. */
     private java.util.List<HrDashboardResponse.PipelineStage> recruitmentPipeline(Long companyId) {
-        java.util.function.Function<com.zuhoocms.enums.ApplicationStatus, Long> count =
-                s -> jobApplicationRepository.countByCompanyIdAndStatus(companyId, s);
-        java.util.List<HrDashboardResponse.PipelineStage> stages = new java.util.ArrayList<>();
-        stages.add(stage("Applied", count.apply(com.zuhoocms.enums.ApplicationStatus.APPLIED)));
-        stages.add(stage("Screening", count.apply(com.zuhoocms.enums.ApplicationStatus.SCREENING)
-                + count.apply(com.zuhoocms.enums.ApplicationStatus.SHORTLISTED)));
-        stages.add(stage("Interview", count.apply(com.zuhoocms.enums.ApplicationStatus.INTERVIEW_SCHEDULED)
-                + count.apply(com.zuhoocms.enums.ApplicationStatus.INTERVIEWED)
-                + count.apply(com.zuhoocms.enums.ApplicationStatus.SELECTED)));
-        stages.add(stage("Offer", count.apply(com.zuhoocms.enums.ApplicationStatus.OFFER_PENDING)
-                + count.apply(com.zuhoocms.enums.ApplicationStatus.OFFER_SENT)
-                + count.apply(com.zuhoocms.enums.ApplicationStatus.OFFER_ACCEPTED)));
-        stages.add(stage("Hired", count.apply(com.zuhoocms.enums.ApplicationStatus.HIRED)));
-        return stages;
+        // Same status grouping as the recruitment KPI report (RecruitmentPipelineStages), which used to leave OFFER_REJECTED out of Offer.
+        java.util.Map<com.zuhoocms.enums.ApplicationStatus, Long> perStatus = new java.util.EnumMap<>(
+                com.zuhoocms.enums.ApplicationStatus.class);
+        for (Object[] row : jobApplicationRepository.countByStatus(companyId)) {
+            perStatus.put((com.zuhoocms.enums.ApplicationStatus) row[0], ((Number) row[1]).longValue());
+        }
+        return com.zuhoocms.modules.hrm.recruitment.kpi.RecruitmentPipelineStages.countByStage(perStatus)
+                .entrySet().stream()
+                .map(e -> stage(e.getKey(), e.getValue()))
+                .toList();
     }
 
     private HrDashboardResponse.PipelineStage stage(String name, long count) {

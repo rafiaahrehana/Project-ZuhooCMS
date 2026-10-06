@@ -2,10 +2,7 @@ package com.zuhoocms.core.automation;
 
 import lombok.Getter;
 
-/**
- * Published when an Opportunity moves to WON.
- * Allows cross-module automation (e.g. auto-create a service request intake).
- */
+/** Published when an Opportunity moves to WON, for cross-module automation such as creating a service-request intake. */
 @Getter
 public class OpportunityWonEvent extends BusinessEvent {
 

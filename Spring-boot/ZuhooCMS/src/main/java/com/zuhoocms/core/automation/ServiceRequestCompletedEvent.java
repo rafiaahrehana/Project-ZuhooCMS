@@ -2,10 +2,7 @@ package com.zuhoocms.core.automation;
 
 import lombok.Getter;
 
-/**
- * Published when a ServiceRequest status moves to COMPLETED.
- * Used by UsageBillingService to generate overage invoices.
- */
+/** Published when a ServiceRequest moves to COMPLETED; UsageBillingService uses it to generate overage invoices. */
 @Getter
 public class ServiceRequestCompletedEvent extends BusinessEvent {
 

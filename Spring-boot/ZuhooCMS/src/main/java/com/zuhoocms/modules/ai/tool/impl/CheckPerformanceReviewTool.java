@@ -1,5 +1,7 @@
 package com.zuhoocms.modules.ai.tool.impl;
 
+import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
@@ -19,6 +21,7 @@ public class CheckPerformanceReviewTool implements AiTool {
 
     private final PerformanceService performanceService;
     private final EmployeeRepository employeeRepository;
+    private final AuthorizationService authorizationService;
 
     @Override
     public String name() {
@@ -47,15 +50,23 @@ public class CheckPerformanceReviewTool implements AiTool {
             return AiToolResult.failure("You don't have an employee profile set up, so there's no review to show.");
         }
 
+        // An in-progress review is still the reviewers' draft; listForEmployee already hides those without PERFORMANCE_VIEW, and this filter applies the same rule to managers asking about themselves.
         List<PerformanceReviewResponse> reviews = performanceService
-            .listForEmployee(employeeId, PageRequest.of(0, 1, Sort.by("createdAt").descending()))
-            .getContent();
+            .listForEmployee(employeeId, PageRequest.of(0, 20, Sort.by("createdAt").descending()))
+            .getContent().stream()
+            .filter(PerformanceReviewResponse::isFinalised)
+            .toList();
 
         if (reviews.isEmpty()) {
-            return AiToolResult.ok("You don't have any performance reviews on record yet.", reviews);
+            return AiToolResult.ok("You don't have any completed performance reviews on record yet.", List.of());
         }
 
         PerformanceReviewResponse r = reviews.get(0);
+        // Salary increment and employment-status recommendations are management-only.
+        if (!authorizationService.hasPermission(PermissionCode.PERFORMANCE_VIEW)) {
+            r.setSalaryIncrement(null);
+            r.setEmploymentStatusRecommendation(null);
+        }
         StringBuilder sb = new StringBuilder("Your most recent performance review (");
         sb.append(r.getReviewPeriodStart()).append(" to ").append(r.getReviewPeriodEnd()).append("):\n");
         if (r.getOverallScore() != null) sb.append("- Overall score: ").append(r.getOverallScore()).append('\n');

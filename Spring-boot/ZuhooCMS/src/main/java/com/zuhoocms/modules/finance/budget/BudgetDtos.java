@@ -34,7 +34,6 @@ public class BudgetDtos {
         private int fiscalYear;
         private BigDecimal amount;
         private String notes;
-        // Live budget-vs-actual rollup
         private BigDecimal actualSpend;
         private BigDecimal remaining;
         private double usedPercent;

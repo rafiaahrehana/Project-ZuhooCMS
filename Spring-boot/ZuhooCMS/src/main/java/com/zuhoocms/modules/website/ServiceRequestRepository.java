@@ -7,4 +7,6 @@ import java.util.Optional;
 @Repository("websiteServiceRequestRepository")
 public interface ServiceRequestRepository extends JpaRepository<ServiceRequest, Long> {
     Optional<ServiceRequest> findByCodeAndCompanyId(String code, Long companyId);
+
+    boolean existsByCode(String code);
 }

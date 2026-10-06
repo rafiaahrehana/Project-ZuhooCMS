@@ -2,7 +2,9 @@ package com.zuhoocms.modules.finance.vendor;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,6 +16,11 @@ import java.util.Optional;
 public interface VendorBillRepository extends JpaRepository<VendorBill, Long> {
 
     Optional<VendorBill> findByIdAndCompanyId(Long id, Long companyId);
+
+    /** findByIdAndCompanyId under SELECT ... FOR UPDATE so concurrent approve/pay/cancel serialize; the status re-check after it then sees committed state, which stops a double approval or a payment past the outstanding balance. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM VendorBill b WHERE b.id = :id AND b.companyId = :companyId")
+    Optional<VendorBill> lockByIdAndCompanyId(@Param("id") Long id, @Param("companyId") Long companyId);
 
     Page<VendorBill> findByCompanyId(Long companyId, Pageable pageable);
 
@@ -51,16 +58,26 @@ public interface VendorBillRepository extends JpaRepository<VendorBill, Long> {
         @Param("oldStatuses") List<VendorBillStatus> oldStatuses
     );
 
-    @Query("SELECT MAX(b.billNumber) FROM VendorBill b WHERE b.companyId = :companyId AND b.billNumber LIKE :prefix%")
-    Optional<String> findMaxBillNumberByCompanyAndPrefix(@Param("companyId") Long companyId, @Param("prefix") String prefix);
-
     /**
-     * Approved vendor-bill spend against one expense account, for budget
-     * tracking. totalAmount (not balanceAmount) - the expense is recognized
-     * at approval per postToLedger, not at payment, so a budget should count
-     * it the same moment the GL does. DRAFT excluded (not yet recognized),
-     * CANCELLED excluded (reversed).
+     * The highest bill sequence in this company and prefix, counting soft-deleted rows.
+     *
+     * <p>Native, for the same reason as ExpenseRepository.findMaxExpenseSequenceIncludingDeleted: BaseEntity's
+     * {@code @SQLRestriction("deleted = false")} applies to JPQL, so the JPQL version of this query could not see a
+     * soft-deleted bill whose row still holds {@code UNIQUE (company_id, bill_number)}. Once such a row existed, every
+     * later create in that company would propose its number and fail on the constraint, permanently, with no way out
+     * through the API.
      */
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(bill_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(bill_number FROM :start) AS BIGINT) END)
+        FROM vendor_bills
+        WHERE company_id = :companyId AND bill_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxBillSequenceIncludingDeleted(@Param("companyId") Long companyId,
+                                             @Param("prefix") String prefix,
+                                             @Param("start") int start);
+
+    /** Approved vendor-bill spend against one expense account for budget tracking; totalAmount, not balanceAmount, since postToLedger recognizes at approval. DRAFT is not yet recognized and CANCELLED is reversed. */
     @Query("SELECT COALESCE(SUM(b.totalAmount), 0) FROM VendorBill b " +
            "WHERE b.companyId = :companyId AND b.expenseAccount.accountName = :accountName " +
            "AND b.billDate BETWEEN :start AND :end " +

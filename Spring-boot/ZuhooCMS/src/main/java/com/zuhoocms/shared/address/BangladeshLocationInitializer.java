@@ -37,7 +37,6 @@ public class BangladeshLocationInitializer implements CommandLineRunner {
 
         Country bd = bdOpt.get();
 
-        // Check if locations for BD are already seeded
         long existingCount = locationRepository.countByCountryId(bd.getId());
         if (existingCount > 0) {
             log.info("Bangladesh locations are already initialized ({} nodes found).", existingCount);
@@ -47,7 +46,6 @@ public class BangladeshLocationInitializer implements CommandLineRunner {
         log.info("Starting local seeding for Bangladesh administrative levels (Divisions, Districts, Upazilas/Thanas) from local JSON resources...");
 
         try {
-            // Read divisions, districts, upazilas from local resources
             String divisionsJson = readResource("data/bd-divisions.json");
             String districtsJson = readResource("data/bd-districts.json");
             String upazilasJson = readResource("data/bd-upazilas.json");
@@ -76,19 +74,16 @@ public class BangladeshLocationInitializer implements CommandLineRunner {
             int upazilaCount = 0;
 
             for (DivisionRaw div : divisionsWrapper.divisions) {
-                // Save division (LEVEL 1)
                 Location divisionNode = saveNode(div.name.trim(), LocationType.LEVEL1, bd, null);
                 divisionCount++;
 
                 List<DistrictRaw> districts = districtsByDivision.getOrDefault(String.valueOf(div.id), List.of());
                 for (DistrictRaw dist : districts) {
-                    // Save district (LEVEL 2)
                     Location districtNode = saveNode(dist.name.trim(), LocationType.LEVEL2, bd, divisionNode);
                     districtCount++;
 
                     List<UpazilaRaw> upazilas = upazilasByDistrict.getOrDefault(String.valueOf(dist.id), List.of());
                     for (UpazilaRaw up : upazilas) {
-                        // Save upazila/thana (LEVEL 3)
                         saveNode(up.name.trim(), LocationType.LEVEL3, bd, districtNode);
                         upazilaCount++;
                     }

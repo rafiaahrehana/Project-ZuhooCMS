@@ -27,7 +27,12 @@ import java.util.Locale;
 @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
 public class CareerPageController {
 
-    private static final String SLUG_PATTERN = "[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])?";
+    /**
+     * One to sixty characters, as the error message says. The middle group is {0,58} and not {1,58} because a
+     * two-character slug has nothing between its first and last character - "ab" was refused by a rule whose own
+     * message promised it was allowed.
+     */
+    private static final String SLUG_PATTERN = "[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?";
 
     private final CareerPageSettingsRepository settingsRepository;
     private final CompanyRepository companyRepository;
@@ -69,7 +74,7 @@ public class CareerPageController {
         return ResponseEntity.ok(CareerPageSettingsDto.from(settingsRepository.save(settings)));
     }
 
-    /** First open seeds a slug from the company name so the page works immediately. */
+    /** First open seeds a slug from the company name; the page stays unpublished until HR publishes it. */
     private CareerPageSettings defaults(Long companyId) {
         String base = companyRepository.findById(companyId)
                 .map(Company::getCompanyName)
@@ -88,7 +93,8 @@ public class CareerPageController {
                 .companyId(companyId)
                 .slug(slug)
                 .headline("Join our team")
-                .published(true)
+                // Unpublished until HR chooses to go live: opening the settings screen used to publish a public page immediately.
+                .published(false)
                 .build();
     }
 

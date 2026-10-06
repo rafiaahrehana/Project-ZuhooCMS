@@ -11,12 +11,7 @@ import org.hibernate.annotations.ParamDef;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * A partial write-down against an invoice - e.g. "we overcharged you by 500, here's
- * a credit" - without reversing the whole invoice like a refund does. Unlike Refund,
- * no cash actually leaves the company, so it's issued directly (no approve/reject
- * workflow) and simply reduces what the client still owes.
- */
+/** A partial write-down against an invoice: no cash leaves the company, so unlike Refund it is issued directly with no approve/reject workflow and simply reduces what the client owes. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
@@ -24,7 +19,7 @@ import java.time.LocalDateTime;
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class CreditNote extends BaseEntity {
 
-    private Long companyId; // Tenant isolation
+    private Long companyId;
 
     @Column(name = "credit_note_number", nullable = false)
     private String creditNoteNumber; // CN-2026-000001

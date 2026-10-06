@@ -21,13 +21,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-/**
- * The negotiation record of an offer: what was offered (title, salary
- * breakdown, joining date), when it expires, and what the candidate decided.
- * The printable document stays in the letters module - this is the data an
- * accepted offer hands to onboarding, using the same component fields as
- * HireApplicationRequest so nothing gets retyped.
- */
+/** The negotiation record of an offer: what was offered, when it expires, what the candidate decided; the printable document stays in the letters module, and the component fields match HireApplicationRequest so onboarding retypes nothing. */
 @Entity
 @Table(name = "recruitment_job_offers")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
@@ -51,7 +45,7 @@ public class JobOffer extends BaseEntity {
     /** After this date a SENT offer counts as expired (derived, not a stored status). */
     private LocalDate expiryDate;
 
-    // ── Offered salary (monthly) ──────────────────────────────
+    // Offered salary, monthly.
     @Column(precision = 12, scale = 2)
     private BigDecimal grossSalary;
 

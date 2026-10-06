@@ -17,15 +17,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Authenticates the WebSocket handshake. /ws is permitAll at the HTTP security layer
- * (see SecurityConfig) because a browser's native WebSocket transport cannot send a
- * custom Authorization header - the JWT has to travel as a query parameter instead
- * (?token=...), which JwtAuthFilter's header-only check would never see. This
- * interceptor does the equivalent check at the handshake itself and refuses the
- * upgrade outright for a missing/invalid/expired token, so an unauthenticated
- * socket is never established in the first place.
- */
+/** Stands in for JwtAuthFilter on /ws (permitAll in SecurityConfig): browsers cannot send an Authorization header on a handshake, so the JWT arrives as ?token= and the upgrade is refused if it is missing or invalid. */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -44,6 +36,12 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
         }
 
         try {
+            // Same rule as JwtAuthFilter: a refresh/reset/verify token has no companyId claim and must not open a socket either.
+            if (!jwtService.isAccessToken(token)) {
+                response.setStatusCode(HttpStatus.UNAUTHORIZED);
+                return false;
+            }
+
             String email = jwtService.extractEmail(token);
             User user = email != null ? userRepository.findByEmail(email).orElse(null) : null;
             if (user == null || !user.isEnabled()) {
@@ -62,7 +60,6 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
     @Override
     public void afterHandshake(ServerHttpRequest request, ServerHttpResponse response,
                                 WebSocketHandler wsHandler, Exception exception) {
-        // no-op
     }
 
     private String extractToken(ServerHttpRequest request) {

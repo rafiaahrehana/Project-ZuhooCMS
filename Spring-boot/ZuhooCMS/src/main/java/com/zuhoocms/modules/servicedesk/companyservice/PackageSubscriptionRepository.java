@@ -28,22 +28,17 @@ public interface PackageSubscriptionRepository
     Page<PackageSubscription> findByCompanyIdAndStatus(
         Long companyId, SubscriptionStatus status, Pageable pageable);
 
-    /** All subscriptions for one client across all packages. */
     Page<PackageSubscription> findByCompanyIdAndClientId(
         Long companyId, Long clientId, Pageable pageable);
 
-    /** Active subscription for a specific client+package — enforces the one-active rule. */
+    /** Enforces the one-active-subscription-per-package rule. */
     Optional<PackageSubscription> findByCompanyIdAndClientIdAndServicePackageIdAndStatus(
         Long companyId, Long clientId, Long packageId, SubscriptionStatus status);
 
-    /** All active subscriptions a client currently holds. */
     List<PackageSubscription> findByCompanyIdAndClientIdAndStatus(
         Long companyId, Long clientId, SubscriptionStatus status);
 
-    /**
-     * Subscriptions whose endDate has passed but are still ACTIVE.
-     * Used by a scheduler to auto-expire them.
-     */
+    /** Still ACTIVE past endDate - the scheduler's auto-expire candidates. */
     @Query("""
         SELECT s FROM PackageSubscription s
         WHERE s.status = 'ACTIVE'
@@ -53,10 +48,7 @@ public interface PackageSubscriptionRepository
         """)
     List<PackageSubscription> findExpired(@Param("today") LocalDate today);
 
-    /**
-     * Bulk-expire in one SQL UPDATE instead of loading every base.
-     * Called by the SLA/subscription scheduler.
-     */
+    /** Bulk-expire in one UPDATE rather than loading every row. */
     @Modifying
     @Query("""
         UPDATE PackageSubscription s SET s.status = 'EXPIRED'

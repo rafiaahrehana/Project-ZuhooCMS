@@ -8,11 +8,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-/**
- * Documents attached to a service request. Any authenticated tenant user can
- * upload/view (the client who owns the request, or staff working it) - the
- * same open pattern used by comments/tasks on ServiceRequestController.
- */
+/** Open to any authenticated tenant user (owning client or staff), the same pattern as comments/tasks on ServiceRequestController. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/service-requests/{requestId}/documents")

@@ -98,7 +98,6 @@ public class CompanyService extends BaseEntity {
     @Builder.Default
     private com.zuhoocms.enums.ServiceVisibility visibility = com.zuhoocms.enums.ServiceVisibility.DRAFT;
 
-    // Multi-language support
     private String nameBn;
 
     @Column(columnDefinition = "TEXT")

@@ -24,7 +24,7 @@ public class ServiceFormFieldController {
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PutMapping("/{id}")
     public ResponseEntity<ServiceFormFieldResponse> update(@PathVariable Long serviceId, @PathVariable Long id, @Valid @RequestBody ServiceFormFieldRequest request) {
-        return ResponseEntity.ok(formFieldService.update(id, request));
+        return ResponseEntity.ok(formFieldService.update(serviceId, id, request));
     }
 
     @GetMapping
@@ -35,7 +35,7 @@ public class ServiceFormFieldController {
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long serviceId, @PathVariable Long id) {
-        formFieldService.delete(id);
+        formFieldService.delete(serviceId, id);
         return ResponseEntity.ok().build();
     }
 }

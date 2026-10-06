@@ -32,7 +32,6 @@ public class DocumentServiceImpl implements DocumentService {
         Company companyRef = new Company();
         companyRef.setId(companyId);
 
-        // Format validation based on RequiredDocument rules
         requiredDocumentRepository.findByCompanyIdAndServiceIdOrderBySortOrderAsc(companyId, sr.getCompanyService().getId())
             .stream()
             .filter(rd -> request.getLabel() != null && !request.getLabel().isBlank()
@@ -54,7 +53,7 @@ public class DocumentServiceImpl implements DocumentService {
 
         Document doc = new Document();
         doc.setFileName(request.getFileName());
-        doc.setFileUrl(request.getFileUrl());
+        doc.setFileUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getFileUrl(), doc.getFileUrl()));
         doc.setFileType(request.getFileType());
         doc.setFileSizeBytes(request.getFileSizeBytes());
         doc.setLabel(request.getLabel());
@@ -95,8 +94,7 @@ public class DocumentServiceImpl implements DocumentService {
         return sr;
     }
 
-    // Mirrors ServiceRequestServiceImpl.guardAccess(): staff can reach any request
-    // in their company, but a CLIENT may only touch documents on their own requests.
+    // Mirrors ServiceRequestServiceImpl.guardAccess(): a CLIENT may only touch documents on their own requests.
     private void guardAccess(ServiceRequest sr) {
         User user = securityUtil.getCurrentUser();
         if (user == null || user.getRole() == null || !user.getRole().name().equals("CLIENT")) return;

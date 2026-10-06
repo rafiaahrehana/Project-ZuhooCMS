@@ -6,7 +6,7 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>4.1.0</version>
-        <relativePath/> <!-- lookup parent from repository -->
+        <relativePath/>
     </parent>
     <groupId>com</groupId>
     <artifactId>ZuhooCMS</artifactId>
@@ -52,7 +52,6 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- JWT -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -71,21 +70,18 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Database -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
         </dependency>
 
-        <!-- Dev Tools -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-devtools</artifactId>
@@ -93,7 +89,6 @@
             <optional>true</optional>
         </dependency>
 
-        <!--Ai-->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
@@ -132,17 +127,14 @@
             <version>1.1.40</version>
         </dependency>
 
-        <!-- PDF text extraction for CvTextExtractor (resume parsing). Already pulled in
-             transitively by openhtmltopdf-pdfbox above at this exact version - pinned
-             directly here since it's now a real, direct dependency, not incidental. -->
+        <!-- PDF text extraction for CvTextExtractor; pinned directly because it is now a real dependency, not just transitive via openhtmltopdf-pdfbox. -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
             <version>3.0.3</version>
         </dependency>
 
-        <!-- FCM push to the Android client. Optional at runtime: with no service account
-             configured, FcmPushService logs once and does nothing. -->
+        <!-- FCM push to the Android client; optional at runtime - with no service account FcmPushService logs once and does nothing. -->
         <dependency>
             <groupId>com.google.firebase</groupId>
             <artifactId>firebase-admin</artifactId>

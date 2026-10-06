@@ -34,7 +34,7 @@ public class SoftwareLicenseController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(licenseService.getAll(
-                PageRequest.of(page, Math.min(size, MAX_PAGE_SIZE), Sort.by("createdAt").descending())));
+                PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, MAX_PAGE_SIZE)), Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/{id}")
@@ -55,7 +55,8 @@ public class SoftwareLicenseController {
             @PathVariable LicenseStatus status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(licenseService.getByStatus(status, PageRequest.of(page, Math.min(size, MAX_PAGE_SIZE))));
+        return ResponseEntity.ok(licenseService.getByStatus(status,
+                PageRequest.of(Math.max(page, 0), Math.max(1, Math.min(size, MAX_PAGE_SIZE)), Sort.by("createdAt").descending())));
     }
 
     @PatchMapping("/{id}")

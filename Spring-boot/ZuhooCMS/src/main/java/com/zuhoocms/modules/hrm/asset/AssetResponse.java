@@ -26,7 +26,6 @@ public class AssetResponse {
     private String assignedToName;
     private LocalDateTime createdAt;
 
-    // IT Hardware Specific Fields - already on the Asset entity, now exposed via the API
     private String assetTag;
     private String brand;
     private String model;
@@ -37,4 +36,10 @@ public class AssetResponse {
     private String storageSize;
     private String operatingSystem;
     private LocalDate warrantyExpiry;
+    /*
+     * Both written by the dispose action and, until now, returned by nothing - so no client could show why or when
+     * a machine was written off. The write was real and the read did not exist.
+     */
+    private LocalDate disposalDate;
+    private String disposalReason;
 }

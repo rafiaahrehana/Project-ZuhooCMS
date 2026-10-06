@@ -23,8 +23,7 @@ public interface RefundRepository extends JpaRepository<Refund, Long> {
     // Ordered newest-first so the caller can take the first match per invoice as "latest".
     List<Refund> findByClientInvoiceIdInAndCompanyIdOrderByCreatedAtDesc(List<Long> clientInvoiceIds, Long companyId);
 
-    // Refunds have no reference number of their own - match on the linked invoice
-    // number, the client's name, or the refund reason instead.
+    // Refunds have no reference number of their own, so match on the linked invoice number, client name, or reason.
     @Query("SELECT r FROM Refund r " +
            "LEFT JOIN r.clientInvoice ci " +
            "LEFT JOIN ci.client c " +

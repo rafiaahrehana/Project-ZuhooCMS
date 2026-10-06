@@ -19,18 +19,32 @@ public interface CompanyRepository extends JpaRepository<Company, Long> {
 
     boolean existsBySubdomain(String subdomain);
 
+    /** Case-insensitive, and counts soft-deleted companies too - they still hold the unique subdomain. */
+    @Query(value = "select exists(select 1 from companies where lower(subdomain) = lower(:subdomain))", nativeQuery = true)
+    boolean existsAnyBySubdomain(@Param("subdomain") String subdomain);
+
     Page<Company> findByStatus(CompanyStatus status, Pageable pageable);
+
+    /** Public company picker: verified-owner ACTIVE/TRIAL tenants, minus the platform and demo tenants, with the logo joined in to avoid an N+1. */
+    @Query("""
+        SELECT new com.zuhoocms.modules.company.CompanyPublicListItem(c.id, c.companyName, c.subdomain, ws.logoUrl)
+        FROM Company c JOIN c.owner o
+        LEFT JOIN com.zuhoocms.modules.website.WebsiteSettings ws ON ws.companyId = c.id
+        WHERE c.status IN :statuses AND c.isPlatformTenant = false
+          AND (o.emailVerified = true OR c.status = com.zuhoocms.enums.CompanyStatus.ACTIVE)
+          AND o.id <> :excludedOwnerId
+        ORDER BY c.companyName ASC, c.id ASC
+        """)
+    List<CompanyPublicListItem> findPublicList(@Param("statuses") List<CompanyStatus> statuses,
+                                               @Param("excludedOwnerId") Long excludedOwnerId,
+                                               Pageable pageable);
 
     /** Companies a prospective client can register under (public registration picker). */
     List<Company> findByStatusInOrderByCompanyNameAsc(List<CompanyStatus> statuses);
 
     Page<Company> findBySubscriptionPlan(String plan, Pageable pageable);
 
-    /**
-     * Combined, null-safe filtering for the platform companies list:
-     * any of status / plan / keyword may be omitted. Keyword matches
-     * company name, email or subdomain, case-insensitively.
-     */
+    /** Null-safe filtering: any of status/plan/keyword may be omitted; keyword matches name, email or subdomain case-insensitively. */
     @Query("""
         SELECT c FROM Company c
         WHERE (:status IS NULL OR c.status = :status)
@@ -46,11 +60,7 @@ public interface CompanyRepository extends JpaRepository<Company, Long> {
         @Param("keyword") String keyword,
         Pageable pageable);
 
-    /**
-     * Fix from Phase 2: enum values are now passed as typed parameters,
-     * not string literals. JPQL string literals ('TRIAL') do not reliably
-     * compare against @Enumerated(STRING) columns.
-     */
+    /** Enums are passed as typed parameters: a JPQL string literal ('TRIAL') does not reliably compare against an @Enumerated(STRING) column. */
     @Query("""
         SELECT c FROM Company c
         WHERE c.subscriptionEnd < :today
@@ -77,6 +87,36 @@ public interface CompanyRepository extends JpaRepository<Company, Long> {
         @Param("cutoffDate") LocalDate cutoffDate,
         @Param("status") CompanyStatus status
     );
+
+    /** Self sign-ups whose owner never verified, registered before the cutoff (UnverifiedSignupCleanupJob); platform tenant excluded, owner fetched in the same query. */
+    @Query("""
+        SELECT c FROM Company c JOIN FETCH c.owner o
+        WHERE o.role = com.zuhoocms.auth.role.enums.Role.COMPANY_OWNER AND o.emailVerified = false
+          AND o.createdAt < :cutoff AND c.status IN :statuses AND c.isPlatformTenant = false
+        """)
+    List<Company> findStaleUnverifiedSignups(@Param("cutoff") java.time.LocalDateTime cutoff,
+                                             @Param("statuses") List<CompanyStatus> statuses);
+
+    /** Platform KPIs over real tenants only: excludes the platform tenant, the demo (owner id passed in) and unverified TRIAL/PENDING_VERIFICATION sign-ups; status/plan optional. */
+    @Query("""
+        SELECT COUNT(c) FROM Company c JOIN c.owner o
+        WHERE c.isPlatformTenant = false AND o.id <> :excludedOwnerId
+          AND NOT (o.emailVerified = false AND c.status IN (com.zuhoocms.enums.CompanyStatus.TRIAL,
+                                                           com.zuhoocms.enums.CompanyStatus.PENDING_VERIFICATION))
+          AND (:status IS NULL OR c.status = :status)
+          AND (:plan IS NULL OR c.subscriptionPlan = :plan)
+        """)
+    long countTenants(@Param("status") CompanyStatus status, @Param("plan") String plan,
+                      @Param("excludedOwnerId") Long excludedOwnerId);
+
+    @Query("""
+        SELECT COUNT(c) FROM Company c JOIN c.owner o
+        WHERE c.isPlatformTenant = false AND o.id <> :excludedOwnerId AND o.emailVerified = true
+          AND c.status = com.zuhoocms.enums.CompanyStatus.TRIAL
+          AND c.subscriptionEnd BETWEEN :from AND :to
+        """)
+    long countTenantTrialsEndingBetween(@Param("from") LocalDate from, @Param("to") LocalDate to,
+                                        @Param("excludedOwnerId") Long excludedOwnerId);
 
     long countByStatus(CompanyStatus status);
 

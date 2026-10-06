@@ -9,12 +9,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * Every tool the agent actually executed (read or write), parallel to
- * AiConversation's plain text exchanges - "what did the AI actually do on my
- * behalf" needs to be reviewable independent of the conversational text,
- * especially for write tools that changed real data.
- */
+/** Every tool the agent executed, kept alongside AiConversation's text so "what did the AI do on my behalf" stays reviewable independent of the conversation. */
 @Getter
 @Setter
 @NoArgsConstructor

@@ -12,12 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
-/**
- * Employee loans/advances recovered automatically through payroll. Creation
- * and cancellation live here; the actual per-period installment computation
- * and PAID-time balance settlement live in PayrollServiceImpl, which is the
- * only place a payroll's status legitimately changes.
- */
+/** Employee loans/advances recovered through payroll; installment computation and PAID-time settlement live in PayrollServiceImpl, the only place payroll status changes. */
 @Service
 @RequiredArgsConstructor
 public class LoanAdvanceService {
@@ -26,6 +21,7 @@ public class LoanAdvanceService {
     private final LoanRepaymentRepository repaymentRepository;
     private final EmployeeRepository employeeRepository;
     private final SecurityUtil securityUtil;
+    private final jakarta.persistence.EntityManager entityManager;
 
     @Transactional
     public LoanAdvanceResponse create(CreateLoanRequest request) {
@@ -33,10 +29,16 @@ public class LoanAdvanceService {
         Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + request.getEmployeeId()));
 
-        // One ACTIVE loan per employee at a time - keeps "how much comes out of
-        // this month's pay" unambiguous instead of needing to stack/prioritize
-        // multiple concurrent loans.
-        if (loanRepository.existsByEmployeeIdAndStatus(employee.getId(), LoanAdvance.Status.ACTIVE)) {
+        if (request.getMonthlyInstallment() != null && request.getPrincipalAmount() != null
+                && request.getMonthlyInstallment().compareTo(request.getPrincipalAmount()) > 0) {
+            throw new BadRequestException("Monthly installment cannot exceed the principal amount");
+        }
+
+        // One ACTIVE loan per employee, so this month's deduction is unambiguous; checked under row locks on the employee (serializing two first-ever loans) and every existing loan row.
+        entityManager.lock(employee, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        boolean hasActive = loanRepository.lockAllForEmployee(employee.getId()).stream()
+                .anyMatch(l -> l.getStatus() == LoanAdvance.Status.ACTIVE);
+        if (hasActive) {
             throw new BadRequestException(
                     employeeDisplayName(employee) + " already has an active loan/advance - close or cancel it first");
         }
@@ -84,11 +86,7 @@ public class LoanAdvanceService {
                 .stream().map(LoanAdvanceMapper::toResponse).toList();
     }
 
-    /**
-     * Only legal before any installment has actually been recovered - once
-     * payroll has paid one, the loan is money already partly out the door and
-     * has to run to completion (or be handled manually), not disappear.
-     */
+    /** Only legal before any installment has been recovered - once payroll has paid one, the money is partly out and the loan must run to completion. */
     @Transactional
     public LoanAdvanceResponse cancel(Long id) {
         LoanAdvance loan = findInTenant(id);

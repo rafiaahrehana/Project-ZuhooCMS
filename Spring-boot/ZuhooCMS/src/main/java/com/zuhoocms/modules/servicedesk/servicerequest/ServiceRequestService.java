@@ -31,25 +31,23 @@ public interface ServiceRequestService {
     void cancel(Long id, String reason);
 
     /**
-     * Same effect as cancel(), for the payment-deadline scheduler: no
-     * SecurityContext to read a caller/company from, and no CLIENT-role
-     * assignment check to apply since nothing here is client-initiated.
+     * Same effect as cancel(), for the payment-deadline scheduler: no SecurityContext and no CLIENT-role assignment
+     * check. The history row it writes has no user actor, so it is stamped "System".
+     *
+     * @param deadlineHours the window that elapsed, only so the reason the client reads names the real figure
      */
-    void systemCancelForNonPayment(Long id);
+    void systemCancelForNonPayment(Long id, long deadlineHours);
 
-    // Comments
     RequestCommentResponse addComment(Long requestId, AddCommentRequest request);
 
     Page<RequestCommentResponse> getComments(Long requestId, Pageable pageable);
 
-    // Status history
     List<RequestStatusHistoryResponse> getStatusHistory(Long requestId);
 
     ServiceRequestResponse advanceStage(Long id);
 
     StageProgressResponse getStageProgress(Long id);
 
-    // Embedded Quotation
     ServiceRequestResponse submitQuotation(Long id, SubmitQuotationRequest request);
     ServiceRequestResponse acceptQuotation(Long id);
     ServiceRequestResponse rejectQuotation(Long id, RejectQuotationRequest request);
@@ -57,6 +55,6 @@ public interface ServiceRequestService {
     /** Summarise a request's real status/history with AI and suggest a next action */
     ServiceRequestResponse summarise(Long id);
 
-    /** AI micro-assist: drafts a reply comment from rough notes, grounded in the request's real status/history. Nothing is posted. */
+    /** Drafts a reply comment from rough notes, grounded in the request's real status/history. Nothing is posted. */
     ServiceRequestReplyDraftResponse draftReply(Long id, ServiceRequestReplyDraftRequest request);
 }

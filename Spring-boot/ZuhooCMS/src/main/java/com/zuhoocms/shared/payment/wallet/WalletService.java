@@ -12,16 +12,12 @@ public interface WalletService {
 
     Page<WalletTransactionResponse> getTransactions(WalletTransactionType type, Pageable pageable);
 
-    /**
-     * Internal method used by Invoice/Payment services.
-     * Debits the wallet and records a ledger entry.
-     */
     Wallet debit(String contextType, Long contextId, BigDecimal amount, String reference, String notes);
 
-    /**
-     * Internal method used by Refund servicereview.
-     * Credits the wallet balance.
-     */
     Wallet credit(String contextType, Long contextId, BigDecimal amount, WalletTransactionType type,
                   String reference, String notes);
+
+    /** Idempotent {@link #credit} by (wallet, type, reference), returning false if already booked; the check runs under the wallet row lock so concurrent callers cannot both credit. */
+    boolean creditOnce(String contextType, Long contextId, BigDecimal amount, WalletTransactionType type,
+                       String reference, String notes);
 }

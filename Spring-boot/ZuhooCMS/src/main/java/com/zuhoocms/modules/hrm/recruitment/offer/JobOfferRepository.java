@@ -22,4 +22,13 @@ public interface JobOfferRepository extends JpaRepository<JobOffer, Long> {
 
     /** Unpaged - RecruitmentKpiServiceImpl computes company-wide, per-job and per-recruiter offer-acceptance rates from one fetch rather than N count queries. */
     List<JobOffer> findByCompanyId(Long companyId);
+
+    /** KPI report: offers with their application and its posting, in one query. */
+    @org.springframework.data.jpa.repository.Query("""
+        SELECT o FROM JobOffer o
+        JOIN FETCH o.jobApplication a
+        LEFT JOIN FETCH a.jobPosting
+        WHERE o.company.id = :companyId
+        """)
+    List<JobOffer> findAllForKpis(@org.springframework.data.repository.query.Param("companyId") Long companyId);
 }

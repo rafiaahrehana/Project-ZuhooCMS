@@ -8,14 +8,6 @@ import com.zuhoocms.modules.company.Company;
 import jakarta.persistence.*;
 import lombok.*;
 
-/**
- * FIXES:
- * 1. 'message' → 'content'                (all callers use content)
- * 2. 'boolean internal' → 'CommentVisibility visibility'  (all callers use the enum)
- * 3. relation 'request' → 'serviceRequest'  (repository derived queries + service builder)
- * 4. added 'company' field               (service builder sets company)
- * 5. added @Builder                       (service uses RequestComment.builder())
- */
 @Entity
 @Table(name = "request_comments")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

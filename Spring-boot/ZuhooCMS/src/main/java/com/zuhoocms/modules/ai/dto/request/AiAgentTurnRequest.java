@@ -2,6 +2,7 @@ package com.zuhoocms.modules.ai.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 public class AiAgentTurnRequest {
 
@@ -9,6 +10,7 @@ public class AiAgentTurnRequest {
     private Long threadId;
 
     @NotBlank(message = "message is required")
+    @Size(max = 8000, message = "message must be at most 8000 characters")
     private String message;
 
     public Long getThreadId() { return threadId; }

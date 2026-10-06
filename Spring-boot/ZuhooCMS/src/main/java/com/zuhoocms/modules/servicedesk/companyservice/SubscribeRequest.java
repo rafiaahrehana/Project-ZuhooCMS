@@ -9,16 +9,9 @@ public class SubscribeRequest {
     @NotNull(message = "Package ID is required")
     private Long packageId;
 
-    /**
-     * Optional: admin subscribing on behalf of a specific client.
-     * If null and caller is CLIENT role, the service resolves clientId
-     * from the JWT principal automatically.
-     */
+    /** Set only when staff subscribe on a client's behalf; a CLIENT caller is resolved from the JWT. */
     private Long clientId;
 
-    /**
-     * Override auto-renew for this specific subscription.
-     * Defaults to the package-level autoRenew setting if not provided.
-     */
+    /** Overrides the package-level autoRenew setting when set. */
     private Boolean autoRenew;
 }

@@ -25,14 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * Aggregates the finance position for a month.
- *
- * Reads the source tables directly rather than the reporting endpoints: those
- * produce statements (P&L, balance sheet) for a period, whereas this needs a
- * handful of headline numbers plus a short rolling series, and going through
- * them would mean six calls to render one screen.
- */
+/** Aggregates the finance position for a month, reading the source tables directly: the reporting endpoints produce full statements, so using them would mean six calls to render one screen. */
 @Service
 @RequiredArgsConstructor
 public class FinanceDashboardService {
@@ -65,9 +58,7 @@ public class FinanceDashboardService {
         LocalDate start = ym.atDay(1);
         LocalDate end = ym.atEndOfMonth();
 
-        // One company-scoped, date-bounded read of each table for the whole trend
-        // window, then bucketed in memory - cheaper than a query per month per
-        // metric, and without dragging in other tenants' rows.
+        // One company-scoped, date-bounded read of each table for the whole trend window, bucketed in memory - cheaper than a query per month per metric.
         LocalDate windowStart = ym.minusMonths(TREND_MONTHS - 1L).atDay(1);
         List<ClientInvoice> invoices =
                 invoiceRepository.findByCompanyIdAndInvoiceDateBetween(companyId, windowStart, end);
@@ -157,12 +148,7 @@ public class FinanceDashboardService {
                 .toList();
     }
 
-    /**
-     * Net of tax (subtotal - discount), matching exactly what postInvoiceToLedger
-     * actually credits to Sales Revenue. Previously summed totalAmount
-     * (tax-inclusive), so this tile disagreed with the P&L report's "Total
-     * Revenue" for the identical month by the full tax rate on every invoice.
-     */
+    /** Net of tax (subtotal - discount), matching what postInvoiceToLedger credits to Sales Revenue; summing tax-inclusive totalAmount made this tile disagree with the P&L's Total Revenue. */
     private BigDecimal revenueIn(List<ClientInvoice> invoices, YearMonth ym) {
         return invoices.stream()
                 .filter(i -> inMonth(i.getInvoiceDate(), ym) && BILLED.contains(i.getStatus()))
@@ -170,11 +156,7 @@ public class FinanceDashboardService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    /**
-     * Only expenses that have cleared approval count as spend. Pending claims
-     * are not yet a cost, and counting them would overstate every month and
-     * then silently correct itself when one is rejected.
-     */
+    /** Only approved expenses count as spend: a pending claim is not yet a cost, and counting it would overstate the month and then silently correct itself on rejection. */
     private BigDecimal expensesIn(List<Expense> expenses, YearMonth ym) {
         return expenses.stream()
                 .filter(e -> inMonth(e.getExpenseDate(), ym) && isApprovedSpend(e))
@@ -204,11 +186,7 @@ public class FinanceDashboardService {
         return points;
     }
 
-    /**
-     * Budget consumption for the fiscal year to date. Spend is matched to a
-     * budget by category name, case-insensitively, which is how Budget and
-     * Expense are already related - both hold the category as free text.
-     */
+    /** Budget consumption for the fiscal year to date; spend matches a budget by case-insensitive category name, since Budget and Expense both hold the category as free text. */
     private List<FinanceDashboardResponse.BudgetLine> budgets(Long companyId, int year, List<Expense> expenses) {
         Map<String, BigDecimal> spentByCategory = new LinkedHashMap<>();
         for (Expense e : expenses) {

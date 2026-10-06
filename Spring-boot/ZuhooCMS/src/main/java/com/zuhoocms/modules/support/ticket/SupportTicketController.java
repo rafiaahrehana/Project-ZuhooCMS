@@ -5,12 +5,17 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import com.zuhoocms.modules.support.SupportPaging;
+import com.zuhoocms.modules.support.message.ClientTicketReplyRequest;
+import com.zuhoocms.modules.support.message.SupportMessageResponse;
+import com.zuhoocms.modules.support.message.SupportMessageService;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/support/tickets")
@@ -19,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 public class SupportTicketController {
 
     private final SupportTicketService service;
+    private final SupportMessageService messageService;
 
     @PostMapping
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
@@ -28,14 +34,14 @@ public class SupportTicketController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Get Ticket by ID")
     public ResponseEntity<SupportTicketResponse> getById(@PathVariable Long id) {
         return ResponseEntity.ok(service.getById(id));
     }
 
     @GetMapping("/number/{number}")
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Get Ticket by Number")
     public ResponseEntity<SupportTicketResponse> getByNumber(@PathVariable String number) {
         return ResponseEntity.ok(service.getByTicketNumber(number));
@@ -47,7 +53,7 @@ public class SupportTicketController {
     public ResponseEntity<Page<SupportTicketResponse>> getAll(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getAll(PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getAll(SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/my-tickets")
@@ -57,17 +63,18 @@ public class SupportTicketController {
             @RequestParam(required = false) Long userId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getMyTickets(userId, PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getMyTickets(userId, SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/assigned-to-me")
     @PreAuthorize("hasRole('SUPPORT_AGENT')")
     @Operation(summary = "Get Tickets Assigned to Me")
     public ResponseEntity<Page<SupportTicketResponse>> getAssignedToMe(
+            // Ignored, kept only so existing clients that still send it keep working; the caller's own agent record is used.
             @RequestParam(required = false) Long agentId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getAssignedToMe(agentId, PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getAssignedToMe(SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/status/{status}")
@@ -77,7 +84,7 @@ public class SupportTicketController {
             @PathVariable TicketStatus status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getByStatus(status, PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getByStatus(status, SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/sla-breached")
@@ -94,8 +101,9 @@ public class SupportTicketController {
         return ResponseEntity.ok(service.getOpenCriticalTickets());
     }
 
+    // Platform support staff only: a COMPANY_OWNER (or an admin impersonating one) must not route work to platform agents. Same for reassign below.
     @PostMapping("/{id}/assign")
-    @PreAuthorize("hasRole('SUPPORT_MANAGER') or hasRole('SUPPORT_AGENT') or hasRole('COMPANY_OWNER') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('SUPPORT_MANAGER', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Assign Ticket to Agent")
     public ResponseEntity<Void> assign(
             @PathVariable Long id,
@@ -105,7 +113,7 @@ public class SupportTicketController {
     }
 
     @PostMapping("/{id}/reassign")
-    @PreAuthorize("hasRole('SUPPORT_MANAGER') or hasRole('SUPPORT_AGENT') or hasRole('COMPANY_OWNER') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('SUPPORT_MANAGER', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Reassign Ticket")
     public ResponseEntity<Void> reassign(
             @PathVariable Long id,
@@ -134,7 +142,10 @@ public class SupportTicketController {
     }
 
     @PostMapping("/{id}/resolve")
-    @PreAuthorize("hasRole('SUPPORT_AGENT') or hasRole('SUPPORT_MANAGER') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    // A tenant is admitted here as a coarse filter only: the service confines them to a CUSTOMER_SUPPORT ticket of
+    // their own company and checks SUPPORT_MESSAGE_VIEW. Before this, only the platform's support roles could reach
+    // resolve, and no tenant can hold those, so a company could never close out its own customer's ticket.
+    @PreAuthorize("hasRole('SUPPORT_AGENT') or hasRole('SUPPORT_MANAGER') or hasAnyRole('COMPANY_OWNER', 'EMPLOYEE') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Resolve Ticket")
     public ResponseEntity<Void> resolve(
             @PathVariable Long id,
@@ -144,7 +155,8 @@ public class SupportTicketController {
     }
 
     @PostMapping("/{id}/close")
-    @PreAuthorize("hasRole('SUPPORT_AGENT') or hasRole('SUPPORT_MANAGER') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    // Same coarse filter as resolve above, with the same service-side confinement.
+    @PreAuthorize("hasRole('SUPPORT_AGENT') or hasRole('SUPPORT_MANAGER') or hasAnyRole('COMPANY_OWNER', 'EMPLOYEE') or hasAnyRole('SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Close Ticket")
     public ResponseEntity<Void> close(@PathVariable Long id) {
         service.close(id);
@@ -177,7 +189,8 @@ public class SupportTicketController {
     @Operation(summary = "Update Ticket")
     public ResponseEntity<SupportTicketResponse> update(
             @PathVariable Long id,
-            @Valid @RequestBody SupportTicketRequest request) {
+            // Partial: only provided fields are applied; status goes through the guarded transitions (see SupportTicketServiceImpl.update).
+            @Valid @RequestBody SupportTicketPatchRequest request) {
         return ResponseEntity.ok(service.update(id, request));
     }
 
@@ -189,10 +202,7 @@ public class SupportTicketController {
         return ResponseEntity.noContent().build();
     }
 
-    // ── CLIENT-facing (CUSTOMER_SUPPORT tickets) ────────────────────
-    // Distinct from create()/getMyTickets() above, which are PLATFORM_SUPPORT
-    // only (tenant staff -> ZuhooCMS). These raise/list/view a ticket against
-    // the client's own client-company instead, ownership-checked in the service.
+    // Client-facing CUSTOMER_SUPPORT endpoints, against the client's own client-company and ownership-checked in the service; create()/getMyTickets() above are PLATFORM_SUPPORT only.
 
     @PostMapping("/client")
     @PreAuthorize("hasRole('CLIENT')")
@@ -207,7 +217,7 @@ public class SupportTicketController {
     public ResponseEntity<Page<SupportTicketResponse>> getMyClientTickets(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getMyClientTickets(PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getMyClientTickets(SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/client/{id}")
@@ -217,9 +227,7 @@ public class SupportTicketController {
         return ResponseEntity.ok(service.getClientTicketById(id));
     }
 
-    // ── STAFF-facing "Client Chat" (CUSTOMER_SUPPORT tickets) ───────
-    // This company's own clients' tickets - the counterpart to getAll()/
-    // getByStatus() above, which only ever return PLATFORM_SUPPORT tickets.
+    // Staff-facing "Client Chat": this company's own clients' tickets, the counterpart to getAll()/getByStatus(), which return PLATFORM_SUPPORT only.
 
     @GetMapping("/company/client-tickets")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
@@ -227,7 +235,7 @@ public class SupportTicketController {
     public ResponseEntity<Page<SupportTicketResponse>> getClientTicketsForCompany(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getClientTicketsForCompany(PageRequest.of(page, size, Sort.by("createdAt").descending())));
+        return ResponseEntity.ok(service.getClientTicketsForCompany(SupportPaging.of(page, size, Sort.by("createdAt").descending())));
     }
 
     @GetMapping("/company/client-tickets/status/{status}")
@@ -237,7 +245,31 @@ public class SupportTicketController {
             @PathVariable TicketStatus status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getClientTicketsForCompanyByStatus(status, PageRequest.of(page, size, Sort.by("createdAt").descending())));
+        return ResponseEntity.ok(service.getClientTicketsForCompanyByStatus(status, SupportPaging.of(page, size, Sort.by("createdAt").descending())));
+    }
+
+    // Same paths/bodies/status codes as servicedesk-service so the Angular app works against both backends; any other ticket is a 404.
+
+    @GetMapping("/company/client-tickets/{id}")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @Operation(summary = "[Staff] Get One of This Company's Client Tickets")
+    public ResponseEntity<SupportTicketResponse> getClientTicketForCompany(@PathVariable Long id) {
+        return ResponseEntity.ok(service.getClientTicketForCompany(id));
+    }
+
+    @GetMapping("/company/client-tickets/{id}/messages")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @Operation(summary = "[Staff] Get the Conversation on a Client Ticket")
+    public ResponseEntity<List<SupportMessageResponse>> getClientTicketMessagesForCompany(@PathVariable Long id) {
+        return ResponseEntity.ok(messageService.getClientTicketMessagesForCompany(id));
+    }
+
+    @PostMapping("/company/client-tickets/{id}/messages")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
+    @Operation(summary = "[Staff] Reply on a Client Ticket")
+    public ResponseEntity<SupportMessageResponse> replyToClientTicket(
+            @PathVariable Long id,
+            @Valid @RequestBody ClientTicketReplyRequest request) {
+        return new ResponseEntity<>(messageService.replyToClientTicket(id, request), HttpStatus.CREATED);
     }
 }
-

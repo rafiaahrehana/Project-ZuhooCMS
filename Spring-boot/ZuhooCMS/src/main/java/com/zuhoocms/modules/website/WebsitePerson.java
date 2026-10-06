@@ -5,7 +5,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -16,12 +15,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-/**
- * Merges the former TeamMember and Testimonial entities: both are "a person shown on the
- * public website" and shared most of their fields. {@link #type} picks which set of
- * fields applies - TEAM_MEMBER uses bio/photoUrl/email, TESTIMONIAL uses company/quote/
- * avatarUrl/rating; the other side's fields are simply left null.
- */
+/** A person shown on the public website: {@link #type} picks the applicable fields - TEAM_MEMBER uses bio/photoUrl/email, TESTIMONIAL company/quote/avatarUrl/rating, the other side left null. */
 @Entity
 @Table(name = "website_people")
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
@@ -44,7 +38,7 @@ public class WebsitePerson extends BaseEntity {
     private String role;
 
     // TEAM_MEMBER fields
-    @Lob
+    // No @Lob: on PostgreSQL it maps a String to a large-object oid and reading a TEXT value fails with "Bad value for type long".
     @Column(columnDefinition = "TEXT")
     private String bio;
     private String photoUrl;
@@ -52,9 +46,14 @@ public class WebsitePerson extends BaseEntity {
 
     // TESTIMONIAL fields
     private String company;
-    @Lob
+    // No @Lob: on PostgreSQL it maps a String to a large-object oid and reading a TEXT value fails with "Bad value for type long".
     @Column(columnDefinition = "TEXT")
     private String quote;
     private String avatarUrl;
     private int rating;
+
+    /** The site's TeamMember model has socialLinks; none are stored per person yet, so always an empty list. */
+    public java.util.List<SocialLink> getSocialLinks() {
+        return java.util.List.of();
+    }
 }

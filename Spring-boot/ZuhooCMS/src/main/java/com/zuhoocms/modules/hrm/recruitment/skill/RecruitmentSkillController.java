@@ -18,13 +18,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * Skill-tag autocomplete for the SkillTagInput component - no fabricated
- * global taxonomy exists, so suggestions are pooled from skill tags already
- * typed elsewhere in this company's own recruitment data (Candidate.skills,
- * TalentPoolCandidate.skills, JobPosting.requiredSkills/preferredSkills).
- * The pool self-builds: it gets more useful the more recruiters use it.
- */
+/** Skill-tag autocomplete for SkillTagInput: there is no global taxonomy, so suggestions are pooled from tags already typed in this company's own recruitment data. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/recruitment/skills")

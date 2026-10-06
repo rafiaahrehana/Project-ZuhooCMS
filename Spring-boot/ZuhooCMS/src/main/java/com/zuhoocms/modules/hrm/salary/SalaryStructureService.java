@@ -14,4 +14,7 @@ public interface SalaryStructureService {
     Page<SalaryStructureResponse> listForEmployee(Long employeeId, Pageable pageable);
     List<SalaryStructureResponse> historyForEmployee(Long employeeId);
     void delete(Long id);
+
+    /** System entry point for SalaryStructureActivationScheduler (no security context): copies each newly-effective structure onto the employee profile, returning how many were updated. */
+    int applyDueStructures();
 }

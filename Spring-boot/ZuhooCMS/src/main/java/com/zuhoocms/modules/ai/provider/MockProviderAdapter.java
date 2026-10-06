@@ -17,12 +17,12 @@ public class MockProviderAdapter implements AiProviderAdapter {
 
     @Override
     public String generate(String prompt) {
-        return client.call(prompt, "mock", 0.0, 0);
+        return client.call(null, prompt, "mock", 0.0, 0);
     }
 
     @Override
     public AiToolCallOrText callWithTools(String prompt, List<AiTool> tools, List<AiToolExchange> priorExchanges) {
-        return client.callWithTools(prompt, "mock", 0.0, 0, tools, priorExchanges);
+        return client.callWithTools(null, prompt, "mock", 0.0, 0, tools, priorExchanges);
     }
 
     @Override

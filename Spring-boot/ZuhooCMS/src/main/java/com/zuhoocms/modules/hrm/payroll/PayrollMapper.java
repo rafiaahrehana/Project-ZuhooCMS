@@ -5,14 +5,7 @@ import com.zuhoocms.modules.hrm.employee.Employee;
 
 public class PayrollMapper {
 
-    /**
-     * getUser() forces Hibernate to initialize the Employee proxy, which
-     * re-runs the entity's own @SQLRestriction("deleted = false") - a
-     * terminated (soft-deleted) employee's proxy throws EntityNotFoundException
-     * on any field access beyond its id. Payroll history must stay readable
-     * for someone who has since left, so this falls back to a blank name
-     * rather than 500ing the whole payroll list.
-     */
+    /** getUser() initializes the Employee proxy, re-running @SQLRestriction("deleted = false"), so a terminated employee throws EntityNotFoundException; falls back to a blank name to keep payroll history readable. */
     private static User safeUser(Employee emp) {
         if (emp == null) return null;
         try {

@@ -4,15 +4,24 @@ import com.zuhoocms.enums.ClientStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
 public interface ClientRepository extends JpaRepository<Client, Long> {
 
     Optional<Client> findByUserId(Long userId);
+
+    /**
+     * The caller's client record in ONE company. Prefer this over {@link #findByUserId(Long)} for every
+     * "my ..." lookup: the same login can be a client of more than one tenant, and findByUserId returns whichever
+     * row the database hands back. See the matching note on EmployeeRepository.findByUserIdAndCompanyId.
+     */
+    Optional<Client> findByUserIdAndCompanyId(Long userId, Long companyId);
 
     Optional<Client> findByIdAndCompanyId(Long id, Long companyId);
 
@@ -51,4 +60,14 @@ public interface ClientRepository extends JpaRepository<Client, Long> {
     @Query("SELECT c FROM Client c WHERE c.company.id = :companyId AND c.deleted = false AND " +
            "LOWER(c.website) LIKE LOWER(CONCAT('%', :domain, '%')) ESCAPE '!'")
     List<Client> findByWebsiteContainingDomain(@Param("companyId") Long companyId, @Param("domain") String domain);
+
+    /**
+     * Adjusts lifetime value in the database, so Postgres's row lock serialises it; read-modify-write on a Client with no {@code @Version} lost one of two simultaneous wins.
+     *
+     * Pass a negative amount to debit. Deliberately NOT clamped at zero, or repeated close/reopen ratchets the total upward and a genuine negative stays hidden.
+     */
+    // flushAutomatically so pending changes are written before the arithmetic; NOT clearAutomatically, which would detach the lazy Client proxy the debit path arrives through.
+    @Modifying(flushAutomatically = true)
+    @Query("UPDATE Client c SET c.lifetimeValue = COALESCE(c.lifetimeValue, 0) + :amount WHERE c.id = :id")
+    int adjustLifetimeValue(@Param("id") Long id, @Param("amount") BigDecimal amount);
 }

@@ -12,11 +12,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-/**
- * RENAMED: HubServiceController → CompanyServiceController
- * FIX: Added @Valid on all @RequestBody parameters.
- * FIX: Added @PreAuthorize — only ADMIN can manage the service catalog.
- */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/services")

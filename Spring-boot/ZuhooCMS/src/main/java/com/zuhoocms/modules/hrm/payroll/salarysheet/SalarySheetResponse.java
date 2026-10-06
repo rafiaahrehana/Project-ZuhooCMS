@@ -6,14 +6,7 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.util.List;
 
-/**
- * The whole company's salary sheet for one month, computed live from salary
- * structures, attendance and the company's payroll settings.
- *
- * Nothing here is stored: it is a view of what the month currently looks like,
- * so it moves as attendance is corrected. Running payroll is the separate act
- * that freezes these figures into Payroll rows.
- */
+/** The company's salary sheet for one month, computed live from structures, attendance and settings; nothing is stored until running payroll freezes it into Payroll rows. */
 @Data
 @Builder
 public class SalarySheetResponse {
@@ -29,7 +22,6 @@ public class SalarySheetResponse {
 
     private List<SalarySheetRow> rows;
 
-    // ── Column totals, matching the footer of the sheet ──────
     private BigDecimal totalBasic;
     private BigDecimal totalHouseRent;
     private BigDecimal totalMedical;

@@ -3,11 +3,7 @@ package com.zuhoocms.modules.crm.client;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-/**
- * Fields a CLIENT is allowed to edit on their own profile via PATCH /api/clients/me.
- * Deliberately excludes status, accountManagerId, and portalAccessEnabled - those
- * stay admin/owner-only (see UpdateClientRequest, used by the staff-facing endpoint).
- */
+/** Fields a CLIENT may edit on their own profile via PATCH /api/clients/me; status, accountManagerId and portalAccessEnabled stay owner-only (see UpdateClientRequest). */
 @Data
 public class UpdateMyClientProfileRequest {
 

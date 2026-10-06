@@ -28,4 +28,6 @@ public class RefundResponse {
     private String processedByName;
     private LocalDateTime processedAt;
     private String rejectionReason;
+    /** true = credited to the company wallet; false = paid out externally. Additive field. */
+    private Boolean refundToWallet;
 }

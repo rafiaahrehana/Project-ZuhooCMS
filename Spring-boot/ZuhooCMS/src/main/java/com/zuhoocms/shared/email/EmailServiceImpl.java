@@ -1,342 +1,279 @@
 package com.zuhoocms.shared.email;
 
-import com.zuhoocms.shared.exception.BadRequestException;
-import jakarta.mail.internet.MimeMessage;
-import lombok.RequiredArgsConstructor;
-
+import com.zuhoocms.shared.notification.AfterCommit;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
-
+/**
+ * Builds email content and hands delivery to EmailDeliveryWorker; every path except sendClientPortalInviteEmail sends after commit (AfterCommit) via the worker's @Async retries.
+ * Values passed in here are plain text; EmailTemplate escapes them.
+ */
 @Service
 public class EmailServiceImpl implements EmailService {
 
-    private final JavaMailSender mailSender;
     private final EmailTemplate template;
     private final EmailBranding brandingHelper;
-    private final EmailLogRepository emailLogRepository;
+    private final EmailDeliveryWorker worker;
+    private final String frontendUrl;
 
     public EmailServiceImpl(
-            JavaMailSender mailSender,
             EmailTemplate template,
             EmailBranding brandingHelper,
-            EmailLogRepository emailLogRepository) {
-        this.mailSender = mailSender;
+            EmailDeliveryWorker worker,
+            @Value("${app.frontend-url}") String frontendUrl) {
         this.template = template;
         this.brandingHelper = brandingHelper;
-        this.emailLogRepository = emailLogRepository;
+        this.worker = worker;
+        this.frontendUrl = EmailBranding.primaryFrontendUrl(frontendUrl);
     }
 
-    @Value("${spring.mail.username}")
-    private String from;
+    private String link(String path) {
+        return frontendUrl + path;
+    }
 
-    @Value("${app.frontend-url}")
-    private String frontendUrl;
+    private void enqueue(String to, String subject, String html, String templateName,
+                         Long companyId, EmailPreference preference) {
+        AfterCommit.run(() -> worker.deliverAsync(to, subject, html, templateName, companyId, preference));
+    }
 
-    @Async
+    private static String nz(String s) {
+        return s == null ? "" : s;
+    }
+
     @Override
     public void send(String to, String subject, String html) {
-        sendInternal(to, subject, html, "Custom");
+        // Caller supplies the finished HTML; it is responsible for escaping its own content.
+        enqueue(to, subject, html, "Custom", null, EmailPreference.ALWAYS);
     }
 
-    private void sendInternal(String to, String subject, String html, String templateName) {
-        sendInternal(to, subject, html, templateName, null);
-    }
-
-    private void sendInternal(String to, String subject, String html, String templateName, Long companyId) {
-        com.zuhoocms.modules.company.Company company = null;
-        if (companyId != null) {
-            company = new com.zuhoocms.modules.company.Company();
-            company.setId(companyId);
-        }
-
-        EmailLog emailLog = EmailLog.builder()
-                .recipient(to)
-                .subject(subject)
-                .template(templateName)
-                .company(company)
-                .sentTime(LocalDateTime.now())
-                .status("PENDING")
-                .build();
-        emailLog = emailLogRepository.save(emailLog);
-
-        try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true);
-            helper.setFrom(from);
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(html, true);
-            mailSender.send(message);
-
-            emailLog.setStatus("SUCCESS");
-            emailLogRepository.save(emailLog);
-            
-        } catch (Exception e) {
-            emailLog.setStatus("FAILED");
-            emailLog.setFailureReason(e.getMessage());
-            emailLogRepository.save(emailLog);
-            throw new com.zuhoocms.shared.exception.InternalServerException("Email delivery failed");
-        }
-    }
-
-    @Async
     @Override
     public void sendVerificationEmail(String to, String name, String code) {
-        // 15 must match AuthServiceImpl.EMAIL_VERIFY_CODE_MINUTES - this is display
-        // text only, the actual expiry is enforced server-side against the stored
-        // emailVerificationCodeExpiresAt timestamp, not anything read from this email.
+        // 15 is display text only and must match AuthServiceImpl.EMAIL_VERIFY_CODE_MINUTES; expiry is enforced against emailVerificationCodeExpiresAt.
         String html = EmailTemplate.buildVerificationCodeTemplate(name, code, 15, brandingHelper.getPlatformBranding());
-        sendInternal(to, "Verify your businessos account", html, "VerificationEmail");
+        enqueue(to, "Verify your businessos account", html, "VerificationEmail", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendPasswordResetEmail(String to, String name, String code) {
-        // 15 must match AuthServiceImpl.PASSWORD_RESET_MINS - display text only,
-        // the actual expiry is enforced server-side against the stored
-        // passwordResetCodeExpiresAt timestamp, not anything read from this email.
+        // 15 is display text only and must match AuthServiceImpl.PASSWORD_RESET_MINS; expiry is enforced against passwordResetCodeExpiresAt.
         String html = EmailTemplate.buildPasswordResetCodeTemplate(name, code, 15, brandingHelper.getPlatformBranding());
-        sendInternal(to, "Reset your businessos password", html, "PasswordResetEmail");
+        enqueue(to, "Reset your businessos password", html, "PasswordResetEmail", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendWelcomeCompanyEmail(String to, String name, String companyName) {
-        String html = template.build(brandingHelper.getPlatformBranding(), "", "Welcome, " + name + "! " + companyName + " is now active on businessos.", "Go to Dashboard", frontendUrl + "/dashboard");
-        sendInternal(to, "Welcome to businessos — " + companyName + " is live!", html, "WelcomeCompanyEmail");
+        String html = template.build(brandingHelper.getPlatformBranding(), "Welcome to businessos",
+                "Welcome, " + nz(name) + "! " + nz(companyName) + " is now active on businessos.",
+                "Go to Dashboard", link("/dashboard"));
+        enqueue(to, "Welcome to businessos — " + nz(companyName) + " is live!", html, "WelcomeCompanyEmail", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendSubscriptionPurchasedEmail(String to, String name, String companyName) {
-        String html = template.build(brandingHelper.getPlatformBranding(), "", "Hi " + name + ", your subscription for " + companyName + " is active.", "View Billing", frontendUrl + "/settings/billing");
-        sendInternal(to, "Subscription activated for " + companyName, html, "SubscriptionPurchased");
+        String html = template.build(brandingHelper.getPlatformBranding(), "Subscription activated",
+                "Hi " + nz(name) + ", your subscription for " + nz(companyName) + " is active.",
+                "View Billing", link("/settings/billing"));
+        enqueue(to, "Subscription activated for " + nz(companyName), html, "SubscriptionPurchased", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendSubscriptionExpiryReminder(String to, String name, String companyName, int daysLeft) {
-        String message = daysLeft == 0 ? "Your subscription for " + companyName + " expires today." : "Your subscription for " + companyName + " expires in " + daysLeft + " days.";
-        String html = template.build(brandingHelper.getPlatformBranding(), "", message, "Upgrade Now", frontendUrl + "/settings/billing");
-        sendInternal(to, "Your businessos subscription expires soon", html, "SubscriptionExpiryReminder");
+        String message = daysLeft == 0
+                ? "Your subscription for " + nz(companyName) + " expires today."
+                : "Your subscription for " + nz(companyName) + " expires in " + daysLeft + " days.";
+        String html = template.build(brandingHelper.getPlatformBranding(), "Subscription expiring soon",
+                message, "Upgrade Now", link("/settings/billing"));
+        enqueue(to, "Your businessos subscription expires soon", html, "SubscriptionExpiryReminder", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendSubscriptionSuspendedEmail(String to, String name, String companyName) {
-        String html = template.build(brandingHelper.getPlatformBranding(), "", "Hi " + name + ", your account for " + companyName + " has been suspended.", "Reactivate Now", frontendUrl + "/settings/billing");
-        sendInternal(to, "Your businessos account is suspended", html, "SubscriptionSuspended");
+        String html = template.build(brandingHelper.getPlatformBranding(), "Account suspended",
+                "Hi " + nz(name) + ", your account for " + nz(companyName) + " has been suspended.",
+                "Reactivate Now", link("/settings/billing"));
+        enqueue(to, "Your businessos account is suspended", html, "SubscriptionSuspended", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendLicenseExpiryReminder(String to, String name, String softwareName, java.time.LocalDate expiryDate, long daysLeft) {
-        String message = "Hi " + name + ", your " + softwareName + " license expires on " + expiryDate
+        String message = "Hi " + nz(name) + ", your " + nz(softwareName) + " license expires on " + expiryDate
                 + " (" + daysLeft + " day" + (daysLeft == 1 ? "" : "s") + " left). Renew or cancel before it lapses.";
-        String html = template.build(brandingHelper.getPlatformBranding(), "", message, "Review License", frontendUrl + "/itam/software");
-        sendInternal(to, softwareName + " license expires soon", html, "LicenseExpiryReminder");
+        String html = template.build(brandingHelper.getPlatformBranding(), "License expiring soon",
+                message, "Review License", link("/itam/software"));
+        enqueue(to, nz(softwareName) + " license expires soon", html, "LicenseExpiryReminder", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendLicenseExpiredEmail(String to, String name, String softwareName, java.time.LocalDate expiryDate, int seatsUsed) {
-        String message = "Hi " + name + ", your " + softwareName + " license expired on " + expiryDate
+        String message = "Hi " + nz(name) + ", your " + nz(softwareName) + " license expired on " + expiryDate
                 + ". " + seatsUsed + " assigned seat(s) may lose access until it's renewed.";
-        String html = template.build(brandingHelper.getPlatformBranding(), "", message, "Renew Now", frontendUrl + "/itam/software");
-        sendInternal(to, softwareName + " license has expired", html, "LicenseExpired");
+        String html = template.build(brandingHelper.getPlatformBranding(), "License expired",
+                message, "Renew Now", link("/itam/software"));
+        enqueue(to, nz(softwareName) + " license has expired", html, "LicenseExpired", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendWarrantyExpiryReminder(String to, String name, String assetName, java.time.LocalDate expiryDate, long daysLeft) {
-        String message = "Hi " + name + ", the warranty on " + assetName + " expires on " + expiryDate
+        String message = "Hi " + nz(name) + ", the warranty on " + nz(assetName) + " expires on " + expiryDate
                 + " (" + daysLeft + " day" + (daysLeft == 1 ? "" : "s") + " left). Arrange a replacement or extended coverage before it lapses.";
-        String html = template.build(brandingHelper.getPlatformBranding(), "", message, "Review Hardware", frontendUrl + "/itam/hardware");
-        sendInternal(to, assetName + " warranty expires soon", html, "WarrantyExpiryReminder");
+        String html = template.build(brandingHelper.getPlatformBranding(), "Warranty expiring soon",
+                message, "Review Hardware", link("/itam/hardware"));
+        enqueue(to, nz(assetName) + " warranty expires soon", html, "WarrantyExpiryReminder", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendWarrantyExpiredEmail(String to, String name, String assetName, java.time.LocalDate expiryDate) {
-        String message = "Hi " + name + ", the warranty on " + assetName + " expired on " + expiryDate
+        String message = "Hi " + nz(name) + ", the warranty on " + nz(assetName) + " expired on " + expiryDate
                 + ". Repairs or replacements will no longer be covered.";
-        String html = template.build(brandingHelper.getPlatformBranding(), "", message, "Review Hardware", frontendUrl + "/itam/hardware");
-        sendInternal(to, assetName + " warranty has expired", html, "WarrantyExpired");
+        String html = template.build(brandingHelper.getPlatformBranding(), "Warranty expired",
+                message, "Review Hardware", link("/itam/hardware"));
+        enqueue(to, nz(assetName) + " warranty has expired", html, "WarrantyExpired", null, EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendEmployeeWelcomeEmail(String to, String name, EmailBranding.Data branding) {
-        String html = template.build(branding, "", "Welcome to " + branding.getCompanyName() + ", " + name + "!", "Login to Portal", frontendUrl + "/login");
-        sendInternal(to, "Welcome to " + branding.getCompanyName(), html, "EmployeeWelcome");
+        String html = template.build(branding, "Welcome aboard",
+                "Welcome to " + nz(branding.getCompanyName()) + ", " + nz(name) + "!", "Login to Portal", link("/login"));
+        enqueue(to, "Welcome to " + nz(branding.getCompanyName()), html, "EmployeeWelcome", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendOfferLetterEmail(String to, String name, EmailBranding.Data branding) {
         String html = EmailTemplate.buildOfferLetterTemplate(name, branding);
-        sendInternal(to, "Offer Letter from " + branding.getCompanyName(), html, "OfferLetter");
+        enqueue(to, "Offer Letter from " + nz(branding.getCompanyName()), html, "OfferLetter", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendInterviewScheduledEmail(String to, String name, String interviewDetails, EmailBranding.Data branding) {
-        String message = "Hi " + name + ", your interview with " + branding.getCompanyName() + " has been scheduled. " + interviewDetails;
-        String html = template.build(branding, "", message, "View Details", frontendUrl);
-        sendInternal(to, "Interview Scheduled - " + branding.getCompanyName(), html, "InterviewScheduled");
+        String message = "Hi " + nz(name) + ", your interview with " + nz(branding.getCompanyName()) + " has been scheduled. " + nz(interviewDetails);
+        String html = template.build(branding, "Interview Scheduled", message, "View Details", link(""));
+        enqueue(to, "Interview Scheduled - " + nz(branding.getCompanyName()), html, "InterviewScheduled", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendLeaveApprovalEmail(String to, String name, EmailBranding.Data branding) {
-        String html = template.build(branding, "", "Hi " + name + ", your leave request has been approved.", "View Leaves", frontendUrl + "/leaves");
-        sendInternal(to, "Leave Approved", html, "LeaveApproval", branding.getCompanyId());
+        String html = template.build(branding, "Leave Approved",
+                "Hi " + nz(name) + ", your leave request has been approved.", "View Leaves", link("/leaves"));
+        enqueue(to, "Leave Approved", html, "LeaveApproval", branding.getCompanyId(), EmailPreference.LEAVE_UPDATE);
     }
 
-    @Async
     @Override
     public void sendLeaveRejectionEmail(String to, String name, String reason, EmailBranding.Data branding) {
-        String message = "Hi " + name + ", your leave request has been rejected."
+        String message = "Hi " + nz(name) + ", your leave request has been rejected."
                 + (reason != null && !reason.isBlank() ? " Reason: " + reason : "");
-        String html = template.build(branding, "", message, "View Leaves", frontendUrl + "/leaves");
-        sendInternal(to, "Leave Request Rejected", html, "LeaveRejection", branding.getCompanyId());
+        String html = template.build(branding, "Leave Request Rejected", message, "View Leaves", link("/leaves"));
+        enqueue(to, "Leave Request Rejected", html, "LeaveRejection", branding.getCompanyId(), EmailPreference.LEAVE_UPDATE);
     }
 
-    @Async
     @Override
     public void sendSalaryRevisionEmail(String to, String name, EmailBranding.Data branding) {
-        String subject = "Salary Revision Notification";
         String html = EmailTemplate.buildSalaryRevisionTemplate(name, branding);
-        sendInternal(to, subject, html, "salary-revision", branding.getCompanyId());
+        enqueue(to, "Salary Revision Notification", html, "salary-revision", branding.getCompanyId(), EmailPreference.STATUS_CHANGE);
     }
 
-    @Async
     @Override
     public void sendPayrollEmail(String to, String name, EmailBranding.Data branding) {
-        String html = template.build(branding, "", "Hi " + name + ", your payslip is ready.", "View Payslip", frontendUrl + "/payroll");
-        sendInternal(to, "Your Payslip is Ready", html, "Payroll");
+        String html = template.build(branding, "Your Payslip is Ready",
+                "Hi " + nz(name) + ", your payslip is ready.", "View Payslip", link("/payroll"));
+        enqueue(to, "Your Payslip is Ready", html, "Payroll", branding.getCompanyId(), EmailPreference.STATUS_CHANGE);
     }
 
-    @Async
     @Override
     public void sendInvoiceEmail(String to, String name, EmailBranding.Data branding) {
-        String html = template.build(branding, "", "Hi " + name + ", a new invoice has been generated.", "View Invoice", frontendUrl + "/invoices");
-        sendInternal(to, "New Invoice from " + branding.getCompanyName(), html, "Invoice");
+        String html = template.build(branding, "New Invoice",
+                "Hi " + nz(name) + ", a new invoice has been generated.", "View Invoice", link("/invoices"));
+        enqueue(to, "New Invoice from " + nz(branding.getCompanyName()), html, "Invoice", branding.getCompanyId(), EmailPreference.INVOICE);
     }
 
-    @Async
     @Override
     public void sendTicketAssignedEmail(String to, String name, String ticketTitle, EmailBranding.Data branding) {
-        String subject = "Ticket Assigned: " + ticketTitle;
         String html = EmailTemplate.buildTicketAssignedTemplate(name, ticketTitle, branding);
-        sendInternal(to, subject, html, "ticket-assigned", branding.getCompanyId());
+        enqueue(to, "Ticket Assigned: " + nz(ticketTitle), html, "ticket-assigned", branding.getCompanyId(), EmailPreference.TASK_ASSIGNED);
     }
 
-    @Async
     @Override
     public void sendClientWelcomeEmail(String to, String name, EmailBranding.Data branding) {
-        String html = template.build(branding, "", "Hi " + name + ", welcome to the " + branding.getCompanyName() + " client portal.", "Access Portal", frontendUrl + "/client-login");
-        sendInternal(to, "Welcome to " + branding.getCompanyName(), html, "ClientWelcome");
+        String html = template.build(branding, "Welcome to the client portal",
+                "Hi " + nz(name) + ", welcome to the " + nz(branding.getCompanyName()) + " client portal.",
+                "Access Portal", link("/client-login"));
+        enqueue(to, "Welcome to " + nz(branding.getCompanyName()), html, "ClientWelcome", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    // Deliberately NOT @Async, unlike every other method here.
-    //
-    // sendInternal() throws InternalServerException when SMTP fails, but on an
-    // @Async method that exception is raised on a different thread and lost - the
-    // caller sees success. For an invite that means telling staff the client was
-    // emailed when nothing was sent, and the client never gets access.
-    //
-    // The caller is a person waiting on a confirmation dialog, so blocking for one
-    // SMTP round-trip is the right trade for being able to report the outcome.
+    // Deliberately synchronous: on the @Async path the failure is lost on another thread and staff are told the client was emailed when nothing was sent.
     @Override
     public void sendClientPortalInviteEmail(String to, String name, String token, EmailBranding.Data branding) {
-        // Reuses the reset-password screen, since the action is identical: prove
-        // you hold the token, then choose a password. Only the wording differs.
-        String link = frontendUrl + "/auth/reset-password?token=" + token;
-        String body = "Hi " + name + ", " + branding.getCompanyName()
+        // Reuses the reset-password screen: the action is identical, only the wording differs.
+        String inviteLink = link("/auth/reset-password?token=" + java.net.URLEncoder.encode(nz(token), java.nio.charset.StandardCharsets.UTF_8));
+        String body = "Hi " + nz(name) + ", " + nz(branding.getCompanyName())
                 + " has invited you to the client portal. Set your password to activate your account. "
                 + "This link expires in 7 days.";
-        String html = template.build(branding, "", body, "Set Your Password", link);
-        sendInternal(to, "You're invited to the " + branding.getCompanyName() + " client portal", html, "ClientPortalInvite");
+        String html = template.build(branding, "You're invited", body, "Set Your Password", inviteLink);
+        worker.deliverNow(to, "You're invited to the " + nz(branding.getCompanyName()) + " client portal", html,
+                "ClientPortalInvite", branding.getCompanyId());
     }
 
-    @Async
     @Override
     public void sendTerminationEmail(String to, String name, EmailBranding.Data branding) {
-        String subject = "Offboarding Notification";
         String html = EmailTemplate.buildTerminationTemplate(name, branding);
-        sendInternal(to, subject, html, "termination", branding.getCompanyId());
+        enqueue(to, "Offboarding Notification", html, "termination", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendPerformanceReviewEmail(String to, String name, EmailBranding.Data branding) {
-        String subject = "Performance Review Scheduled";
         String html = EmailTemplate.buildPerformanceReviewTemplate(name, branding);
-        sendInternal(to, subject, html, "performance-review", branding.getCompanyId());
+        enqueue(to, "Performance Review Scheduled", html, "performance-review", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendPaymentReceiptEmail(String to, String name, String invoiceNumber, String amount, EmailBranding.Data branding) {
-        String subject = "Payment Receipt: " + invoiceNumber;
         String html = EmailTemplate.buildPaymentReceiptTemplate(name, invoiceNumber, amount, branding);
-        sendInternal(to, subject, html, "payment-receipt", branding.getCompanyId());
+        enqueue(to, "Payment Receipt: " + nz(invoiceNumber), html, "payment-receipt", branding.getCompanyId(), EmailPreference.PAYMENT);
     }
 
-    @Async
     @Override
     public void sendExpenseStatusEmail(String to, String name, String expenseTitle, String status, EmailBranding.Data branding) {
-        String subject = "Expense Request " + status + ": " + expenseTitle;
         String html = EmailTemplate.buildExpenseStatusTemplate(name, expenseTitle, status, branding);
-        sendInternal(to, subject, html, "expense-status", branding.getCompanyId());
+        enqueue(to, "Expense Request " + nz(status) + ": " + nz(expenseTitle), html, "expense-status", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 
-    @Async
     @Override
     public void sendTicketCreatedEmail(String to, String name, String ticketTitle, EmailBranding.Data branding) {
-        String subject = "Support Ticket Received: " + ticketTitle;
         String html = EmailTemplate.buildTicketCreatedTemplate(name, ticketTitle, branding);
-        sendInternal(to, subject, html, "ticket-created", branding.getCompanyId());
+        enqueue(to, "Support Ticket Received: " + nz(ticketTitle), html, "ticket-created", branding.getCompanyId(), EmailPreference.SERVICE_REQUEST);
     }
 
-    @Async
     @Override
     public void sendTicketResolvedEmail(String to, String name, String ticketTitle, EmailBranding.Data branding) {
-        String subject = "Support Ticket Resolved: " + ticketTitle;
         String html = EmailTemplate.buildTicketResolvedTemplate(name, ticketTitle, branding);
-        sendInternal(to, subject, html, "ticket-resolved", branding.getCompanyId());
+        enqueue(to, "Support Ticket Resolved: " + nz(ticketTitle), html, "ticket-resolved", branding.getCompanyId(), EmailPreference.STATUS_CHANGE);
     }
 
-    @Async
     @Override
     public void sendServiceRequestPaymentReminderEmail(String to, String name, String requestTitle, EmailBranding.Data branding) {
-        String subject = "Action Required: Payment Reminder for Service Request - " + requestTitle;
-        String html = template.build(branding, "", "Hi " + name + ", this is a reminder to complete the payment for your service request '" + requestTitle + "'. Your request will be automatically cancelled if not paid within 24 hours.", "Pay Now", frontendUrl + "/invoices");
-        sendInternal(to, subject, html, "service-request-reminder", branding.getCompanyId());
+        String html = template.build(branding, "Payment Reminder",
+                "Hi " + nz(name) + ", this is a reminder to complete the payment for your service request '" + nz(requestTitle)
+                        + "'. Your request will be automatically cancelled if not paid within 24 hours.",
+                "Pay Now", link("/invoices"));
+        enqueue(to, "Action Required: Payment Reminder for Service Request - " + nz(requestTitle), html,
+                "service-request-reminder", branding.getCompanyId(), EmailPreference.PAYMENT);
     }
 
-    @Async
     @Override
     public void sendServiceRequestCancelledEmail(String to, String name, String requestTitle, EmailBranding.Data branding) {
-        String subject = "Service Request Cancelled - " + requestTitle;
-        String html = template.build(branding, "", "Hi " + name + ", your service request '" + requestTitle
-                + "' has been automatically cancelled because payment was not received in time. Please submit a new request if you'd still like this work done.",
-                "View Requests", frontendUrl + "/service-requests");
-        sendInternal(to, subject, html, "service-request-cancelled", branding.getCompanyId());
+        String html = template.build(branding, "Service Request Cancelled",
+                "Hi " + nz(name) + ", your service request '" + nz(requestTitle)
+                        + "' has been automatically cancelled because payment was not received in time. Please submit a new request if you'd still like this work done.",
+                "View Requests", link("/service-requests"));
+        enqueue(to, "Service Request Cancelled - " + nz(requestTitle), html,
+                "service-request-cancelled", branding.getCompanyId(), EmailPreference.STATUS_CHANGE);
     }
 
-    @Async
     @Override
     public void sendAnnouncementEmail(String to, String name, String title, String body, EmailBranding.Data branding) {
-        String message = "Hi " + name + ", " + branding.getCompanyName() + " posted a new announcement: \"" + title + "\". "
-                + (body.length() > 300 ? body.substring(0, 297) + "..." : body);
-        String html = template.build(branding, "", message, "View Announcement", frontendUrl + "/hrm/announcements");
-        sendInternal(to, "Announcement: " + title, html, "Announcement", branding.getCompanyId());
+        String safeBody = nz(body);
+        String message = "Hi " + nz(name) + ", " + nz(branding.getCompanyName()) + " posted a new announcement: \"" + nz(title) + "\". "
+                + (safeBody.length() > 300 ? safeBody.substring(0, 297) + "..." : safeBody);
+        String html = template.build(branding, "New Announcement", message, "View Announcement", link("/hrm/announcements"));
+        enqueue(to, "Announcement: " + nz(title), html, "Announcement", branding.getCompanyId(), EmailPreference.ALWAYS);
     }
 }

@@ -5,11 +5,7 @@ import lombok.Getter;
 
 import java.util.Map;
 
-/**
- * One "the model called this tool, here's what it returned" pair, fed back
- * into a follow-up callWithTools() so the provider can compose a final
- * natural-language reply grounded in the real result.
- */
+/** One called-tool-and-its-result pair, fed back into a follow-up callWithTools() so the provider can answer from the real result. */
 @Getter
 @AllArgsConstructor
 public class AiToolExchange {

@@ -27,14 +27,8 @@ import org.hibernate.annotations.ParamDef;
     }
 )
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
-// A company_id IS NULL row is the *platform-wide* fallback config, deliberately
-// shared with every tenant - AiProviderResolver's cascade looks for it when the
-// company has saved no config of its own. A plain "company_id = :companyId"
-// filter hid those rows from tenant requests (TenantFilterInterceptor enables
-// the filter for every tenant user), so that middle step of the cascade could
-// never match and tenants always fell through to application.properties.
-// Queries that must stay tenant-only (listProviderConfigs, findByCompanyIdAndActiveTrue)
-// constrain company_id themselves, so widening the filter does not leak them.
+// The filter is widened to keep company_id IS NULL rows (the platform-wide fallback) visible: a plain "company_id = :companyId" hid them, so that step of AiProviderResolver's cascade never matched.
+// Queries that must stay tenant-only constrain company_id themselves, so widening leaks nothing.
 @Filter(name = "tenantFilter", condition = "(company_id = :companyId or company_id is null)")
 public class AiProviderConfig extends BaseEntity {
 
@@ -58,9 +52,7 @@ public class AiProviderConfig extends BaseEntity {
     @Builder.Default
     private boolean active = true;
 
-    // Nullable: a row with no company is the platform-wide default config, set by
-    // platform admins and used as a fallback by AiProviderResolver for companies that
-    // haven't configured their own provider (see AiServiceImpl / AiProviderResolver).
+    // Nullable: a row with no company is the platform-wide default, used as a fallback by AiProviderResolver.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "company_id")
     private Company company;

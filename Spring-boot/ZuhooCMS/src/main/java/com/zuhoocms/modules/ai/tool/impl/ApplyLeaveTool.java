@@ -1,8 +1,10 @@
 package com.zuhoocms.modules.ai.tool.impl;
 
 import com.zuhoocms.enums.LeaveType;
+import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
+import com.zuhoocms.modules.ai.tool.AiToolValidator;
 import com.zuhoocms.modules.hrm.leave.LeaveService;
 import com.zuhoocms.modules.hrm.leave.leaverequest.LeaveRequestDto;
 import com.zuhoocms.modules.hrm.leave.leaverequest.LeaveRequestResponse;
@@ -13,18 +15,13 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDate;
 import java.util.Map;
 
-/**
- * Write tool - the agent loop (AiServiceImpl#runAgentTurn) never calls
- * execute() on the first pass regardless of what this returns; it always
- * proposes the parsed args back to the employee and only executes after an
- * explicit confirmation message. This class has no confirmation logic of its
- * own - that gate lives once, in the loop, so it can't be forgotten per-tool.
- */
+/** Write tool with no confirmation logic of its own: the gate lives once in AiServiceImpl#runAgentTurn, which only executes after an explicit confirmation. */
 @Component
 @RequiredArgsConstructor
 public class ApplyLeaveTool implements AiTool {
 
     private final LeaveService leaveService;
+    private final AiToolValidator validator;
 
     @Override
     public String name() {
@@ -50,6 +47,12 @@ public class ApplyLeaveTool implements AiTool {
             ),
             "required", java.util.List.of("leaveType", "startDate", "endDate")
         );
+    }
+
+    // The Leave Requests page's own permission; without it the tool is not offered to the model and is refused if named anyway.
+    @Override
+    public PermissionCode requiredPermission() {
+        return PermissionCode.LEAVE_CREATE;
     }
 
     @Override
@@ -83,9 +86,11 @@ public class ApplyLeaveTool implements AiTool {
         if (reason != null) dto.setReason(reason.toString());
 
         try {
-            // apply() resolves the employee from SecurityUtil and enforces
-            // every existing rule (balance, overlap, no-backdating, policy
-            // max-consecutive-days) exactly as the Leave Requests page does.
+            // apply() resolves the employee from SecurityUtil and enforces balance, overlap, no-backdating and policy rules exactly as the Leave Requests page does.
+            String invalid = validator.problems(dto);
+            if (invalid != null) {
+                return AiToolResult.failure("That doesn't look right - " + invalid + ".");
+            }
             LeaveRequestResponse response = leaveService.apply(dto);
             return AiToolResult.ok(
                 "Submitted: " + dto.getLeaveType() + " leave from " + dto.getStartDate()

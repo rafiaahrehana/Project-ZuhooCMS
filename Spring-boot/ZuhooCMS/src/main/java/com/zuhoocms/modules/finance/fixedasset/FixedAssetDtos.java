@@ -32,8 +32,7 @@ public class FixedAssetDtos {
         @NotNull(message = "Acquisition date is required")
         private LocalDate acquisitionDate;
         private String notes;
-        // When true (default) registering the asset posts Dr Fixed Assets / Cr Cash.
-        // Set false for assets bought before this system existed (opening balances).
+        // True (default) posts Dr Fixed Assets / Cr Cash on registration; false for assets bought before this system existed (opening balances).
         private Boolean postPurchaseToLedger;
     }
 

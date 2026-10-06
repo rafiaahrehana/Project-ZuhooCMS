@@ -26,9 +26,9 @@ public class GeneralLedgerResponse {
     private String referenceType;
     private Long referenceId;
     private String referenceNumber;
-    // Jackson strips the "is" prefix from Lombok's isReconciled() getter by default
-    // (JSON key would be "reconciled"), which wouldn't match the frontend's
-    // isReconciled field - force the full name explicitly.
+    // Jackson would strip the "is" prefix from isReconciled() and emit "reconciled", which doesn't match the frontend's isReconciled field.
+    // The stripped "reconciled" key still ships alongside this one and is deliberately not suppressed: the Flutter app
+    // reads it as a fallback (accounting_models.dart). Angular reads only the pinned "isReconciled".
     @JsonProperty("isReconciled")
     private boolean isReconciled;
     private String reconciliationNotes;

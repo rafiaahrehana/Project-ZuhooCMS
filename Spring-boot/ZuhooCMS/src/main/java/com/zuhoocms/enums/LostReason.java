@@ -1,12 +1,6 @@
 package com.zuhoocms.enums;
 
-/**
- * Why an opportunity was lost, as a picklist.
- *
- * The free-text lostReason field predates this and stays as the optional
- * detail; the code is what makes win/loss analysis aggregatable - "we lost 40%
- * on price" is unanswerable over free text.
- */
+/** Picklist alongside the older free-text lostReason field, which stays as optional detail; the code is what makes win/loss analysis aggregatable. */
 public enum LostReason {
     PRICE,
     COMPETITOR,

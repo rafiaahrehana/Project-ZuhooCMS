@@ -6,13 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 
-/**
- * Ensures the four legacy tiers (Free/Starter/Pro/Enterprise) exist as real
- * SubscriptionPlanDefinition rows on every boot. Existing companies already
- * have "FREE"/"STARTER"/"PRO"/"ENTERPRISE" strings in their subscriptionPlan
- * column (from when it was a Java enum) - those codes must resolve to a
- * catalog row immediately, or company plan lookups would break on upgrade.
- */
+/** Seeds the FREE/STARTER/PRO/ENTERPRISE rows on every boot: companies already hold those codes in subscriptionPlan, so plan lookups break unless each resolves to a catalog row. */
 @Component
 @RequiredArgsConstructor
 public class SubscriptionPlanCatalogSeeder implements CommandLineRunner {

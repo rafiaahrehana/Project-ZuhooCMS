@@ -45,15 +45,8 @@ public interface EmailService {
     void sendClientWelcomeEmail(String to, String name, EmailBranding.Data branding);
 
     /**
-     * Portal invitation carrying a one-time set-password link.
-     *
-     * Separate from sendPasswordResetEmail on purpose: a recipient who has never
-     * had an account and receives "reset your password" reasonably assumes it is
-     * a phishing attempt and deletes it.
-     *
-     * Sent SYNCHRONOUSLY and throws on delivery failure, so the caller can tell
-     * staff whether the client was actually emailed. Every other method here is
-     * @Async and fire-and-forget.
+     * Portal invitation with a one-time set-password link; separate from sendPasswordResetEmail because a recipient who never had an account reads "reset your password" as phishing.
+     * Alone among these methods it is synchronous and throws on delivery failure, so the caller can tell staff whether the client was really emailed.
      */
     void sendClientPortalInviteEmail(String to, String name, String token, EmailBranding.Data branding);
 

@@ -14,7 +14,6 @@ public class NotificationPreference extends BaseEntity {
     @JoinColumn(name = "user_id", nullable = false, unique = true)
     private User user;
 
-    // Email preferences
     @Builder.Default private boolean emailOnServiceRequest  = true;
     @Builder.Default private boolean emailOnStatusChange    = true;
     @Builder.Default private boolean emailOnInvoice         = true;
@@ -22,7 +21,6 @@ public class NotificationPreference extends BaseEntity {
     @Builder.Default private boolean emailOnTaskAssigned    = true;
     @Builder.Default private boolean emailOnLeaveUpdate     = true;
 
-    // In-app preferences
     @Builder.Default private boolean inAppOnServiceRequest  = true;
     @Builder.Default private boolean inAppOnStatusChange    = true;
 

@@ -3,11 +3,7 @@ package com.zuhoocms.modules.ai.tool;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
-/**
- * What a tool execution produced - fed back to the model (as text via
- * {@link #forModel()}) so it can compose a natural-language reply from real
- * data, rather than exposed to the frontend directly.
- */
+/** What a tool execution produced, fed back to the model via {@link #forModel()} rather than exposed to the frontend directly. */
 @Getter
 @AllArgsConstructor
 public class AiToolResult {

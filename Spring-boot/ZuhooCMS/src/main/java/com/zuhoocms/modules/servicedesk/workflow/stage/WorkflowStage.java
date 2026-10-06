@@ -37,11 +37,7 @@ public class WorkflowStage extends BaseEntity {
     @Column(length = 100)
     private String assigneeRole;
 
-    // Milestone billing: when a stage completes with this set, advanceStage()
-    // notifies the client (and posts a visible comment) that an installment is
-    // due - paymentPercent of the request's agreedPrice. Collecting the actual
-    // payment stays a manual step (Record Payment / partial invoice), since the
-    // system can't safely guess amounts when agreedPrice isn't set yet.
+    // Milestone billing: advanceStage() notifies the client that paymentPercent of agreedPrice is due; collection stays manual because agreedPrice may not be set yet.
     private Boolean requiresPayment;
     private Integer paymentPercent;
 

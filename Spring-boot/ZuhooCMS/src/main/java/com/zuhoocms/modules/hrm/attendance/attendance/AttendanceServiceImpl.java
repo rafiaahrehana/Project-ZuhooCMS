@@ -2,8 +2,11 @@ package com.zuhoocms.modules.hrm.attendance.attendance;
 
 import com.zuhoocms.modules.hrm.attendance.biometric.device.BiometricDevice;
 import com.zuhoocms.modules.hrm.attendance.biometric.device.BiometricDeviceRepository;
+import com.zuhoocms.modules.hrm.attendance.settings.AttendanceLocationSettings;
+import com.zuhoocms.modules.hrm.attendance.settings.AttendanceLocationSettingsService;
 import com.zuhoocms.modules.hrm.attendance.shift.EmployeeShiftAssignment;
 import com.zuhoocms.modules.hrm.attendance.shift.EmployeeShiftAssignmentRepository;
+import com.zuhoocms.modules.hrm.attendance.shift.WeeklyOffDays;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.modules.hrm.leave.holiday.HolidayRepository;
@@ -17,7 +20,10 @@ import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
+import com.zuhoocms.shared.geo.GeoUtils;
+import com.zuhoocms.shared.storage.FileReferencePolicy;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -27,9 +33,11 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
-import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -44,6 +52,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     private final LeaveRequestRepository leaveRequestRepository;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
+    private final AttendanceLocationSettingsService attendanceLocationSettingsService;
 
     private void requireViewOrOwn(Long employeeId) {
         if (authorizationService.hasPermission(PermissionCode.ATTENDANCE_VIEW)) {
@@ -54,15 +63,7 @@ public class AttendanceServiceImpl implements AttendanceService {
         }
     }
 
-    /**
-     * Guard for the endpoints that <em>write</em> attendance.
-     *
-     * Deliberately not {@link #requireViewOrOwn}: that one passes for anyone
-     * holding ATTENDANCE_VIEW, so using it here let any employee who could read
-     * the roster also clock a colleague in or out. Editing somebody else's
-     * attendance is an HR correction, so it takes ATTENDANCE_UPDATE; acting on
-     * your own record needs nothing beyond being that person.
-     */
+    /** Write guard; deliberately not {@link #requireViewOrOwn}, which passes on ATTENDANCE_VIEW and let anyone who could read the roster clock a colleague in. Others' records need ATTENDANCE_UPDATE. */
     private void requireUpdateOrOwn(Long employeeId) {
         if (authorizationService.hasPermission(PermissionCode.ATTENDANCE_UPDATE)) {
             return;
@@ -88,16 +89,37 @@ public class AttendanceServiceImpl implements AttendanceService {
         if (currentUser == null) {
             return null;
         }
-        Employee employee = employeeRepository.findByUserId(currentUser.getId()).orElse(null);
+        // Scoped to the active company: findByEmployeeIdAndAttendanceDate below carries no company predicate, so
+        // resolving another tenant's employee record read that tenant's attendance.
+        Long myCompanyId = securityUtil.getCurrentCompanyId();
+        Employee employee = myCompanyId != null
+                ? employeeRepository.findByUserIdAndCompanyId(currentUser.getId(), myCompanyId).orElse(null)
+                : null;
         if (employee == null) {
             return null;
         }
+        LocalDate today = LocalDate.now();
         List<Attendance> attendances = attendanceRepository
-                .findByEmployeeIdAndAttendanceDate(employee.getId(), LocalDate.now());
-        if (attendances.isEmpty()) {
-            return null;
+                .findByEmployeeIdAndAttendanceDate(employee.getId(), today);
+        if (!attendances.isEmpty()) {
+            return AttendanceMapper.toResponse(attendances.get(attendances.size() - 1));
         }
-        return AttendanceMapper.toResponse(attendances.get(attendances.size() - 1));
+
+        // A night shift started yesterday and not checked out is still current, so it can be checked out after midnight.
+        LocalDate yesterday = today.minusDays(1);
+        List<Attendance> previous = attendanceRepository
+                .findByEmployeeIdAndAttendanceDate(employee.getId(), yesterday);
+        if (!previous.isEmpty()) {
+            Attendance last = previous.get(previous.size() - 1);
+            // The employee is now known to be in myCompanyId, so use that directly rather than deriving the
+            // company from the employee row (which is what let this method run in another tenant).
+            Long companyId = myCompanyId;
+            if (last.getCheckInTime() != null && last.getCheckOutTime() == null
+                    && isNightShiftOn(companyId, employee.getId(), yesterday)) {
+                return AttendanceMapper.toResponse(last);
+            }
+        }
+        return null;
     }
 
     @Override
@@ -123,21 +145,24 @@ public class AttendanceServiceImpl implements AttendanceService {
         summary.setMonth(month);
 
         User currentUser = securityUtil.getCurrentUser();
-        Employee employee = currentUser != null
-            ? employeeRepository.findByUserId(currentUser.getId()).orElse(null)
+        Long companyId = securityUtil.getCurrentCompanyId();
+        // Scoped to the active company, and companyId is passed on to findByEmployeeAndDateRange and
+        // findApprovedOverlapping below, so another tenant's employee record cannot mix that tenant's attendance and
+        // leave into this company's holidays and shifts.
+        Employee employee = currentUser != null && companyId != null
+            ? employeeRepository.findByUserIdAndCompanyId(currentUser.getId(), companyId).orElse(null)
             : null;
         if (employee == null) {
             summary.setWorkedHours(BigDecimal.ZERO);
             return summary;
         }
-        Long companyId = securityUtil.getCurrentCompanyId();
 
         LocalDate monthStart = LocalDate.of(year, month, 1);
         LocalDate monthEnd = monthStart.with(TemporalAdjusters.lastDayOfMonth());
         LocalDate today = LocalDate.now();
         LocalDate elapsedEnd = monthEnd.isAfter(today) ? today : monthEnd;
 
-        List<Attendance> records = attendanceRepository.findByEmployeeAndDateRange(employee.getId(), monthStart, monthEnd);
+        List<Attendance> records = attendanceRepository.findByEmployeeAndDateRange(companyId, employee.getId(), monthStart, monthEnd);
         BigDecimal workedHours = BigDecimal.ZERO;
         int present = 0, absent = 0, halfDay = 0;
         for (Attendance a : records) {
@@ -161,7 +186,7 @@ public class AttendanceServiceImpl implements AttendanceService {
         summary.setHolidayDays(holidayRepository.findByCompanyAndDateRange(companyId, monthStart, monthEnd).size());
 
         List<LeaveRequest> approvedLeave = leaveRequestRepository.findApprovedOverlapping(
-            employee.getId(), LeaveRequestStatus.APPROVED, monthStart, monthEnd);
+            companyId, employee.getId(), LeaveRequestStatus.APPROVED, monthStart, monthEnd);
         int onLeaveDays = 0;
         for (LeaveRequest lr : approvedLeave) {
             LocalDate start = lr.getStartDate().isBefore(monthStart) ? monthStart : lr.getStartDate();
@@ -172,16 +197,18 @@ public class AttendanceServiceImpl implements AttendanceService {
         }
         summary.setOnLeaveDays(onLeaveDays);
 
-        String weeklyOffDays = shiftAssignmentRepository
-            .findByCompanyIdAndEmployeeIdAndActive(companyId, employee.getId())
-            .map(a -> a.getShift().getWeeklyOffDays())
-            .orElse("FRI,SAT");
-        List<String> offDayAbbreviations = weeklyOffDays == null || weeklyOffDays.isBlank()
-            ? List.of() : Arrays.asList(weeklyOffDays.split(","));
+        // Resolve the shift per day - it may have changed during the month.
+        Map<Long, Set<DayOfWeek>> offDaysByAssignment = new HashMap<>();
         int weekOffDays = 0;
         for (LocalDate d = monthStart; !d.isAfter(elapsedEnd); d = d.plusDays(1)) {
-            DayOfWeek dow = d.getDayOfWeek();
-            if (offDayAbbreviations.contains(dow.name().substring(0, 3))) {
+            EmployeeShiftAssignment assignment = shiftAssignmentRepository
+                .findEffectiveOn(companyId, employee.getId(), d)
+                .orElse(null);
+            Set<DayOfWeek> offDays = assignment == null
+                ? WeeklyOffDays.parse(null)
+                : offDaysByAssignment.computeIfAbsent(assignment.getId(),
+                    k -> WeeklyOffDays.parse(assignment.getShift().getWeeklyOffDays()));
+            if (offDays.contains(d.getDayOfWeek())) {
                 weekOffDays++;
             }
         }
@@ -209,12 +236,20 @@ public class AttendanceServiceImpl implements AttendanceService {
             throw new ResourceNotFoundException("Employee not found");
         }
 
-        // employeeId comes from the request body, so without this any employee
-        // could clock a colleague in by passing their id.
+        // employeeId comes from the request body, so without this any employee could clock a colleague in by passing their id.
         requireUpdateOrOwn(empId);
 
-        Employee employee = employeeRepository.findById(empId)
-                .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
+        // Only HR recording for someone else may supply times; self-service clocks use server time so they cannot be backdated.
+        boolean trustClient = !isSelf(empId)
+                && authorizationService.hasPermission(PermissionCode.ATTENDANCE_UPDATE);
+
+        // requireUpdateOrOwn never checks the target is in the caller's tenant, so an unscoped findById would let ATTENDANCE_UPDATE clock another company's employee by id.
+        // companyId is null only for the platform-admin case with no tenant context, where scoping is meaningless.
+        Employee employee = companyId != null
+                ? employeeRepository.findByIdAndCompanyId(empId, companyId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Employee not found"))
+                : employeeRepository.findById(empId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
 
         if (companyId == null && employee.getCompany() != null) {
             companyId = employee.getCompany().getId();
@@ -226,9 +261,9 @@ public class AttendanceServiceImpl implements AttendanceService {
                     .orElseThrow(() -> new ResourceNotFoundException("Device not found"));
         }
 
-        // Check if attendance already exists for today
+        LocalDate today = LocalDate.now();
         List<Attendance> existingList = attendanceRepository
-                .findByEmployeeIdAndAttendanceDate(empId, LocalDate.now());
+                .findByEmployeeIdAndAttendanceDate(empId, today);
 
         Attendance attendance;
         if (!existingList.isEmpty()) {
@@ -237,57 +272,170 @@ public class AttendanceServiceImpl implements AttendanceService {
             if (attendance.getCheckInTime() != null) {
                 throw new BadRequestException("You have already checked in today.");
             }
-            // The nightly absentee job writes an ABSENT row for anyone who did
-            // not clock in. Someone checking in afterwards is present, so the
-            // status has to be re-evaluated - otherwise the row keeps saying
-            // ABSENT with a check-in time on it. applyLateDetection() below may
-            // narrow this to LATE.
+            // Overrides the nightly absentee job's ABSENT row, which would otherwise keep saying ABSENT with a check-in time on it; applyLateDetection may narrow this to LATE.
             attendance.setStatus(AttendanceStatus.PRESENT);
         } else {
-            EmployeeShiftAssignment shift = shiftAssignmentRepository
-                    .findByCompanyIdAndEmployeeIdAndActive(companyId, empId)
-                    .orElse(null);
-
             attendance = Attendance.builder()
                     .companyId(companyId)
                     .employee(employee)
-                    .attendanceDate(LocalDate.now())
-                    .shiftType(shift != null ? shift.getShift().getShiftType() : null)
+                    .attendanceDate(today)
+                    .shiftType(shiftTypeOn(companyId, empId, today))
                     .status(AttendanceStatus.PRESENT)
                     .build();
         }
 
-        java.time.LocalTime checkInTime = request.getCheckInTime() != null ? request.getCheckInTime() : java.time.LocalTime.now();
-        AttendanceMethod method = request.getMethod() != null ? request.getMethod() : AttendanceMethod.MANUAL;
+        java.time.LocalTime checkInTime = trustClient && request.getCheckInTime() != null
+                ? request.getCheckInTime() : java.time.LocalTime.now();
+        AttendanceMethod method = resolveMethod(request.getMethod(), trustClient);
 
-        // Record check-in
         attendance.checkIn(checkInTime, method, device);
-        attendance.setVerified(request.isVerified());
-        attendance.setVerificationScore(request.getVerificationScore());
+        attendance.setVerificationScore(trustClient ? request.getVerificationScore() : 0);
 
         applyLateDetection(attendance, companyId, empId, checkInTime);
 
-        attendance = attendanceRepository.save(attendance);
+        // Persisted, not just read. The entity has carried these three columns and this reason all along and nothing
+        // ever wrote them, so every record reported a blank location - and once a punch can be flagged for being too
+        // far away, storing the distance without the coordinates that produced it leaves the flag unauditable.
+        attendance.setCheckInLatitude(request.getLatitude());
+        attendance.setCheckInLongitude(request.getLongitude());
+        attendance.setCheckInLocation(request.getLocation());
+        attendance.setCheckInReason(request.getReason());
+
+        AttendanceLocationSettings locationSettings = attendanceLocationSettingsService.getOrCreate(companyId);
+        applyLocationCheck(attendance, locationSettings, request.getLatitude(), request.getLongitude(), method);
+
+        // Only a URL of a file actually uploaded to this app, by this company, is accepted - the same guard every
+        // other file-URL column on this backend uses. Validated before the save, so a bogus URL leaves no row.
+        String selfieUrl = FileReferencePolicy.requireOwn(request.getSelfieUrl(), attendance.getCheckInSelfieUrl());
+        // Only a GPS punch is asked for a selfie. A fingerprint or RFID terminal has no camera and no coordinates,
+        // so requiring one locked those companies out of checking in entirely the moment they turned enforcement on -
+        // and the geofence beside this already exempts them for exactly the same reason.
+        if (locationSettings.isGpsEnforcementEnabled() && method == AttendanceMethod.GPS
+                && (selfieUrl == null || selfieUrl.isBlank())) {
+            throw new BadRequestException("A selfie is required to check in.");
+        }
+        attendance.setCheckInSelfieUrl(selfieUrl);
+
+        // A flagged location overrides whatever the client claimed; otherwise the client's own verified flag
+        // (a biometric match result posted by HR or a terminal) still applies under the usual trustClient rule.
+        attendance.setVerified(!attendance.isLocationFlagged() && trustClient && request.isVerified());
+
+        // The (employee, date) unique constraint catches a concurrent double check-in.
+        try {
+            attendance = attendanceRepository.saveAndFlush(attendance);
+        } catch (DataIntegrityViolationException ex) {
+            throw new BadRequestException("You have already checked in today.");
+        }
         return AttendanceMapper.toResponse(attendance);
     }
 
     /**
-     * Compares check-in time against the employee's assigned shift (start time +
-     * grace period) and marks the attendance LATE if it exceeds it. No-op if the
-     * employee has no active shift assignment - callers keep whatever late flag
-     * they already set (e.g. a manual HR override).
+     * Flags the attendance row when the punch is outside the company's configured office radius.
+     *
+     * <p>Out of range is <b>recorded and flagged, never refused</b> - a wrong GPS fix must not be able to stop
+     * somebody working, so this only ever writes data the reviewer reads. A no-op unless the company turned
+     * enforcement on and gave office coordinates, and a kiosk punch (RFID, fingerprint) that has no coordinates to
+     * give is not held against the employee - only a GPS punch arriving without them is.
      */
+    private void applyLocationCheck(Attendance attendance, AttendanceLocationSettings settings,
+                                     String latitude, String longitude, AttendanceMethod method) {
+        if (!settings.isGpsEnforcementEnabled()
+                || settings.getOfficeLatitude() == null || settings.getOfficeLongitude() == null) {
+            return;
+        }
+
+        boolean hasCoords = latitude != null && !latitude.isBlank()
+                && longitude != null && !longitude.isBlank();
+        if (!hasCoords) {
+            if (method == AttendanceMethod.GPS) {
+                raiseLocationFlag(attendance, "Location was not provided.");
+            }
+            return;
+        }
+
+        try {
+            double lat = Double.parseDouble(latitude);
+            double lng = Double.parseDouble(longitude);
+            double distance = GeoUtils.distanceMeters(lat, lng,
+                    settings.getOfficeLatitude(), settings.getOfficeLongitude());
+            attendance.setDistanceFromOfficeMeters(distance);
+
+            if (distance > settings.getRadiusMeters()) {
+                raiseLocationFlag(attendance, String.format(
+                        "%.0fm from the office (allowed radius %dm).", distance, settings.getRadiusMeters()));
+            }
+            // An in-range punch deliberately does NOT clear the flag. This runs on check-out as well as check-in,
+            // so clearing it let somebody punch in 11km away, punch out at the desk and end the day unflagged -
+            // which defeats the only thing the flag is for. The row records that a punch that day was out of place;
+            // only someone deliberately amending the record should be able to take that back.
+        } catch (NumberFormatException e) {
+            raiseLocationFlag(attendance, "Location could not be read.");
+        }
+    }
+
+    /**
+     * Flags the row, keeping any reason already on it. The first offence of the day is the interesting one and there
+     * is a single reason column, so a later flag does not overwrite what the earlier one said.
+     */
+    private void raiseLocationFlag(Attendance attendance, String reason) {
+        if (attendance.isLocationFlagged() && attendance.getLocationFlagReason() != null) {
+            return;
+        }
+        attendance.setLocationFlagged(true);
+        attendance.setLocationFlagReason(reason);
+    }
+
+    /**
+     * The recorded method label, held to the same standard as {@code verified} and {@code verificationScore} above.
+     *
+     * <p>{@code method} arrives in the request body, and nothing on this path consults a matcher or a terminal, so a
+     * self-service client could stamp its own row {@code FINGERPRINT} and produce a record claiming a biometric
+     * check-in that never happened. Any {@linkplain AttendanceMethod#isDeviceBacked() device-backed} method is
+     * therefore <b>downgraded to MANUAL</b> unless the caller is the same trusted actor that is already allowed to
+     * supply times and verification results - HR recording for someone else with {@code ATTENDANCE_UPDATE}, which is
+     * how the biometric terminals post. Downgrading rather than rejecting keeps existing mobile clients that send a
+     * hopeful {@code FINGERPRINT} working: the punch is still recorded, just labelled for what the server can vouch
+     * for.
+     */
+    static AttendanceMethod resolveMethod(AttendanceMethod requested, boolean trustClient) {
+        if (requested == null) {
+            return AttendanceMethod.MANUAL;
+        }
+        return !trustClient && requested.isDeviceBacked() ? AttendanceMethod.MANUAL : requested;
+    }
+
+    private ShiftType shiftTypeOn(Long companyId, Long employeeId, LocalDate date) {
+        return shiftAssignmentRepository.findEffectiveOn(companyId, employeeId, date)
+                .map(a -> a.getShift().getShiftType())
+                .orElse(null);
+    }
+
+    private boolean isNightShiftOn(Long companyId, Long employeeId, LocalDate date) {
+        if (employeeId == null || date == null) return false;
+        return shiftAssignmentRepository.findEffectiveOn(companyId, employeeId, date)
+                .map(a -> a.getShift().isNightShift())
+                .orElse(false);
+    }
+
+    /** Marks LATE when check-in exceeds shift start + grace; a no-op without an active shift assignment, so a manual HR override survives. */
     private void applyLateDetection(Attendance attendance, Long companyId, Long employeeId,
                                      java.time.LocalTime checkInTime) {
         if (checkInTime == null) return;
 
+        LocalDate onDate = attendance.getAttendanceDate() != null ? attendance.getAttendanceDate() : LocalDate.now();
         EmployeeShiftAssignment shiftAssignment = shiftAssignmentRepository
-                .findByCompanyIdAndEmployeeIdAndActive(companyId, employeeId)
+                .findEffectiveOn(companyId, employeeId, onDate)
                 .orElse(null);
         if (shiftAssignment == null) return;
 
         long lateMinutes = java.time.temporal.ChronoUnit.MINUTES
                 .between(shiftAssignment.getShift().getStartTime(), checkInTime);
+        // Normalise across midnight: a 23:50 check-in for a 00:00 shift is 10 minutes early, not 1430 late.
+        if (lateMinutes > 720) {
+            lateMinutes -= 1440;
+        } else if (lateMinutes <= -720) {
+            lateMinutes += 1440;
+        }
 
         if (lateMinutes > shiftAssignment.getShift().getGracePeriodMinutes()) {
             attendance.setLate(true);
@@ -305,13 +453,13 @@ public class AttendanceServiceImpl implements AttendanceService {
         Attendance attendance = attendanceRepository.findByIdAndCompanyId(attendanceId, securityUtil.getCurrentCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Attendance not found"));
 
-        // The id comes straight from the caller, so without this an employee
-        // could check out somebody else's record by guessing an id.
-        requireUpdateOrOwn(attendance.getEmployee() != null ? attendance.getEmployee().getId() : null);
+        // The id comes straight from the caller, so without this an employee could check out somebody else's record by guessing an id.
+        Long ownerId = attendance.getEmployee() != null ? attendance.getEmployee().getId() : null;
+        requireUpdateOrOwn(ownerId);
+        boolean trustClient = !isSelf(ownerId)
+                && authorizationService.hasPermission(PermissionCode.ATTENDANCE_UPDATE);
 
-        // A check-out with no check-in produces a row with an OUT time, no IN
-        // time and zero hours - which is what "ABSENT with an out time" rows in
-        // the records table are. Refuse it rather than persist the nonsense.
+        // A check-out with no check-in is what the "ABSENT with an out time" rows are: an OUT time, no IN time, zero hours. Refuse rather than persist it.
         if (attendance.getCheckInTime() == null) {
             throw new BadRequestException("You have not checked in today, so there is nothing to check out from.");
         }
@@ -325,16 +473,36 @@ public class AttendanceServiceImpl implements AttendanceService {
                     .orElseThrow(() -> new ResourceNotFoundException("Device not found"));
         }
 
-        java.time.LocalTime checkOutTime = request.getCheckOutTime() != null ? request.getCheckOutTime() : java.time.LocalTime.now();
-        AttendanceMethod method = request.getMethod() != null ? request.getMethod() : AttendanceMethod.MANUAL;
+        java.time.LocalTime checkOutTime = trustClient && request.getCheckOutTime() != null
+                ? request.getCheckOutTime() : java.time.LocalTime.now();
+        AttendanceMethod method = resolveMethod(request.getMethod(), trustClient);
 
-        if (checkOutTime.isBefore(attendance.getCheckInTime())) {
+        // A night shift legitimately checks out after midnight, i.e. "before" check-in.
+        if (checkOutTime.isBefore(attendance.getCheckInTime())
+                && !isNightShiftOn(securityUtil.getCurrentCompanyId(), ownerId, attendance.getAttendanceDate())) {
             throw new BadRequestException("Check-out time cannot be earlier than the check-in time.");
         }
 
         attendance.checkOut(checkOutTime, method, device);
 
-        // Calculate total hours
+        // Same as check-in: these were declared, sent by the app on every punch and never written. The early-departure
+        // reason is the starkest of them - the identically named field on the HR manual-entry DTO IS read, which is
+        // probably why nobody noticed that an employee's own explanation was being dropped.
+        attendance.setCheckOutLatitude(request.getLatitude());
+        attendance.setCheckOutLongitude(request.getLongitude());
+        attendance.setCheckOutLocation(request.getLocation());
+        if (request.getEarlyDepartureReason() != null && !request.getEarlyDepartureReason().isBlank()) {
+            attendance.setEarlyDepartureReason(request.getEarlyDepartureReason());
+        }
+
+        AttendanceLocationSettings locationSettings =
+                attendanceLocationSettingsService.getOrCreate(attendance.getCompanyId());
+        applyLocationCheck(attendance, locationSettings, request.getLatitude(), request.getLongitude(), method);
+        // No selfie requirement here even with enforcement on: somebody already inside for the day must not be
+        // locked out because a camera failed. Still validated when one is sent.
+        attendance.setCheckOutSelfieUrl(
+                FileReferencePolicy.requireOwn(request.getSelfieUrl(), attendance.getCheckOutSelfieUrl()));
+
         if (attendance.getCheckInTime() != null && attendance.getCheckOutTime() != null) {
             BigDecimal totalHours = attendance.calculateTotalHours();
             attendance.setTotalWorkingHours(totalHours);
@@ -418,26 +586,21 @@ public class AttendanceServiceImpl implements AttendanceService {
         LocalDate start = hasDate ? date : (hasStart ? startDate : null);
         LocalDate end = hasDate ? date : (hasEnd ? endDate : null);
 
-        // 1. No search keyword active
         if (!hasSearch) {
-            // No filters -> standard default query
             if (!hasStatus && start == null && end == null) {
                 return attendanceRepository.findByCompanyId(companyId, pageable)
                         .map(AttendanceMapper::toResponse);
             }
-            // Status only -> standard status query
             if (hasStatus && start == null && end == null) {
                 return attendanceRepository.findByCompanyIdAndStatus(companyId, status, pageable)
                         .map(AttendanceMapper::toResponse);
             }
-            // Date / date-range only -> standard date query
             if (!hasStatus && (start != null || end != null)) {
                 LocalDate s = start != null ? start : LocalDate.of(1970, 1, 1);
                 LocalDate e = end != null ? end : LocalDate.of(2099, 12, 31);
                 return attendanceRepository.findByCompanyIdAndAttendanceDateBetween(companyId, s, e, pageable)
                         .map(AttendanceMapper::toResponse);
             }
-            // Status + Date / date-range
             if (hasStatus && (start != null || end != null)) {
                 LocalDate s = start != null ? start : LocalDate.of(1970, 1, 1);
                 LocalDate e = end != null ? end : LocalDate.of(2099, 12, 31);
@@ -446,7 +609,6 @@ public class AttendanceServiceImpl implements AttendanceService {
             }
         }
 
-        // 2. Search keyword active
         String searchKeyword = search.trim();
         LocalDate s = start != null ? start : LocalDate.of(1970, 1, 1);
         LocalDate e = end != null ? end : LocalDate.of(2099, 12, 31);
@@ -538,7 +700,8 @@ public class AttendanceServiceImpl implements AttendanceService {
     public AttendanceResponse createManual(AttendanceRequest request) {
         authorizationService.checkPermission(PermissionCode.ATTENDANCE_MARK);
         Long companyId = securityUtil.getCurrentCompanyId();
-        Employee employee = employeeRepository.findById(request.getEmployeeId())
+        // Same cross-tenant IDOR as checkIn(): an unscoped findById on the caller-supplied employeeId would let ATTENDANCE_MARK write another company's attendance.
+        Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
 
         List<Attendance> existingList = attendanceRepository
@@ -574,7 +737,8 @@ public class AttendanceServiceImpl implements AttendanceService {
                     .checkOutTime(request.getCheckOutTime())
                     .checkInMethod(request.getCheckInMethod())
                     .checkOutMethod(request.getCheckOutMethod())
-                    .shiftType(request.getShiftType())
+                    .shiftType(request.getShiftType() != null ? request.getShiftType()
+                            : shiftTypeOn(companyId, request.getEmployeeId(), request.getAttendanceDate()))
                     .overtimeHours(request.getOvertimeHours())
                     .isOvertime(request.getOvertimeHours() != null && request.getOvertimeHours().signum() > 0)
                     .isLate(request.isLate())
@@ -588,13 +752,11 @@ public class AttendanceServiceImpl implements AttendanceService {
                     .build();
         }
 
-        // Auto-detect lateness from the employee's assigned shift when a check-in time is given
         applyLateDetection(attendance, companyId, request.getEmployeeId(), attendance.getCheckInTime());
         if (attendance.isLate() && attendance.getStatus() != AttendanceStatus.LATE) {
             attendance.setStatus(AttendanceStatus.LATE);
         }
 
-        // Calculate total hours
         if (attendance.getCheckInTime() != null && attendance.getCheckOutTime() != null) {
             BigDecimal totalHours = attendance.calculateTotalHours();
             attendance.setTotalWorkingHours(totalHours);

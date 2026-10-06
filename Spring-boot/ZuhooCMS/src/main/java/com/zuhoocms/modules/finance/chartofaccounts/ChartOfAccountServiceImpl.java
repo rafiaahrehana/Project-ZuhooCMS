@@ -30,7 +30,6 @@ public class ChartOfAccountServiceImpl implements ChartOfAccountService {
         authorizationService.checkPermission(PermissionCode.CHART_OF_ACCOUNT_CREATE);
         Long companyId = securityUtil.getCurrentCompanyId();
 
-        // Check if account code already exists
         if (coaRepository.findByCompanyIdAndAccountCode(companyId, request.getAccountCode()).isPresent()) {
             throw new BadRequestException("Account code already exists: " + request.getAccountCode());
         }
@@ -40,10 +39,7 @@ public class ChartOfAccountServiceImpl implements ChartOfAccountService {
         account.setBalance(java.math.BigDecimal.ZERO);
         account = coaRepository.save(account);
 
-        // Opening balance for companies migrating from a previous system: a real
-        // balanced posting (normal side of the account / offset to Opening Balance
-        // Equity), so the ledger, Trial Balance, and Balance Sheet all back it up -
-        // never a raw balance overwrite.
+        // Opening balances post a real balanced entry (normal side / offset to Opening Balance Equity), never a raw balance overwrite, so the ledger and statements back it up.
         if (request.getOpeningBalance() != null
                 && request.getOpeningBalance().compareTo(java.math.BigDecimal.ZERO) > 0) {
             if (request.getType() == AccountType.EQUITY) {
@@ -124,12 +120,19 @@ public class ChartOfAccountServiceImpl implements ChartOfAccountService {
         ChartOfAccount account = coaRepository.findByIdAndCompanyId(id, securityUtil.getCurrentCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Chart of Account not found"));
 
-        // Validate code uniqueness if changed
         if (!account.getAccountCode().equals(request.getAccountCode())) {
             if (coaRepository.findByCompanyIdAndAccountCode(account.getCompanyId(), request.getAccountCode()).isPresent()) {
                 throw new BadRequestException("Account code already exists: " + request.getAccountCode());
             }
             account.setAccountCode(request.getAccountCode());
+        }
+
+        // Changing the type once an account has ledger history misclassifies prior entries (posted under the old type's normal balance) in every type-grouped statement and can break default-account resolution.
+        // Same rule as delete() below, which refuses to remove an account with GL history.
+        if (account.getType() != request.getType()
+                && glRepository.existsByAccountIdAndCompanyId(account.getId(), account.getCompanyId())) {
+            throw new BadRequestException(
+                    "Cannot change account type: this account already has ledger entries posted against it");
         }
 
         account.setAccountName(request.getAccountName());

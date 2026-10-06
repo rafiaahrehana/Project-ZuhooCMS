@@ -6,6 +6,8 @@ import com.zuhoocms.enums.LeadSource;
 import com.zuhoocms.enums.LeadStatus;
 import com.zuhoocms.enums.Priority;
 import com.zuhoocms.modules.company.CompanyRepository;
+import com.zuhoocms.modules.crm.support.EmailMatching;
+import com.zuhoocms.modules.crm.support.PhoneMatching;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.BadRequestException;
 import lombok.Getter;
@@ -25,13 +27,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Bulk lead import from a CSV export (spreadsheets, another CRM).
+ * Bulk lead import from a CSV export (spreadsheets, another CRM), header-driven: the first row names the columns, order does not matter and unknown columns are ignored.
  *
- * Header-driven: the first row names the columns, order does not matter, and
- * unknown columns are ignored - so an exported sheet with extra columns works
- * as-is. Rows that cannot become a lead are skipped with a per-line reason
- * rather than failing the file: a 300-row import with three bad rows should
- * produce 297 leads and three explanations, not an error.
+ * A row that cannot become a lead is skipped with a per-line reason rather than failing the whole file.
  */
 @Service
 @RequiredArgsConstructor
@@ -81,27 +79,30 @@ public class LeadCsvImportService {
             int line = i + 1; // 1-based, header included - matches what a spreadsheet shows
             List<String> row = rows.get(i);
             String name = at(row, col, "name");
-            String email = at(row, col, "email");
-            String phone = at(row, col, "phone");
+            // Normalised exactly as the manual-create and public-capture paths do, or the same person imported and typed in becomes two leads.
+            String email = EmailMatching.normalise(at(row, col, "email"));
+            String phone = PhoneMatching.normaliseForStorage(at(row, col, "phone"));
 
             if (isBlank(name)) { result.skipped.add("Line " + line + ": no name"); continue; }
             if (isBlank(email) && isBlank(phone)) {
                 result.skipped.add("Line " + line + ": no email or phone");
                 continue;
             }
-            if (!isBlank(email) && leadRepository.existsByEmailAndCompanyIdAndDeletedFalse(email, companyId)) {
+            if (!isBlank(email) && leadRepository.existsByEmailIgnoringCase(email, companyId, null)) {
                 result.skipped.add("Line " + line + ": a lead with email " + email + " already exists");
                 continue;
             }
-            if (!isBlank(phone) && leadRepository.existsByPhoneAndCompanyIdAndDeletedFalse(phone, companyId)) {
+            // Digits-only: an imported "+966 50 123 4567" must match the "0501234567" already in the CRM.
+            String phoneKey = PhoneMatching.matchKey(phone);
+            if (phoneKey != null && leadRepository.existsByNormalisedPhone(phoneKey, companyId, null)) {
                 result.skipped.add("Line " + line + ": a lead with phone " + phone + " already exists");
                 continue;
             }
 
             Lead lead = new Lead();
             lead.setContactName(name);
-            lead.setEmail(isBlank(email) ? null : email);
-            lead.setPhone(isBlank(phone) ? null : phone);
+            lead.setEmail(email);
+            lead.setPhone(phone);
             lead.setCompanyName(at(row, col, "company"));
             lead.setIndustry(at(row, col, "industry"));
             lead.setJobTitle(at(row, col, "jobtitle"));
@@ -139,11 +140,7 @@ public class LeadCsvImportService {
         return index;
     }
 
-    /**
-     * Minimal RFC-4180 reader: quoted fields, escaped quotes, commas and
-     * newlines inside quotes. Deliberately not a library dependency for one
-     * import endpoint.
-     */
+    /** Minimal RFC-4180 reader (quoted fields, escaped quotes, commas and newlines inside quotes), deliberately not a library dependency for one endpoint. */
     private List<List<String>> parse(InputStream in) throws IOException {
         List<List<String>> rows = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {

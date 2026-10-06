@@ -34,7 +34,7 @@ public class SLAPolicyMapper {
                 .firstResponseTimeHours(request.getFirstResponseTimeHours())
                 .resolutionTimeHours(request.getResolutionTimeHours())
                 .businessHoursOnly(request.isBusinessHoursOnly())
-                .active(request.isActive())
+                .active(request.getActive() == null || request.getActive())
                 .notes(request.getNotes())
                 .build();
     }

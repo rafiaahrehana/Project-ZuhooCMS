@@ -40,6 +40,23 @@ public class CompanyLeavePolicyServiceImpl implements CompanyLeavePolicyService 
     public CompanyLeavePolicyResponse create(CompanyLeavePolicyRequest request) {
         authorizationService.checkPermission(PermissionCode.LEAVE_POLICY_CREATE);
         Long companyId = requireCompanyId();
+        if (request.getEmploymentType() != null && policyRepository.reviveDeleted(
+                companyId, request.getLeaveType().name(), request.getEmploymentType().name()) > 0) {
+            // A soft-deleted policy still holds the unique key; reuse it as a fresh policy.
+            CompanyLeavePolicy revived = policyRepository
+                .findByCompanyIdAndLeaveTypeAndEmploymentType(companyId, request.getLeaveType(), request.getEmploymentType())
+                .orElseThrow(() -> new ResourceNotFoundException("Leave policy not found"));
+            revived.setAnnualEntitlement(request.getAnnualEntitlement());
+            revived.setMaxCarryForward(request.getMaxCarryForward() != null ? request.getMaxCarryForward() : 0);
+            revived.setMaxConsecutiveDays(request.getMaxConsecutiveDays());
+            revived.setDescription(null);
+            revived.setRequiresApproval(request.isRequiresApproval());
+            revived.setCanCarryForward(request.isCanCarryForward());
+            revived.setPaid(request.isPaid());
+            revived.setActive(true);
+            revived.setApplicableFromMonths(request.getApplicableFromMonths() != null ? request.getApplicableFromMonths() : 0);
+            return CompanyLeavePolicyMapper.toLeavePolicyResponse(revived);
+        }
         CompanyLeavePolicy policy = CompanyLeavePolicy.builder()
             .leaveType(request.getLeaveType())
             .employmentType(request.getEmploymentType())
@@ -102,9 +119,7 @@ public class CompanyLeavePolicyServiceImpl implements CompanyLeavePolicyService 
         findInTenant(id).softDelete();
     }
 
-    // No @Transactional here on purpose: the company and policy lookups run
-    // inside aiTx.load(), which commits before the provider call so no DB
-    // connection is held across it - see AiTransactionBoundary.
+    // No @Transactional on purpose: lookups run inside aiTx.load(), which commits before the provider call so no DB connection is held across it - see AiTransactionBoundary.
     @Override
     public LeavePolicyDraftResponse draftWithAi(LeavePolicyDraftRequest request) {
         authorizationService.checkPermission(PermissionCode.LEAVE_POLICY_CREATE);

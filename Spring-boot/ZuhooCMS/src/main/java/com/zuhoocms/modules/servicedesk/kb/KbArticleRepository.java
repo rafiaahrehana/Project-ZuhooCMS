@@ -12,12 +12,8 @@ public interface KbArticleRepository extends JpaRepository<KbArticle, Long> {
 
     Optional<KbArticle> findByIdAndCompanyId(Long id, Long companyId);
 
-    // clientOnly=true forces PUBLISHED + clientVisible regardless of the requested status,
-    // so a client can never see drafts/archived articles by passing a different status filter.
-    // The :keyword casts are required - Postgres can't infer a bare parameter's type
-    // when it's only ever used inside CONCAT(), and binding it as NULL (no keyword
-    // filter applied) then fails with "could not determine data type of parameter"
-    // before the "IS NULL" short-circuit is even evaluated.
+    // clientOnly=true forces PUBLISHED + clientVisible, so a client cannot reach drafts/archived by passing a status filter.
+    // The :keyword casts are required: used only inside CONCAT(), a NULL bind fails with "could not determine data type of parameter" before the IS NULL short-circuit.
     @Query("""
         SELECT a FROM KbArticle a
         WHERE a.companyId = :companyId

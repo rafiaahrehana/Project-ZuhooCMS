@@ -7,10 +7,13 @@ import com.zuhoocms.modules.finance.generalledger.GeneralLedgerService;
 import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.generalledger.LedgerLine;
 import com.zuhoocms.modules.hrm.employee.Employee;
-import com.zuhoocms.modules.hrm.attendance.attendance.AttendanceRepository;
-import com.zuhoocms.modules.hrm.attendance.attendance.AttendanceStatus;
-import com.zuhoocms.modules.hrm.salary.SalaryStructure;
-import com.zuhoocms.modules.hrm.salary.SalaryStructureRepository;
+import com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance;
+import com.zuhoocms.modules.hrm.payroll.loan.LoanAdvanceRepository;
+import com.zuhoocms.modules.hrm.payroll.loan.LoanRepayment;
+import com.zuhoocms.modules.hrm.payroll.loan.LoanRepaymentRepository;
+import com.zuhoocms.modules.hrm.payroll.run.PayrollRun;
+import com.zuhoocms.modules.hrm.payroll.run.PayrollRunRepository;
+import com.zuhoocms.modules.hrm.payroll.run.PayrollRunTotals;
 import com.zuhoocms.enums.PayrollStatus;
 import com.zuhoocms.enums.PaymentMethod;
 import com.zuhoocms.security.SecurityUtil;
@@ -19,16 +22,17 @@ import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.shared.email.EmailBranding;
 import com.zuhoocms.shared.email.EmailService;
-import com.zuhoocms.modules.company.CompanyRepository;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,171 +47,93 @@ public class PayrollServiceImpl implements PayrollService {
 
     private final PayrollRepository payrollRepository;
     private final EmployeeRepository employeeRepository;
-    private final CompanyRepository companyRepository;
-    private final SalaryStructureRepository salaryStructureRepository;
-    private final AttendanceRepository attendanceRepository;
-    private final com.zuhoocms.modules.hrm.attendance.timesheet.TimesheetRepository timesheetRepository;
     private final SecurityUtil securityUtil;
     private final EmailService emailService;
     private final EmailBranding emailBranding;
     private final com.zuhoocms.shared.notification.NotificationService notificationService;
     private final GeneralLedgerService glService;
     private final DefaultAccountResolver accountResolver;
-    private final com.zuhoocms.modules.hrm.payroll.settings.PayrollSettingsService payrollSettingsService;
     private final PayslipPdfService payslipPdfService;
     private final com.zuhoocms.auth.role.service.AuthorizationService authorizationService;
-    private final com.zuhoocms.modules.hrm.payroll.components.SalaryComponentService salaryComponentService;
-    private final com.zuhoocms.modules.hrm.leave.LeaveService leaveService;
-    private final com.zuhoocms.modules.hrm.payroll.loan.LoanAdvanceRepository loanAdvanceRepository;
-    private final com.zuhoocms.modules.hrm.payroll.loan.LoanRepaymentRepository loanRepaymentRepository;
+    private final LoanAdvanceRepository loanAdvanceRepository;
+    private final LoanRepaymentRepository loanRepaymentRepository;
+    private final PayrollCalculator calculator;
+    private final PayrollRunRepository runRepository;
+    private final PayrollRunTotals runTotals;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
     @Transactional
     public PayrollResponse create(CreatePayrollRequest request) {
         Long companyId = requireCompanyId();
+        PayrollPeriods.validate(request.getPayMonth(), request.getPayYear());
+        int month = request.getPayMonth();
+        int year = request.getPayYear();
 
-        if (payrollRepository.findByEmployeeIdAndPayMonthAndPayYear(
-                request.getEmployeeId(), request.getPayMonth(), request.getPayYear()).isPresent()) {
+        if (payrollRepository.findByEmployeeIdAndPayMonthAndPayYear(request.getEmployeeId(), month, year).isPresent()) {
             throw new BadRequestException("Payroll already exists for this employee and period");
         }
 
         Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + request.getEmployeeId()));
 
-        SalaryComponents comps = resolveSalaryComponents(employee, request.getPayMonth(), request.getPayYear(),
-                request.getBasicSalary(), request.getHouseRent(), request.getMedicalAllowance(), request.getTransportAllowance(),
-                request.getFoodAllowance(), request.getSpecialAllowance());
+        PayrollRun run = openRunForNewLines(companyId, month, year);
 
-        BigDecimal bonus = orZero(request.getBonus());
-        BigDecimal deductions = orZero(request.getDeductions());
-        BigDecimal tax = orZero(request.getTaxDeduction());
-        BigDecimal insurance = orZero(request.getInsuranceDeduction());
-        BigDecimal providentFund = orZero(request.getProvidentFundDeduction());
-        BigDecimal grossForAttendance = comps.basic().add(comps.rent()).add(comps.medical()).add(comps.transport())
-                .add(comps.food()).add(comps.special());
-        BillablePay billable = calculateBillablePay(employee, request.getPayMonth(), request.getPayYear());
-        Overtime overtime = calculateOvertime(employee, request.getPayMonth(), request.getPayYear(),
-                grossForAttendance, comps.basic());
-        ExtraSums extras = extraComponentSums(employee.getId(), request.getPayMonth(), request.getPayYear());
-        BigDecimal gross = grossForAttendance.add(bonus).add(billable.amount()).add(overtime.amount())
-                .add(extras.earnings());
-        AttendanceDeduction attendanceDeduction = calculateAttendanceDeduction(
-                employee, request.getPayMonth(), request.getPayYear(), grossForAttendance, comps.basic());
-        LoanDue loanDue = calculateLoanDue(employee);
-        BigDecimal net = gross.subtract(deductions).subtract(tax).subtract(insurance).subtract(providentFund)
-                .subtract(attendanceDeduction.amount()).subtract(extras.deductions()).subtract(loanDue.amount());
+        Payroll payroll = obtainLine(employee, companyId, month, year);
+        PayrollCalculator.Result result = calculator.calculate(employee, companyId, month, year,
+                PayrollCalculator.ManualInputs.from(request), payroll.getId(), true);
+        calculator.apply(result, payroll);
+        payroll.setNotes(request.getNotes());
+        payroll.setRun(run);
+        payroll = payrollRepository.save(payroll);
 
-        Payroll payroll = Payroll.builder()
-                .employee(employee)
-                .company(companyRef(companyId))
-                .payMonth(request.getPayMonth())
-                .payYear(request.getPayYear())
-                .basicSalary(comps.basic())
-                .houseRent(comps.rent())
-                .medicalAllowance(comps.medical())
-                .transportAllowance(comps.transport())
-                .foodAllowance(comps.food())
-                .specialAllowance(comps.special())
-                .bonus(bonus)
-                .billableHours(billable.hours())
-                .billableRate(billable.rate())
-                .billablePay(billable.amount())
-                .overtimeHours(overtime.hours())
-                .overtimeRate(overtime.hourlyRate())
-                .overtimePay(overtime.amount())
-                .deductions(deductions)
-                .taxDeduction(tax)
-                .insuranceDeduction(insurance)
-                .providentFundDeduction(providentFund)
-                .attendanceDeduction(attendanceDeduction.amount())
-                .absentDays(attendanceDeduction.days())
-                .otherEarnings(extras.earnings())
-                .otherDeductions(extras.deductions())
-                .loanAdvance(loanDue.loan())
-                .loanDeductionAmount(loanDue.amount())
-                .netSalary(net)
-                .notes(request.getNotes())
-                .status(PayrollStatus.DRAFT)
-                .build();
-
-        payrollRepository.save(payroll);
-
+        if (run != null) {
+            runTotals.refreshAndSave(run);
+        }
         return PayrollMapper.toPayrollResponse(payroll);
     }
 
     @Override
     @Transactional
     public BulkPayrollResult generateForAllEmployees(int month, int year) {
+        PayrollPeriods.validate(month, year);
         Long companyId = requireCompanyId();
         List<Employee> employees = employeeRepository.findByCompanyIdAndActiveTrue(companyId);
 
         List<String> created = new ArrayList<>();
         List<String> skippedAlreadyExists = new ArrayList<>();
         List<String> skippedNoStructure = new ArrayList<>();
+        PayrollRun run = null;
+        boolean runChecked = false;
 
         for (Employee employee : employees) {
-            String name = employeeDisplayName(employee);
+            String name = PayrollCalculator.displayName(employee);
 
             if (payrollRepository.findByEmployeeIdAndPayMonthAndPayYear(employee.getId(), month, year).isPresent()) {
                 skippedAlreadyExists.add(name);
                 continue;
             }
-
-            Optional<SalaryStructure> structureOpt = activeStructure(employee.getId(), month, year);
-            if (structureOpt.isEmpty()) {
+            if (calculator.activeStructure(employee.getId(), month, year).isEmpty()) {
                 skippedNoStructure.add(name);
                 continue;
             }
-            SalaryStructure structure = structureOpt.get();
-            SalaryComponents comps = fromStructure(structure);
-            BigDecimal tax = orZero(structure.getTaxDeduction());
-            BigDecimal providentFund = orZero(structure.getProvidentFund());
-            BigDecimal grossForAttendance = comps.basic().add(comps.rent()).add(comps.medical()).add(comps.transport())
-                    .add(comps.food()).add(comps.special());
-            BillablePay billable = calculateBillablePay(employee, month, year);
-            Overtime overtime = calculateOvertime(employee, month, year, grossForAttendance, comps.basic());
-            ExtraSums extras = new ExtraSums(
-                    salaryComponentService.sumExtras(structure.getId(),
-                            com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.EARNING),
-                    salaryComponentService.sumExtras(structure.getId(),
-                            com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.DEDUCTION));
-            BigDecimal gross = grossForAttendance.add(billable.amount()).add(overtime.amount()).add(extras.earnings());
-            AttendanceDeduction attendanceDeduction = calculateAttendanceDeduction(employee, month, year, grossForAttendance, comps.basic());
-            LoanDue loanDue = calculateLoanDue(employee);
-            BigDecimal net = gross.subtract(providentFund).subtract(tax).subtract(attendanceDeduction.amount())
-                    .subtract(extras.deductions()).subtract(loanDue.amount());
+            if (!runChecked) {
+                // Only matters once a line is actually about to be added.
+                run = openRunForNewLines(companyId, month, year);
+                runChecked = true;
+            }
 
-            Payroll payroll = Payroll.builder()
-                    .employee(employee)
-                    .company(companyRef(companyId))
-                    .payMonth(month)
-                    .payYear(year)
-                    .basicSalary(comps.basic())
-                    .houseRent(comps.rent())
-                    .medicalAllowance(comps.medical())
-                    .transportAllowance(comps.transport())
-                    .foodAllowance(comps.food())
-                    .specialAllowance(comps.special())
-                    .bonus(BigDecimal.ZERO)
-                    .billableHours(billable.hours())
-                    .billableRate(billable.rate())
-                    .billablePay(billable.amount())
-                    .overtimeHours(overtime.hours())
-                    .overtimeRate(overtime.hourlyRate())
-                    .overtimePay(overtime.amount())
-                    .taxDeduction(tax)
-                    .providentFundDeduction(providentFund)
-                    .attendanceDeduction(attendanceDeduction.amount())
-                    .absentDays(attendanceDeduction.days())
-                    .otherEarnings(extras.earnings())
-                    .otherDeductions(extras.deductions())
-                    .loanAdvance(loanDue.loan())
-                    .loanDeductionAmount(loanDue.amount())
-                    .netSalary(net)
-                    .status(PayrollStatus.DRAFT)
-                    .build();
-            payrollRepository.save(payroll);
+            Payroll line = obtainLine(employee, companyId, month, year);
+            PayrollCalculator.Result result = calculator.calculate(employee, companyId, month, year,
+                    PayrollCalculator.ManualInputs.none(), line.getId(), true);
+            calculator.apply(result, line);
+            line.setRun(run);
+            payrollRepository.save(line);
             created.add(name);
+        }
+
+        if (run != null && !created.isEmpty()) {
+            runTotals.refreshAndSave(run);
         }
 
         return BulkPayrollResult.builder()
@@ -217,92 +143,91 @@ public class PayrollServiceImpl implements PayrollService {
                 .build();
     }
 
-    private record SalaryComponents(BigDecimal basic, BigDecimal rent, BigDecimal medical, BigDecimal transport,
-            BigDecimal food, BigDecimal special) {}
-
-    /** Frozen sums of the structure's extra catalog components. */
-    private record ExtraSums(BigDecimal earnings, BigDecimal deductions) {}
-
-    private ExtraSums extraComponentSums(Long employeeId, int month, int year) {
-        return activeStructure(employeeId, month, year)
-                .map(s -> new ExtraSums(
-                        salaryComponentService.sumExtras(s.getId(),
-                                com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.EARNING),
-                        salaryComponentService.sumExtras(s.getId(),
-                                com.zuhoocms.modules.hrm.payroll.components.SalaryComponent.ComponentType.DEDUCTION)))
-                .orElse(new ExtraSums(BigDecimal.ZERO, BigDecimal.ZERO));
+    @Override
+    @Transactional
+    public void recalculateDraftLines(Long runId) {
+        Long companyId = requireCompanyId();
+        for (Payroll p : payrollRepository.findByRunId(runId)) {
+            if (p.getStatus() != PayrollStatus.DRAFT) continue;
+            if (p.getCompany() == null || !companyId.equals(p.getCompany().getId())) continue;
+            Employee employee = p.getEmployee();
+            boolean hasStructure = calculator.activeStructure(employee.getId(), p.getPayMonth(), p.getPayYear()).isPresent();
+            // With a structure the fixed components, tax and PF come fresh from it; without one the line's own figures are the only source.
+            // Bonus, manual deductions and insurance are never part of a structure, so they carry over either way.
+            PayrollCalculator.ManualInputs manual = new PayrollCalculator.ManualInputs(
+                    hasStructure ? null : p.getBasicSalary(),
+                    hasStructure ? null : p.getHouseRent(),
+                    hasStructure ? null : p.getMedicalAllowance(),
+                    hasStructure ? null : p.getTransportAllowance(),
+                    hasStructure ? null : p.getFoodAllowance(),
+                    hasStructure ? null : p.getSpecialAllowance(),
+                    p.getBonus(), p.getDeductions(),
+                    hasStructure ? null : p.getTaxDeduction(),
+                    p.getInsuranceDeduction(),
+                    hasStructure ? null : p.getProvidentFundDeduction());
+            PayrollCalculator.Result result = calculator.calculate(employee, companyId,
+                    p.getPayMonth(), p.getPayYear(), manual, p.getId(), true);
+            calculator.apply(result, p);
+            payrollRepository.save(p);
+        }
     }
 
-    private record AttendanceDeduction(BigDecimal amount, int days) {}
-
-    /** loan is null when the employee has no active loan - amount is always non-null. */
-    private record LoanDue(com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance loan, BigDecimal amount) {}
-
-    /**
-     * The installment due this period against the employee's one active loan,
-     * capped at whatever balance remains so the final installment doesn't
-     * overshoot. Never mutates the loan - remainingBalance only moves once
-     * this payroll actually reaches PAID, see settleLoanInstallment below.
-     */
-    private LoanDue calculateLoanDue(Employee employee) {
-        return loanAdvanceRepository
-                .findFirstByEmployeeIdAndStatus(employee.getId(), com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance.Status.ACTIVE)
-                .map(loan -> new LoanDue(loan, loan.getMonthlyInstallment().min(loan.getRemainingBalance())))
-                .orElse(new LoanDue(null, BigDecimal.ZERO));
+    /** The period's run when lines may still attach (DRAFT/CALCULATED/REJECTED), null when none is live, 400 once submitted/approved/paid - the line set is frozen. */
+    private PayrollRun openRunForNewLines(Long companyId, int month, int year) {
+        PayrollRun run = runRepository.findByCompanyIdAndPayMonthAndPayYear(companyId, month, year).orElse(null);
+        if (run == null) return null;
+        return switch (run.getStatus()) {
+            case DRAFT, CALCULATED, REJECTED -> run;
+            case CANCELLED -> null;
+            case PENDING_APPROVAL, APPROVED, PAID -> throw new BadRequestException(
+                    "Payroll run " + run.getRunNumber() + " for " + month + "/" + year + " is " + run.getStatus()
+                            + " - payroll lines can no longer be added to this period");
+        };
     }
 
-    private record BillablePay(BigDecimal hours, BigDecimal rate, BigDecimal amount) {}
-
-    /** hourlyRate already includes the overtime multiplier. */
-    private record Overtime(BigDecimal hours, BigDecimal hourlyRate, BigDecimal amount) {}
-
-    /**
-     * Approved timesheet billableHours for the pay period * the employee's fixed
-     * billableRate - added to gross/net on top of their salary. Unsubmitted/unapproved
-     * hours don't count yet (see TimesheetRepository.sumApprovedBillableHours).
-     */
-    private BillablePay calculateBillablePay(Employee employee, int payMonth, int payYear) {
-        BigDecimal rate = orZero(employee.getBillableRate());
-        LocalDate start = LocalDate.of(payYear, payMonth, 1);
-        LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
-        BigDecimal hours = BigDecimal.valueOf(
-                timesheetRepository.sumApprovedBillableHours(employee.getId(), start, end).orElse(0.0));
-        BigDecimal amount = rate.compareTo(BigDecimal.ZERO) == 0
-                ? BigDecimal.ZERO
-                : rate.multiply(hours).setScale(2, RoundingMode.HALF_UP);
-        return new BillablePay(hours, rate, amount);
+    /** A new unsaved line, or a soft-deleted row for the same employee+period revived and reset to blank DRAFT - it still holds the unique key. */
+    private Payroll obtainLine(Employee employee, Long companyId, int month, int year) {
+        Optional<Long> deletedId = payrollRepository.findSoftDeletedId(employee.getId(), month, year);
+        if (deletedId.isEmpty()) {
+            return Payroll.builder()
+                    .employee(employee)
+                    .company(companyRef(companyId))
+                    .payMonth(month)
+                    .payYear(year)
+                    .status(PayrollStatus.DRAFT)
+                    .build();
+        }
+        Long id = deletedId.get();
+        payrollRepository.reviveById(id);
+        Payroll p = payrollRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Payroll not found: " + id));
+        p.setDeleted(false);
+        p.setDeletedAt(null);
+        p.setEmployee(employee);
+        p.setStatus(PayrollStatus.DRAFT);
+        p.setRun(null);
+        p.setApprovedBy(null);
+        p.setPaymentReference(null);
+        p.setPaymentMethod(null);
+        p.setPaidAt(null);
+        p.setGlDebitAccount(null);
+        p.setGlCreditAccount(null);
+        p.setNotes(null);
+        p.setLoanAdvance(null);
+        p.setLoanDeductionAmount(BigDecimal.ZERO);
+        return p;
     }
 
     /**
-     * PaymentMethod is shared app-wide (invoices, expenses, payroll), so it lists
-     * collection rails that make no sense for paying an employee.
-     *
-     * SSLCOMMERZ moves money *to* the company from a payer's card or wallet - it
-     * has no payout API, so recording a salary as "paid by SSLCommerz" describes
-     * something that cannot have happened. WALLET is a company-level balance with
-     * no per-employee counterparty. Both are rejected here as well as hidden in
-     * the UI, so the API cannot be used to record an impossible payment.
-     */
-    /**
-     * Bank disbursement file for a pay period.
-     *
-     * Deliberately only APPROVED rows: DRAFT has not been signed off, and PAID has
-     * already been sent - exporting either invites paying someone twice or paying
-     * an unapproved amount.
-     *
-     * This does NOT move money. It produces the sheet finance uploads to the
-     * bank's corporate portal (BEFTN/RTGS bulk salary), after which they come
-     * back and mark each row paid with the bank's reference.
-     *
-     * Employees with no bank account still appear, with a blank account column
-     * and a flagged note - silently dropping them is how someone quietly goes
-     * unpaid for a month.
+     * Bank disbursement file for a pay period; does NOT move money - finance uploads it to the bank portal (BEFTN/RTGS) and marks rows paid afterwards.
+     * APPROVED rows only: exporting DRAFT or PAID invites an unapproved amount or a double payment.
+     * Employees with no bank account still appear with a flagged note, so nobody silently goes unpaid.
      */
     @Override
     @Transactional(readOnly = true)
     public String buildDisbursementCsv(int month, int year) {
-        // Permission is checked in PayrollController, matching how every other
-        // method in this module does it.
+        PayrollPeriods.validate(month, year);
+        // Permission is checked in PayrollController, as elsewhere in this module.
         Long companyId = requireCompanyId();
 
         List<Payroll> rows = payrollRepository
@@ -336,11 +261,7 @@ public class PayrollServiceImpl implements PayrollService {
         return s == null ? "" : s;
     }
 
-    /**
-     * Quotes a CSV cell. A leading =, +, - or @ is prefixed with a single quote:
-     * spreadsheet software treats those as formulas, so an employee name like
-     * "=cmd" would execute rather than display (CSV injection).
-     */
+    /** Quotes a CSV cell; a leading =, +, - or @ is escaped with a quote so a name like "=cmd" is not run as a formula (CSV injection). */
     private String csvCell(String raw) {
         String v = nullToEmpty(raw);
         if (!v.isEmpty() && "=+-@".indexOf(v.charAt(0)) >= 0) {
@@ -352,125 +273,13 @@ public class PayrollServiceImpl implements PayrollService {
         return v;
     }
 
+    /** PaymentMethod is shared app-wide, so it lists collection rails: SSLCOMMERZ has no payout API and WALLET no per-employee counterparty. */
     private void guardPayoutMethod(PaymentMethod method) {
         if (method == PaymentMethod.SSLCOMMERZ || method == PaymentMethod.WALLET) {
             throw new BadRequestException(
                 method.name() + " cannot be used to pay salary - it is a collection method, not a payout. "
                     + "Use BANK_TRANSFER, BKASH, NAGAD, ROCKET, CHEQUE or CASH.");
         }
-    }
-
-    /**
-     * ABSENT days (unapproved - approved leave is a separate ON_LEAVE status and
-     * never becomes ABSENT, see AbsenteeMarkingService) are deducted at
-     * gross / calendar-days-in-month per day.
-     */
-    private AttendanceDeduction calculateAttendanceDeduction(Employee employee, int payMonth, int payYear,
-                                                            BigDecimal gross, BigDecimal basic) {
-        LocalDate start = LocalDate.of(payYear, payMonth, 1);
-        LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
-        int absentDays = (int) attendanceRepository.countByEmployeeIdAndStatusAndAttendanceDateBetween(
-                employee.getId(), AttendanceStatus.ABSENT, start, end);
-        // Approved UNPAID leave is leave-without-pay: it never becomes ABSENT
-        // in attendance, but it still reduces pay at the same per-day rate.
-        absentDays += leaveService.unpaidLeaveDays(employee.getId(), payMonth, payYear);
-        if (absentDays == 0) {
-            return new AttendanceDeduction(BigDecimal.ZERO, absentDays);
-        }
-
-        Long companyId = employee.getCompany() != null
-                ? employee.getCompany().getId()
-                : securityUtil.getCurrentCompanyId();
-        com.zuhoocms.modules.hrm.payroll.settings.PayrollSettings settings =
-                payrollSettingsService.getOrCreate(companyId);
-
-        BigDecimal base = settings.getAbsenceDeductionBase() == com.zuhoocms.enums.SalaryBase.BASIC ? basic : gross;
-        if (base == null || base.compareTo(BigDecimal.ZERO) == 0) {
-            return new AttendanceDeduction(BigDecimal.ZERO, absentDays);
-        }
-
-        BigDecimal perDayRate = payrollSettingsService.perDayRate(settings, base, payMonth, payYear);
-        BigDecimal amount = perDayRate.multiply(BigDecimal.valueOf(absentDays)).setScale(2, RoundingMode.HALF_UP);
-        return new AttendanceDeduction(amount, absentDays);
-    }
-
-    /**
-     * Overtime for the period, priced from the company's payroll settings.
-     *
-     * Deliberately identical in method to SalarySheetService: same hours source
-     * (attendance), same base (BASIC or GROSS per settings), same per-day
-     * divisor, same multiplier. The salary sheet is the preview of a payroll
-     * run, so if the two disagreed the preview would be a lie.
-     *
-     * Returns zero when overtime is switched off for the company, which is the
-     * default - a company that has not opted in does not silently start paying
-     * for hours logged against a shift.
-     */
-    private Overtime calculateOvertime(Employee employee, int payMonth, int payYear,
-                                       BigDecimal gross, BigDecimal basic) {
-        Long companyId = employee.getCompany() != null
-                ? employee.getCompany().getId()
-                : securityUtil.getCurrentCompanyId();
-        com.zuhoocms.modules.hrm.payroll.settings.PayrollSettings settings =
-                payrollSettingsService.getOrCreate(companyId);
-
-        if (!settings.isOvertimeEnabled()) {
-            return new Overtime(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
-        }
-
-        LocalDate start = LocalDate.of(payYear, payMonth, 1);
-        LocalDate end = start.withDayOfMonth(start.lengthOfMonth());
-        BigDecimal hours = orZero(attendanceRepository.sumOvertimeHours(employee.getId(), start, end));
-        if (hours.compareTo(BigDecimal.ZERO) <= 0) {
-            return new Overtime(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
-        }
-
-        BigDecimal base = settings.getOvertimeBase() == com.zuhoocms.enums.SalaryBase.GROSS ? gross : basic;
-        BigDecimal hoursPerDay = orZero(settings.getStandardHoursPerDay());
-        if (base.compareTo(BigDecimal.ZERO) <= 0 || hoursPerDay.compareTo(BigDecimal.ZERO) <= 0) {
-            return new Overtime(hours, BigDecimal.ZERO, BigDecimal.ZERO);
-        }
-
-        BigDecimal perDay = payrollSettingsService.perDayRate(settings, base, payMonth, payYear);
-        BigDecimal hourly = perDay.divide(hoursPerDay, 4, RoundingMode.HALF_UP)
-                .multiply(orZero(settings.getOvertimeMultiplier()));
-        BigDecimal amount = hourly.multiply(hours).setScale(2, RoundingMode.HALF_UP);
-        return new Overtime(hours, hourly.setScale(4, RoundingMode.HALF_UP), amount);
-    }
-
-    private Optional<SalaryStructure> activeStructure(Long employeeId, int payMonth, int payYear) {
-        return salaryStructureRepository.findActiveForEmployeeOnDate(employeeId, LocalDate.of(payYear, payMonth, 1));
-    }
-
-    private SalaryComponents fromStructure(SalaryStructure s) {
-        return new SalaryComponents(orZero(s.getBasicSalary()), orZero(s.getHouseRent()),
-                orZero(s.getMedicalAllowance()), orZero(s.getTransportAllowance()),
-                orZero(s.getFoodAllowance()), orZero(s.getSpecialAllowance()));
-    }
-
-    /**
-     * If basicSalary was provided manually, use the request's numbers as-is (matches
-     * the previous behavior exactly). Otherwise pull from the employee's salary
-     * structure active during this pay period - previously this lookup existed
-     * (findActiveForEmployeeOnDate) but nothing ever called it, so HR had to hand-type
-     * every salary component for every employee every month.
-     */
-    private SalaryComponents resolveSalaryComponents(Employee employee, int payMonth, int payYear,
-            BigDecimal manualBasic, BigDecimal manualRent, BigDecimal manualMedical, BigDecimal manualTransport,
-            BigDecimal manualFood, BigDecimal manualSpecial) {
-        if (manualBasic != null) {
-            return new SalaryComponents(manualBasic, orZero(manualRent), orZero(manualMedical), orZero(manualTransport),
-                    orZero(manualFood), orZero(manualSpecial));
-        }
-        SalaryStructure structure = activeStructure(employee.getId(), payMonth, payYear)
-                .orElseThrow(() -> new BadRequestException(
-                        "No active salary structure for " + employeeDisplayName(employee) + " for " + payMonth + "/" + payYear
-                                + " - set one up under Salary Structures, or provide basicSalary manually"));
-        return fromStructure(structure);
-    }
-
-    private String employeeDisplayName(Employee employee) {
-        return employee.getUser() != null ? employee.getUser().getFullName() : "Employee #" + employee.getId();
     }
 
     @Override
@@ -482,6 +291,7 @@ public class PayrollServiceImpl implements PayrollService {
     @Override
     @Transactional(readOnly = true)
     public Page<PayrollResponse> listByPeriod(int month, int year, Pageable pageable) {
+        PayrollPeriods.validate(month, year);
         return payrollRepository.findByCompanyIdAndPayMonthAndPayYear(
                 requireCompanyId(), month, year, pageable)
                 .map(PayrollMapper::toPayrollResponse);
@@ -498,90 +308,158 @@ public class PayrollServiceImpl implements PayrollService {
     @Transactional
     public PayrollResponse approve(Long id) {
         Payroll p = findInTenant(id);
-        if (p.getStatus() != PayrollStatus.DRAFT) {
-            throw new BadRequestException("Only DRAFT payrolls can be approved");
-        }
-        Employee approver = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
-                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
-        p.setStatus(PayrollStatus.APPROVED);
-        p.setApprovedBy(approver);
-        payrollRepository.save(p); // explicit save for clarity and transaction safety
-        return PayrollMapper.toPayrollResponse(p);
+        rejectIfInRun(p);
+        return doApprove(p);
     }
 
     @Override
     @Transactional
-    public PayrollResponse markPaid(Long id, String paymentReference, PaymentMethod paymentMethod) {
+    public PayrollResponse approveForRun(Long id, Long runId) {
         Payroll p = findInTenant(id);
+        requireInRun(p, runId);
+        return doApprove(p);
+    }
+
+    private PayrollResponse doApprove(Payroll p) {
+        if (p.getStatus() != PayrollStatus.DRAFT) {
+            throw new BadRequestException("Only DRAFT payrolls can be approved");
+        }
+        // Scoped: approvedBy is persisted on this tenant's payroll row, so the approver must be provably in it.
+        // p comes from findInTenant, so its company is the active one.
+        Employee approver = employeeRepository.findByUserIdAndCompanyId(
+                        securityUtil.getCurrentUser().getId(), requireCompanyId())
+                .orElseThrow(() -> new BadRequestException("Employee profile not found"));
+        p.setStatus(PayrollStatus.APPROVED);
+        p.setApprovedBy(approver);
+        payrollRepository.save(p);
+        return PayrollMapper.toPayrollResponse(p);
+    }
+
+    private void rejectIfInRun(Payroll p) {
+        if (p.getRun() != null) {
+            throw new BadRequestException("This payroll belongs to payroll run " + p.getRun().getRunNumber()
+                    + " - approve and pay it through the run");
+        }
+    }
+
+    private void requireInRun(Payroll p, Long runId) {
+        if (p.getRun() == null || !p.getRun().getId().equals(runId)) {
+            throw new BadRequestException("Payroll " + p.getId() + " does not belong to this payroll run");
+        }
+    }
+
+    /** What the employee is told once a payment has committed - captured inside the transaction. */
+    private record PaidNotice(String email, String firstName, Long userId, Long companyId, EmailBranding.Data branding) {}
+
+    private record PayOutcome(PayrollResponse response, PaidNotice notice) {}
+
+    @Override
+    public PayrollResponse markPaid(Long id, String paymentReference, PaymentMethod paymentMethod) {
+        return payInOwnTransaction(id, null, paymentReference, paymentMethod, LocalDate.now());
+    }
+
+    @Override
+    public PayrollResponse payForRun(Long id, Long runId, String paymentReference, PaymentMethod paymentMethod,
+                                     LocalDate paidAt) {
+        return payInOwnTransaction(id, runId, paymentReference, paymentMethod,
+                paidAt != null ? paidAt : LocalDate.now());
+    }
+
+    /** Pays in a REQUIRES_NEW transaction, notifying only after commit, so nobody is told about a payment that later rolled back. */
+    private PayrollResponse payInOwnTransaction(Long id, Long runId, String paymentReference,
+                                                PaymentMethod paymentMethod, LocalDate paidAt) {
+        guardPayoutMethod(paymentMethod);
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        PayOutcome outcome = tx.execute(status -> doPay(id, runId, paymentReference, paymentMethod, paidAt));
+        if (outcome == null) {
+            throw new BadRequestException("Payment could not be recorded");
+        }
+        sendPaidNotice(outcome.notice());
+        return outcome.response();
+    }
+
+    private PayOutcome doPay(Long id, Long runId, String paymentReference, PaymentMethod paymentMethod,
+                             LocalDate paidAt) {
+        Long companyId = requireCompanyId();
+        // Row lock: a second concurrent pay waits here, then sees PAID below.
+        Payroll p = payrollRepository.findByIdAndCompanyIdForUpdate(id, companyId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payroll not found: " + id));
+        if (runId == null) {
+            rejectIfInRun(p);
+        } else {
+            requireInRun(p, runId);
+        }
+        if (p.getStatus() == PayrollStatus.PAID) {
+            throw new BadRequestException("Payroll is already paid");
+        }
         if (p.getStatus() != PayrollStatus.APPROVED) {
             throw new BadRequestException("Only APPROVED payrolls can be marked as paid");
         }
-        guardPayoutMethod(paymentMethod);
         p.setStatus(PayrollStatus.PAID);
         p.setPaymentReference(paymentReference);
         p.setPaymentMethod(paymentMethod);
-        p.setPaidAt(LocalDate.now());
+        p.setPaidAt(paidAt);
 
-        postPayrollToLedger(p);
+        // Settle first: a loan closed/cancelled since pricing releases the unrecoverable part back into net pay before the ledger entry is built.
         settleLoanInstallment(p);
+        postPayrollToLedger(p, paidAt);
+        payrollRepository.save(p);
 
-        if (p.getEmployee().getUser() != null) {
+        return new PayOutcome(PayrollMapper.toPayrollResponse(p), buildNotice(p));
+    }
+
+    private PaidNotice buildNotice(Payroll p) {
+        Employee e = p.getEmployee();
+        if (e == null || e.getUser() == null) return null;
+        EmailBranding.Data branding = null;
+        try {
+            branding = emailBranding.from(p.getCompany());
+        } catch (Exception ex) {
+            log.warn("Could not resolve email branding for payroll {}: {}", p.getId(), ex.getMessage());
+        }
+        return new PaidNotice(e.getUser().getEmail(), e.getUser().getFirstName(), e.getUser().getId(),
+                p.getCompany().getId(), branding);
+    }
+
+    private void sendPaidNotice(PaidNotice n) {
+        if (n == null) return;
+        if (n.branding() != null) {
             try {
-                EmailBranding.Data branding = emailBranding.from(p.getCompany());
-                emailService.sendPayrollEmail(
-                        p.getEmployee().getUser().getEmail(),
-                        p.getEmployee().getUser().getFirstName(), branding);
+                emailService.sendPayrollEmail(n.email(), n.firstName(), n.branding());
             } catch (Exception ex) {
-                log.warn("Payroll email failed for employee {}: {}", p.getEmployee().getUser().getEmail(), ex.getMessage());
+                log.warn("Payroll email failed for employee {}: {}", n.email(), ex.getMessage());
             }
-
-            // Email-only with silent failure meant an SMTP outage or a bounced
-            // address left the employee with no way to learn their payslip was
-            // ready - no notification-center record existed as a backup. This
-            // is independent of the email try/catch above: it must land even
-            // when the email fails.
+        }
+        // Independent of the email: the notification-center record must land even when SMTP fails.
+        try {
             notificationService.send(com.zuhoocms.shared.notification.CreateNotificationRequest.of(
                     com.zuhoocms.enums.NotificationType.PAYSLIP_READY,
                     "Payslip ready",
                     "Your payslip for this pay period has been processed and is ready to view.",
                     "/payroll/my-payslips",
-                    p.getEmployee().getUser().getId(),
-                    p.getCompany().getId()));
+                    n.userId(),
+                    n.companyId()));
+        } catch (Exception ex) {
+            log.warn("Payslip notification failed for user {}: {}", n.userId(), ex.getMessage());
         }
-
-        return PayrollMapper.toPayrollResponse(p);
     }
 
-    /**
-     * Payroll disbursement previously never touched the ledger at all - salary,
-     * often a company's single biggest expense, was completely invisible to
-     * Finance reports. Dr Salaries and Wages (gross) / Cr Cash (net paid out) /
-     * Cr Payroll Payable (tax + deductions withheld but not yet remitted).
-     */
-    private void postPayrollToLedger(Payroll p) {
+    /** Dr Salaries and Wages (gross) / Cr Cash (net) / Cr Payroll Payable (tax, deductions, loan installment), dated with the actual payment date. */
+    private void postPayrollToLedger(Payroll p, LocalDate transactionDate) {
         Long companyId = p.getCompany().getId();
-        // Expense recognized excludes unpaid-absence days - the company never incurred
-        // that cost - so the ledger debit matches what's actually credited below.
-        // Overtime and structure-component earnings are part of net pay, so they
-        // must be part of the expense debit - omitting them fails the balance
-        // guard the moment either is non-zero.
-        BigDecimal gross = p.getBasicSalary().add(p.getHouseRent()).add(p.getMedicalAllowance())
-                .add(p.getTransportAllowance()).add(p.getFoodAllowance()).add(p.getSpecialAllowance()).add(p.getBonus())
+        BigDecimal gross = orZero(p.getBasicSalary()).add(orZero(p.getHouseRent())).add(orZero(p.getMedicalAllowance()))
+                .add(orZero(p.getTransportAllowance())).add(orZero(p.getFoodAllowance())).add(orZero(p.getSpecialAllowance()))
+                .add(orZero(p.getBonus()))
                 .add(orZero(p.getBillablePay()))
                 .add(orZero(p.getOvertimePay()))
                 .add(orZero(p.getOtherEarnings()))
                 .subtract(orZero(p.getAttendanceDeduction()));
-        // Payroll Payable is "gross minus net cash, for reasons other than an
-        // expense reduction" - a loan installment fits that exactly (the
-        // company recovers it, it isn't remitted anywhere, but it still isn't
-        // cash out the door), so it folds in here rather than needing its own
-        // GL account. This is the existing payroll->ledger posting staying
-        // correct, not a new GL entry for the loan feature itself.
-        BigDecimal withheld = p.getDeductions().add(p.getTaxDeduction())
-                .add(p.getInsuranceDeduction()).add(p.getProvidentFundDeduction())
+        BigDecimal withheld = orZero(p.getDeductions()).add(orZero(p.getTaxDeduction()))
+                .add(orZero(p.getInsuranceDeduction())).add(orZero(p.getProvidentFundDeduction()))
                 .add(orZero(p.getOtherDeductions())).add(orZero(p.getLoanDeductionAmount()));
         String description = "Payroll " + p.getPayMonth() + "/" + p.getPayYear()
-                + " for " + p.getEmployee().getUser().getFullName();
+                + " for " + ledgerName(p.getEmployee());
 
         ChartOfAccount salaryExpense = accountResolver.salaryExpense(companyId);
         ChartOfAccount cash = accountResolver.cash(companyId);
@@ -594,48 +472,55 @@ public class PayrollServiceImpl implements PayrollService {
             lines.add(LedgerLine.credit(payable.getId(), withheld));
         }
         glService.recordBalancedTransaction(companyId, lines, description,
-                GlReferenceType.PAYROLL, p.getId(), p.getPaymentReference(), LocalDate.now());
+                GlReferenceType.PAYROLL, p.getId(), p.getPaymentReference(),
+                transactionDate != null ? transactionDate : LocalDate.now());
 
         p.setGlDebitAccount(salaryExpense.getAccountCode());
         p.setGlCreditAccount(cash.getAccountCode());
     }
 
-    /**
-     * Recovers this payroll's frozen loanDeductionAmount against the loan's
-     * remainingBalance and logs a LoanRepayment row. Deliberately HR-side
-     * bookkeeping only - the money already left in postPayrollToLedger's net
-     * pay figure, so this does not touch the GL. Per the architecture split
-     * the user asked for: Payroll generates the data, Accounting already
-     * consumed it above; this step is Payroll's own record-keeping.
-     */
+    private String ledgerName(Employee e) {
+        if (e == null) return "employee";
+        if (e.getUser() != null && e.getUser().getFullName() != null) return e.getUser().getFullName();
+        if (e.getEmployeeNumber() != null) return e.getEmployeeNumber();
+        return "employee #" + e.getId();
+    }
+
+    /** Recovers the installment against the row-locked loan and logs a LoanRepayment; a non-ACTIVE loan is untouched and the unrecovered part goes back into net pay. */
     private void settleLoanInstallment(Payroll p) {
-        com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance loan = p.getLoanAdvance();
-        BigDecimal due = p.getLoanDeductionAmount();
-        if (loan == null || due == null || due.compareTo(BigDecimal.ZERO) <= 0) {
+        LoanAdvance ref = p.getLoanAdvance();
+        BigDecimal due = orZero(p.getLoanDeductionAmount());
+        if (ref == null || due.signum() <= 0) {
             return;
         }
-        // A loan can be cancelled any time before its first repayment - exactly
-        // the window a DRAFT/APPROVED payroll referencing it can still exist in.
-        // Without this check, approving and paying a stale payroll would still
-        // deduct and settle a repayment against a loan that's officially
-        // cancelled. The deduction already left the employee's net pay
-        // (postPayrollToLedger, above) - that's a payroll-approval bug to catch
-        // earlier, not something this bookkeeping step can undo - but it must at
-        // least not log a repayment against a dead loan.
-        if (loan.getStatus() == com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance.Status.CANCELLED) {
+        LoanAdvance loan = loanAdvanceRepository.findByIdForUpdate(ref.getId()).orElse(null);
+        BigDecimal applied = BigDecimal.ZERO;
+        if (loan != null && loan.getStatus() == LoanAdvance.Status.ACTIVE) {
+            applied = due.min(orZero(loan.getRemainingBalance())).max(BigDecimal.ZERO);
+        }
+
+        if (applied.compareTo(due) < 0) {
+            p.setNetSalary(orZero(p.getNetSalary()).add(due.subtract(applied)));
+            p.setLoanDeductionAmount(applied);
+            if (applied.signum() == 0) {
+                p.setLoanAdvance(null);
+            }
+        }
+        if (applied.signum() <= 0) {
             return;
         }
-        BigDecimal newBalance = loan.getRemainingBalance().subtract(due).max(BigDecimal.ZERO);
+
+        BigDecimal newBalance = loan.getRemainingBalance().subtract(applied).max(BigDecimal.ZERO);
         loan.setRemainingBalance(newBalance);
-        if (newBalance.compareTo(BigDecimal.ZERO) == 0) {
-            loan.setStatus(com.zuhoocms.modules.hrm.payroll.loan.LoanAdvance.Status.CLOSED);
+        if (newBalance.signum() == 0) {
+            loan.setStatus(LoanAdvance.Status.CLOSED);
         }
         loanAdvanceRepository.save(loan);
 
-        loanRepaymentRepository.save(com.zuhoocms.modules.hrm.payroll.loan.LoanRepayment.builder()
+        loanRepaymentRepository.save(LoanRepayment.builder()
                 .loan(loan)
                 .payroll(p)
-                .amount(due)
+                .amount(applied)
                 .paidDate(p.getPaidAt())
                 .balanceAfter(newBalance)
                 .build());
@@ -648,26 +533,29 @@ public class PayrollServiceImpl implements PayrollService {
         if (p.getStatus() == PayrollStatus.PAID) {
             throw new BadRequestException("Cannot delete a paid payroll");
         }
-        // Payroll lock: once the batch is approved (or further along), its
-        // lines are frozen - the spec's "lock payroll after approval".
-        if (p.getRun() != null) {
-            var rs = p.getRun().getStatus();
-            if (rs == com.zuhoocms.modules.hrm.payroll.run.PayrollRun.RunStatus.APPROVED
-                    || rs == com.zuhoocms.modules.hrm.payroll.run.PayrollRun.RunStatus.PAID) {
-                throw new BadRequestException("This payroll belongs to an " + rs + " run and is locked");
+        // Lines lock once the run is submitted for approval (or further along).
+        PayrollRun run = p.getRun();
+        if (run != null) {
+            PayrollRun.RunStatus rs = run.getStatus();
+            if (rs == PayrollRun.RunStatus.PENDING_APPROVAL
+                    || rs == PayrollRun.RunStatus.APPROVED
+                    || rs == PayrollRun.RunStatus.PAID) {
+                throw new BadRequestException("This payroll belongs to a " + rs + " run and is locked");
             }
         }
         p.softDelete();
+        payrollRepository.save(p);
+        if (run != null) {
+            runTotals.refreshAndSave(run);
+        }
     }
 
     @Override
-    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    @Transactional(readOnly = true)
     public PayslipDocument generatePayslipPdf(Long id) {
         Payroll payroll = findInTenant(id);
 
-        // Same rule as getById: PAYROLL_VIEW sees anyone's payslip, everyone
-        // else only their own. Enforced here rather than in the controller so a
-        // second caller cannot reach the PDF without the check.
+        // PAYROLL_VIEW sees anyone's payslip, everyone else only their own; enforced here so no other caller can reach the PDF unchecked.
         if (!authorizationService.hasPermission(
                 com.zuhoocms.auth.role.enums.PermissionCode.PAYROLL_VIEW)) {
             var currentUser = securityUtil.getCurrentUser();
@@ -681,9 +569,7 @@ public class PayrollServiceImpl implements PayrollService {
             }
         }
 
-        // A DRAFT has not been approved by anyone, so handing it out as a
-        // document would give an employee a payslip for figures that can still
-        // change underneath them.
+        // A DRAFT is unapproved: its figures can still change, so it must not be handed out as a payslip.
         if (payroll.getStatus() == PayrollStatus.DRAFT
                 && !authorizationService.hasPermission(
                         com.zuhoocms.auth.role.enums.PermissionCode.PAYROLL_VIEW)) {

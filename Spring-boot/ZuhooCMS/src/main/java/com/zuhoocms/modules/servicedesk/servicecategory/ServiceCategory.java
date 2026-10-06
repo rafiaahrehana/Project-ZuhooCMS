@@ -4,14 +4,7 @@ import com.zuhoocms.core.base.BaseEntity;
 import jakarta.persistence.*;
 import lombok.*;
 
-/**
- * FIXES:
- * 1. Added @Builder @AllArgsConstructor — controller uses ServiceCategory.builder()
- * 2. Added 'sortOrder' field — controller, mapper, response, and repository all reference it
- * 3. Added 'companyId' — categories are per-company (each company builds its own service
- *    catalog), not a shared platform-wide taxonomy. Name uniqueness is now scoped to the
- *    company instead of globally unique.
- */
+/** Categories are per-company, not a shared platform taxonomy, so name uniqueness is scoped to companyId rather than global. */
 @Entity
 @Table(name = "service_categories",
         uniqueConstraints = @UniqueConstraint(columnNames = {"company_id", "name"}))

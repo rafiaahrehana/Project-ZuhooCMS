@@ -18,13 +18,10 @@ public class SLAPolicy extends BaseEntity {
     @Column(length = 50)
     private TicketPriority applicablePriority;
 
-    // Response time in hours
     private int firstResponseTimeHours;
 
-    // Resolution time in hours
     private int resolutionTimeHours;
 
-    // Business hours only?
     @Builder.Default
     private boolean businessHoursOnly = true;
 

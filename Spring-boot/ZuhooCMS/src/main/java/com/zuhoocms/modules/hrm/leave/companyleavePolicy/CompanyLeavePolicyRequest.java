@@ -10,6 +10,7 @@ import lombok.Data;
 public class CompanyLeavePolicyRequest {
     @NotNull(message = "Leave type is required")
     private LeaveType leaveType;
+    @NotNull(message = "Employment type is required")
     private EmploymentType employmentType;
     @NotNull
     @Min(0)

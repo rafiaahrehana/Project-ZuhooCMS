@@ -2,6 +2,7 @@ package com.zuhoocms.modules.ai.tool.impl;
 
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
+import com.zuhoocms.modules.ai.tool.AiToolValidator;
 import com.zuhoocms.modules.hrm.attendance.timesheet.TimesheetRequest;
 import com.zuhoocms.modules.hrm.attendance.timesheet.TimesheetResponse;
 import com.zuhoocms.modules.hrm.attendance.timesheet.TimesheetService;
@@ -17,6 +18,7 @@ import java.util.Map;
 public class LogTimesheetTool implements AiTool {
 
     private final TimesheetService timesheetService;
+    private final AiToolValidator validator;
 
     @Override
     public String name() {
@@ -73,6 +75,10 @@ public class LogTimesheetTool implements AiTool {
         if (args.get("projectName") != null) request.setProjectName(args.get("projectName").toString());
 
         try {
+            String invalid = validator.problems(request);
+            if (invalid != null) {
+                return AiToolResult.failure("That doesn't look right - " + invalid + ".");
+            }
             TimesheetResponse response = timesheetService.log(request);
             return AiToolResult.ok(
                 "Logged " + request.getHoursWorked() + " hours on " + request.getWorkDate()

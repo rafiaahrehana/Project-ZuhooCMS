@@ -16,7 +16,9 @@ import java.time.LocalDateTime;
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
-@Table(name = "attendance", indexes = {
+@Table(name = "attendance",
+        uniqueConstraints = @UniqueConstraint(columnNames = {"employee_id", "attendance_date"}),
+        indexes = {
         @Index(name = "idx_attendance_employee", columnList = "employee_id"),
         @Index(name = "idx_attendance_date", columnList = "attendance_date"),
         @Index(name = "idx_attendance_status", columnList = "status"),
@@ -33,7 +35,6 @@ public class Attendance extends BaseEntity {
 
     private LocalDate attendanceDate;
 
-    // Check-in details
     private LocalTime checkInTime;
     private LocalDateTime checkInDateTime;
 
@@ -50,15 +51,14 @@ public class Attendance extends BaseEntity {
     private String checkInLongitude;
     private String checkInLocation;
 
-    private String checkInReason; // Optional reason for entry
+    private String checkInReason;
 
     @Builder.Default
-    private boolean isVerified = false; // Biometric verification status
+    private boolean isVerified = false;
 
     @Builder.Default
     private double verificationScore = 0.0; // 0-100% match score for fingerprint
 
-    // Check-out details
     private LocalTime checkOutTime;
     private LocalDateTime checkOutDateTime;
 
@@ -74,7 +74,28 @@ public class Attendance extends BaseEntity {
     private String checkOutLongitude;
     private String checkOutLocation;
 
-    // Status
+    // The selfie the employee took at the punch, as one of this app's own file URLs (/api/files/{id}).
+    // 500 rather than the default 255: a signed serve URL is longer than a bare path.
+    @Column(length = 500)
+    private String checkInSelfieUrl;
+
+    @Column(length = 500)
+    private String checkOutSelfieUrl;
+
+    // An out-of-range punch is recorded and flagged for review, never refused - a wrong GPS fix must not be able to
+    // stop somebody working - so these are plain data columns that HR reads, not a gate on the write.
+    // @ColumnDefault is required: ddl-auto=update adds this NOT NULL column to a table that already has rows.
+    @Builder.Default
+    @Column(nullable = false)
+    @org.hibernate.annotations.ColumnDefault("false")
+    private boolean locationFlagged = false;
+
+    /** Why the row was flagged. One column on purpose: it holds the FIRST offence of the day, which is the interesting one. */
+    private String locationFlagReason;
+
+    /** Distance of the most recent punch from the office, in meters; null when the company does not enforce GPS. */
+    private Double distanceFromOfficeMeters;
+
     @Builder.Default
     @Enumerated(EnumType.STRING)
     @Column(length = 50)
@@ -84,21 +105,18 @@ public class Attendance extends BaseEntity {
     @Column(length = 50)
     private ShiftType shiftType;
 
-    // Late tracking
     @Builder.Default
     private boolean isLate = false;
 
-    private long lateMinutes; // How many minutes late
+    private long lateMinutes;
 
     private String lateReason;
 
-    // Overtime tracking
     @Builder.Default
     private boolean isOvertime = false;
 
     private BigDecimal overtimeHours;
 
-    // Early departure
     @Builder.Default
     private boolean leftEarly = false;
 
@@ -106,17 +124,12 @@ public class Attendance extends BaseEntity {
 
     private String earlyDepartureReason;
 
-    // Total hours
     private BigDecimal totalWorkingHours;
 
-    // Notes
     private String adminNotes;
     private String approvalNotes;
 
-    // Previously defaulted to true, so every self-service check-in started
-    // "approved" with no one having approved anything - approveAttendance()
-    // existed but had nothing left to actually do. Payroll reads status, not
-    // this field, so the default change doesn't affect pay calculation.
+    // Must default false: defaulting true made every self-service check-in arrive "approved" and left approveAttendance() with nothing to do. Payroll reads status, not this field.
     @Builder.Default
     private boolean approved = false;
 
@@ -125,7 +138,9 @@ public class Attendance extends BaseEntity {
 
     public long calculateTotalMinutes() {
         if (checkInTime != null && checkOutTime != null) {
-            return java.time.temporal.ChronoUnit.MINUTES.between(checkInTime, checkOutTime);
+            long minutes = java.time.temporal.ChronoUnit.MINUTES.between(checkInTime, checkOutTime);
+            // Night shift: check-out after midnight wraps past the check-in time.
+            return checkOutTime.isBefore(checkInTime) ? minutes + 1440 : minutes;
         }
         return 0;
     }

@@ -8,9 +8,7 @@ import org.hibernate.annotations.Filter;
 import org.hibernate.annotations.FilterDef;
 import org.hibernate.annotations.ParamDef;
 
-// Deliverable material for a proposal (mockups, architecture diagrams, a
-// tech comparison doc) - kept separate from the generic Document/checklist
-// mechanism, which is for compliance/requirement uploads, not sales material.
+// Sales material (mockups, diagrams), kept separate from the Document/checklist mechanism, which is for compliance uploads.
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity

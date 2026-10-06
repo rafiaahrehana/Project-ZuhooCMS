@@ -1,40 +1,51 @@
 package com.zuhoocms.modules.support.ticket;
 
+import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.enums.Role;
+import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.auth.user.User;
+import com.zuhoocms.auth.user.UserRepository;
+import com.zuhoocms.enums.AuditAction;
+import com.zuhoocms.enums.AuditEntityType;
+import com.zuhoocms.enums.NotificationType;
+import com.zuhoocms.modules.company.Company;
+import com.zuhoocms.modules.company.CompanyRepository;
+import com.zuhoocms.modules.crm.client.Client;
+import com.zuhoocms.modules.crm.client.ClientRepository;
 import com.zuhoocms.modules.support.agent.SupportAgent;
 import com.zuhoocms.modules.support.agent.SupportAgentRepository;
 import com.zuhoocms.modules.support.agent.SupportAgentStatus;
-import com.zuhoocms.shared.audit.AuditLog;
 import com.zuhoocms.modules.support.audit.SupportAuditLogRepository;
 import com.zuhoocms.modules.support.category.SupportCategory;
 import com.zuhoocms.modules.support.category.SupportCategoryRepository;
 import com.zuhoocms.modules.support.sla.SLAPolicy;
 import com.zuhoocms.modules.support.sla.SLAPolicyRepository;
-import com.zuhoocms.modules.company.Company;
-import com.zuhoocms.modules.company.CompanyRepository;
-import com.zuhoocms.modules.crm.client.Client;
-import com.zuhoocms.modules.crm.client.ClientRepository;
-import com.zuhoocms.auth.user.User;
-import com.zuhoocms.auth.user.UserRepository;
-import com.zuhoocms.shared.exception.BadRequestException;
-import com.zuhoocms.auth.role.enums.PermissionCode;
-import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.security.SecurityUtil;
+import com.zuhoocms.shared.audit.AuditLog;
+import com.zuhoocms.shared.exception.BadRequestException;
+import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
+import com.zuhoocms.shared.notification.CreateNotificationRequest;
+import com.zuhoocms.shared.notification.NotificationService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import java.time.LocalDate;
+
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Objects;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SupportTicketServiceImpl implements SupportTicketService {
 
     private final SupportTicketRepository ticketRepository;
+    private final SupportTicketNumberGenerator ticketNumberGenerator;
     private final SupportCategoryRepository categoryRepository;
     private final SupportAgentRepository agentRepository;
     private final SLAPolicyRepository slaPolicyRepository;
@@ -44,8 +55,14 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     private final ClientRepository clientRepository;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
+    private final NotificationService notificationService;
 
     private static final List<TicketStatus> CLOSED_STATUSES = List.of(TicketStatus.RESOLVED, TicketStatus.CLOSED);
+
+    /** sla-breached / critical-open return plain lists - cap them instead of loading every row. */
+    private static final int LIST_LIMIT = 200;
+
+    private static final int MAX_ESCALATION_LEVEL = 3;
 
     @Override
     @Transactional
@@ -65,20 +82,10 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                     .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
         }
 
-        String ticketNumber = generateTicketNumber();
-
-        // Get SLA policy based on priority
-        SLAPolicy slaPolicy = slaPolicyRepository.findByApplicablePriorityAndActiveTrue(request.getPriority())
-                .orElse(null);
+        String ticketNumber = ticketNumberGenerator.next();
 
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime firstResponseDeadline = null;
-        LocalDateTime resolutionDeadline = null;
-
-        if (slaPolicy != null) {
-            firstResponseDeadline = now.plusHours(slaPolicy.getFirstResponseTimeHours());
-            resolutionDeadline = now.plusHours(slaPolicy.getResolutionTimeHours());
-        }
+        SLAPolicy slaPolicy = activePolicyFor(request.getPriority());
 
         SupportTicket ticket = SupportTicket.builder()
                 .companyId(companyId)
@@ -87,35 +94,25 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .createdBy(createdBy)
                 .title(request.getTitle())
                 .description(request.getDescription())
-                .attachmentUrl(request.getAttachmentUrl())
+                .attachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl()))
                 .attachmentFileName(request.getAttachmentFileName())
                 .category(category)
                 .status(TicketStatus.NEW)
                 .priority(request.getPriority())
                 .source(request.getSource())
-                .firstResponseDeadline(firstResponseDeadline)
-                .resolutionDeadline(resolutionDeadline)
+                .firstResponseDeadline(slaPolicy != null ? now.plusHours(slaPolicy.getFirstResponseTimeHours()) : null)
+                .resolutionDeadline(slaPolicy != null ? now.plusHours(slaPolicy.getResolutionTimeHours()) : null)
                 .build();
 
         ticket = ticketRepository.save(ticket);
 
-        // Log audit
-        logAudit(companyId, currentUserId, "CREATE_TICKET", ticket.getId(), "SupportTicket",
+        logAudit(companyId, currentUserId, AuditAction.CREATE_TICKET, ticket.getId(),
                 "Ticket created: " + ticketNumber, null);
 
         return SupportTicketMapper.toResponse(ticket);
     }
 
-    /**
-     * CLIENT raises a CUSTOMER_SUPPORT ticket against their own client-company -
-     * distinct from create() above, which is PLATFORM_SUPPORT only (tenant staff
-     * reporting an issue with BusinessOS itself, resolved by SupportAgent). A
-     * CUSTOMER_SUPPORT ticket has no SupportAgent involved at all; it stays
-     * unassigned until a staff member (COMPANY_OWNER/EMPLOYEE) picks it up -
-     * assigning a CUSTOMER_SUPPORT ticket to a specific Employee has no endpoint
-     * yet (assignToAgent() below only assigns the platform SupportAgent kind);
-     * staff can still see, message, and resolve/close it in the meantime.
-     */
+    /** CLIENT raises a CUSTOMER_SUPPORT ticket: no SupportAgent involved, it stays unassigned until company staff pick it up (create() is PLATFORM_SUPPORT only). */
     @Override
     @Transactional
     public SupportTicketResponse createForClient(SupportTicketRequest request) {
@@ -125,14 +122,10 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         Company company = companyRepository.findById(companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Company not found"));
 
-        String ticketNumber = generateTicketNumber();
-
-        SLAPolicy slaPolicy = slaPolicyRepository.findByApplicablePriorityAndActiveTrue(request.getPriority())
-                .orElse(null);
+        String ticketNumber = ticketNumberGenerator.next();
 
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime firstResponseDeadline = slaPolicy != null ? now.plusHours(slaPolicy.getFirstResponseTimeHours()) : null;
-        LocalDateTime resolutionDeadline = slaPolicy != null ? now.plusHours(slaPolicy.getResolutionTimeHours()) : null;
+        SLAPolicy slaPolicy = activePolicyFor(request.getPriority());
 
         SupportTicket ticket = SupportTicket.builder()
                 .companyId(companyId)
@@ -143,18 +136,18 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .client(client)
                 .title(request.getTitle())
                 .description(request.getDescription())
-                .attachmentUrl(request.getAttachmentUrl())
+                .attachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl()))
                 .attachmentFileName(request.getAttachmentFileName())
                 .status(TicketStatus.NEW)
                 .priority(request.getPriority())
                 .source(request.getSource())
-                .firstResponseDeadline(firstResponseDeadline)
-                .resolutionDeadline(resolutionDeadline)
+                .firstResponseDeadline(slaPolicy != null ? now.plusHours(slaPolicy.getFirstResponseTimeHours()) : null)
+                .resolutionDeadline(slaPolicy != null ? now.plusHours(slaPolicy.getResolutionTimeHours()) : null)
                 .build();
 
         ticket = ticketRepository.save(ticket);
 
-        logAudit(companyId, client.getUser().getId(), "CREATE_TICKET", ticket.getId(), "SupportTicket",
+        logAudit(companyId, client.getUser().getId(), AuditAction.CREATE_TICKET, ticket.getId(),
                 "Customer support ticket created: " + ticketNumber, null);
 
         return SupportTicketMapper.toResponse(ticket);
@@ -194,34 +187,24 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         return SupportTicketMapper.toResponse(findTicketForCaller(id));
     }
 
+    /** Numbers generated before support_ticket_number_seq existed (count()+1) may be duplicated, so take the newest rather than 500. */
     @Override
     @Transactional(readOnly = true)
     public SupportTicketResponse getByTicketNumber(String number) {
-        SupportTicket ticket = ticketRepository.findByTicketNumber(number)
+        SupportTicket ticket = (isTenantCaller()
+                ? ticketRepository.findFirstByTicketNumberAndCompanyIdOrderByIdDesc(number, securityUtil.getCurrentCompanyId())
+                : ticketRepository.findFirstByTicketNumberOrderByIdDesc(number))
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
-        requireCallerOwns(ticket);
         return SupportTicketMapper.toResponse(ticket);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<SupportTicketResponse> getAll(Pageable pageable) {
-        // Platform support staff (SUPPORT_MANAGER/SUPER_ADMIN/SYSTEM_ADMIN) triage
-        // tickets across every company - only a tenant caller (COMPANY_OWNER) gets
-        // scoped to their own company. findAll() here was previously unscoped for
-        // everyone, letting a company owner see every other tenant's tickets.
-        User current = securityUtil.getCurrentUser();
-        if (current != null && !current.isPlatformUser()) {
-            // Fine-grained permission only applies to tenant users - platform staff
-            // (SUPPORT_MANAGER etc.) have no CustomRole, so checkPermission() would
-            // always deny them; their existing role-based @PreAuthorize already gates
-            // this endpoint for that branch.
+        // Platform staff triage every company; a tenant caller (including an impersonating admin) is scoped to its own.
+        if (isTenantCaller()) {
             authorizationService.checkPermission(PermissionCode.TICKET_VIEW);
-            // This is "my company's tickets to BusinessOS" (Platform Tickets / Direct
-            // Messages) - it predates ticketType existing at all, so it never filtered
-            // by it and ended up mixing in CUSTOMER_SUPPORT tickets (a client
-            // messaging this company) too. getClientTicketsForCompany() below is the
-            // counterpart for those.
+            // Platform tickets only - CUSTOMER_SUPPORT has its own inbox, getClientTicketsForCompany().
             return ticketRepository.findByCompanyIdAndTicketType(
                     securityUtil.getCurrentCompanyId(), TicketType.PLATFORM_SUPPORT, pageable)
                     .map(SupportTicketMapper::toResponse);
@@ -233,15 +216,15 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     @Override
     @Transactional(readOnly = true)
     public Page<SupportTicketResponse> getByCompany(Long companyId, Pageable pageable) {
-        return ticketRepository.findByCompanyId(companyId, pageable)
+        Long effectiveCompanyId = isTenantCaller() ? securityUtil.getCurrentCompanyId() : companyId;
+        return ticketRepository.findByCompanyId(effectiveCompanyId, pageable)
                 .map(SupportTicketMapper::toResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<SupportTicketResponse> getByStatus(TicketStatus status, Pageable pageable) {
-        User current = securityUtil.getCurrentUser();
-        if (current != null && !current.isPlatformUser()) {
+        if (isTenantCaller()) {
             authorizationService.checkPermission(PermissionCode.TICKET_VIEW);
             return ticketRepository.findByCompanyIdAndTicketTypeAndStatus(
                     securityUtil.getCurrentCompanyId(), TicketType.PLATFORM_SUPPORT, status, pageable)
@@ -251,13 +234,7 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .map(SupportTicketMapper::toResponse);
     }
 
-    /**
-     * Staff-facing counterpart to getAll() above: this company's own clients'
-     * CUSTOMER_SUPPORT tickets, not tickets to BusinessOS. Any COMPANY_OWNER/
-     * EMPLOYEE with TICKET_VIEW can see every client's ticket in their company,
-     * same "whole team can see the shared inbox" model getAll() already uses -
-     * assignedEmployee is who's actively handling it, not a visibility filter.
-     */
+    /** Staff-facing counterpart to getAll(): this company's own clients' CUSTOMER_SUPPORT tickets. */
     @Override
     @Transactional(readOnly = true)
     public Page<SupportTicketResponse> getClientTicketsForCompany(Pageable pageable) {
@@ -276,14 +253,29 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .map(SupportTicketMapper::toResponse);
     }
 
+    /** Client Chat detail: a platform ticket or another company's ticket 404s; matches servicedesk-service GET /company/client-tickets/{id}. */
     @Override
     @Transactional(readOnly = true)
-    public Page<SupportTicketResponse> getAssignedToMe(Long agentId, Pageable pageable) {
-        if (agentId == null) {
+    public SupportTicketResponse getClientTicketForCompany(Long id) {
+        authorizationService.checkAnyPermission(PermissionCode.TICKET_VIEW, PermissionCode.SUPPORT_MESSAGE_VIEW);
+        SupportTicket ticket = ticketRepository.findByIdAndCompanyId(id, securityUtil.getCurrentCompanyId())
+                .filter(t -> t.getTicketType() == TicketType.CUSTOMER_SUPPORT)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
+        return SupportTicketMapper.toResponse(ticket);
+    }
+
+    /** Always the caller's own agent record - a client-supplied agentId is ignored. */
+    @Override
+    @Transactional(readOnly = true)
+    public Page<SupportTicketResponse> getAssignedToMe(Pageable pageable) {
+        User current = securityUtil.getCurrentUser();
+        if (current == null) {
             return Page.empty(pageable);
         }
-        return ticketRepository.findByAssignedToAgentId(agentId, pageable)
-                .map(SupportTicketMapper::toResponse);
+        return agentRepository.findByUserId(current.getId())
+                .map(agent -> ticketRepository.findByAssignedToAgentId(agent.getId(), pageable)
+                        .map(SupportTicketMapper::toResponse))
+                .orElseGet(() -> Page.empty(pageable));
     }
 
     @Override
@@ -291,79 +283,162 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     public Page<SupportTicketResponse> getMyTickets(Long userId, Pageable pageable) {
         authorizationService.checkPermission(PermissionCode.TICKET_VIEW);
         Long targetUserId = userId != null ? userId : securityUtil.getCurrentUser().getId();
-        return ticketRepository.findByCreatedById(targetUserId, pageable)
+        // Company-scoped: a userId from another company must not list that company's tickets.
+        return ticketRepository.findByCreatedByIdAndCompanyId(targetUserId, securityUtil.getCurrentCompanyId(), pageable)
                 .map(SupportTicketMapper::toResponse);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SupportTicketResponse> getSLABreachedTickets() {
+        PageRequest limit = PageRequest.of(0, LIST_LIMIT);
+        LocalDateTime now = LocalDateTime.now();
+        List<SupportTicket> tickets = isTenantCaller()
+                ? ticketRepository.findSlaBreached(securityUtil.getCurrentCompanyId(), CLOSED_STATUSES, now, limit)
+                : ticketRepository.findSlaBreached(CLOSED_STATUSES, now, limit);
+        return tickets.stream().map(SupportTicketMapper::toResponse).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SupportTicketResponse> getOpenCriticalTickets() {
+        PageRequest limit = PageRequest.of(0, LIST_LIMIT);
+        List<SupportTicket> tickets = isTenantCaller()
+                ? ticketRepository.findOpenCritical(securityUtil.getCurrentCompanyId(), CLOSED_STATUSES, limit)
+                : ticketRepository.findOpenCritical(CLOSED_STATUSES, limit);
+        return tickets.stream().map(SupportTicketMapper::toResponse).toList();
     }
 
     @Override
     @Transactional
     public void assignToAgent(Long ticketId, Long agentId) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        requireSupportStaff("assign tickets");
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        requireAssignable(ticket);
 
-        SupportAgent agent = agentRepository.findById(agentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Agent not found"));
-        requireActiveAgent(agent);
+        SupportAgent agent = lockAgent(agentId);
+        SupportAgent previous = ticket.getAssignedToAgent();
+        if (previous != null && previous.getId().equals(agent.getId())) {
+            return; // already assigned to this agent - nothing to do
+        }
+        requireAgentCapacity(agent);
 
         ticket.assignToAgent(agent);
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "ASSIGN", ticketId,
-                "SupportTicket", "Assigned to " + agent.getUser().getFullName(), null);
+        String description = "Assigned to " + agentLabel(agent)
+                + (previous != null ? " (previously " + agentLabel(previous) + ")" : "");
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(),
+                previous != null ? AuditAction.REASSIGN : AuditAction.ASSIGN, ticketId, description, null);
     }
 
     @Override
     @Transactional
     public void reassignToAgent(Long ticketId, Long newAgentId, String reason) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        requireSupportStaff("reassign tickets");
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        requireAssignable(ticket);
 
-        SupportAgent newAgent = agentRepository.findById(newAgentId)
-                .orElseThrow(() -> new ResourceNotFoundException("Agent not found"));
-        requireActiveAgent(newAgent);
-
+        SupportAgent newAgent = lockAgent(newAgentId);
         SupportAgent oldAgent = ticket.getAssignedToAgent();
-        ticket.setAssignedToAgent(newAgent);
-        ticket.setAssignedDate(LocalDateTime.now());
+        if (oldAgent != null && oldAgent.getId().equals(newAgent.getId())) {
+            throw new BadRequestException("Ticket is already assigned to " + agentLabel(newAgent));
+        }
+        requireAgentCapacity(newAgent);
+
+        ticket.assignToAgent(newAgent);
         ticketRepository.save(ticket);
 
-        String oldAgentName = oldAgent != null ? oldAgent.getUser().getFullName() : "Unassigned";
         String description = String.format("Reassigned from %s to %s. Reason: %s",
-                oldAgentName, newAgent.getUser().getFullName(), reason);
-
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "REASSIGN", ticketId,
-                "SupportTicket", description, null);
+                oldAgent != null ? agentLabel(oldAgent) : "Unassigned", agentLabel(newAgent), reason);
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.REASSIGN, ticketId,
+                description, oldAgent != null ? "previousAgentId=" + oldAgent.getId() : null);
     }
 
     @Override
     @Transactional
     public void escalate(Long ticketId, String reason) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        if (!ticket.isActiveStatus()) {
+            throw new BadRequestException("Only an open ticket can be escalated - this one is " + ticket.getStatus());
+        }
+        int level = ticket.getEscalationLevel() != null ? ticket.getEscalationLevel() : 1;
+        if (level >= MAX_ESCALATION_LEVEL) {
+            throw new BadRequestException("Ticket is already at the highest escalation level (" + MAX_ESCALATION_LEVEL + ")");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (isTenantCaller() && ticket.getEscalatedDate() != null
+                && ticket.getEscalatedDate().isAfter(now.minusHours(24))) {
+            throw new BadRequestException("This ticket was escalated less than 24 hours ago - it can be escalated again after "
+                    + ticket.getEscalatedDate().plusHours(24).withNano(0));
+        }
 
-        ticket.setEscalationLevel(ticket.getEscalationLevel() + 1);
-        ticket.setEscalatedDate(LocalDateTime.now());
+        ticket.setEscalationLevel(level + 1);
+        ticket.setEscalatedDate(now);
         ticket.setEscalationReason(reason);
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "ESCALATE", ticketId,
-                "SupportTicket", "Escalated to level " + ticket.getEscalationLevel() + ": " + reason, null);
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.ESCALATE, ticketId,
+                "Escalated to level " + ticket.getEscalationLevel() + ": " + reason, null);
+
+        notifyEscalation(ticket, reason);
+    }
+
+    private void notifyEscalation(SupportTicket ticket, String reason) {
+        try {
+            String message = "Ticket " + ticket.getTicketNumber() + " was escalated to level "
+                    + ticket.getEscalationLevel() + (reason != null ? ": " + reason : "");
+            if (ticket.getTicketType() == TicketType.CUSTOMER_SUPPORT) {
+                User owner = ticket.getCompany() != null ? ticket.getCompany().getOwner() : null;
+                if (owner != null) {
+                    notificationService.send(CreateNotificationRequest.of(NotificationType.GENERAL,
+                            "Ticket escalated", message, "/support/client-chat", owner.getId(), ticket.getCompanyId()));
+                }
+                return;
+            }
+            for (User manager : userRepository.findByRoleIn(List.of(Role.SUPPORT_MANAGER), Pageable.unpaged())) {
+                notificationService.send(CreateNotificationRequest.of(NotificationType.GENERAL,
+                        "Ticket escalated", message, "/support/tickets/" + ticket.getId(),
+                        manager.getId(), ticket.getCompanyId()));
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Escalation notification failed for ticket {}: {}", ticket.getId(), ex.getMessage());
+        }
     }
 
     @Override
     @Transactional
     public void recordFirstResponse(Long ticketId) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        if (!ticket.isActiveStatus()) {
+            throw new BadRequestException("Cannot record a first response on a " + ticket.getStatus() + " ticket");
+        }
+        if (ticket.getFirstResponseTime() != null) {
+            throw new BadRequestException("First response was already recorded at " + ticket.getFirstResponseTime().withNano(0));
+        }
 
         ticket.recordFirstResponse();
-        ticket.setStatus(TicketStatus.IN_PROGRESS);
+        if (ticket.getStatus() == TicketStatus.NEW || ticket.getStatus() == TicketStatus.OPEN
+                || ticket.getStatus() == TicketStatus.REOPENED) {
+            ticket.setStatus(TicketStatus.IN_PROGRESS);
+        }
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "FIRST_RESPONSE", ticketId,
-                "SupportTicket", "First response recorded", null);
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.FIRST_RESPONSE, ticketId,
+                "First response recorded", null);
     }
 
     @Override
     @Transactional
     public void resolve(Long ticketId, String resolutionNotes) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        requireOwnClientTicketIfTenant(ticket, "resolve");
+        if (!ticket.isActiveStatus()) {
+            throw new BadRequestException("Only an open ticket can be resolved - this one is " + ticket.getStatus());
+        }
+        if (resolutionNotes == null || resolutionNotes.isBlank()) {
+            throw new BadRequestException("Resolution notes are required");
+        }
 
         Long currentUserId = securityUtil.getCurrentUser().getId();
         User user = userRepository.findById(currentUserId)
@@ -372,128 +447,250 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         ticket.resolve(resolutionNotes, user.getFullName());
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), currentUserId, "RESOLVE", ticketId,
-                "SupportTicket", "Ticket resolved", null);
+        logAudit(ticket.getCompanyId(), currentUserId, AuditAction.RESOLVE, ticketId, "Ticket resolved", null);
     }
 
     @Override
     @Transactional
     public void close(Long ticketId) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        requireOwnClientTicketIfTenant(ticket, "close");
+        doClose(ticket);
+    }
+
+    private void doClose(SupportTicket ticket) {
         if (ticket.getStatus() != TicketStatus.RESOLVED) {
-            throw new com.zuhoocms.shared.exception.BadRequestException(
+            throw new BadRequestException(
                     "Only a resolved ticket can be closed - resolve it first so the resolution is on record");
         }
-
         ticket.close();
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "CLOSE", ticketId,
-                "SupportTicket", "Ticket closed", null);
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.CLOSE, ticket.getId(),
+                "Ticket closed", null);
     }
 
     @Override
     @Transactional
     public void reopen(Long ticketId, String reason) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        doReopen(lockTicketForCaller(ticketId), reason);
+    }
 
-        ticket.setStatus(TicketStatus.REOPENED);
+    private void doReopen(SupportTicket ticket, String reason) {
+        if (ticket.getStatus() != TicketStatus.RESOLVED && ticket.getStatus() != TicketStatus.CLOSED) {
+            throw new BadRequestException("Only a resolved or closed ticket can be reopened - this one is " + ticket.getStatus());
+        }
+        // Restart the SLA clock from now for the ticket's current priority.
+        LocalDateTime now = LocalDateTime.now();
+        SLAPolicy policy = activePolicyFor(ticket.getPriority());
+        ticket.reopen(
+                policy != null ? now.plusHours(policy.getFirstResponseTimeHours()) : null,
+                policy != null ? now.plusHours(policy.getResolutionTimeHours()) : null);
         ticketRepository.save(ticket);
 
-        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), "REOPEN", ticketId,
-                "SupportTicket", "Ticket reopened: " + reason, null);
+        logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.REOPEN, ticket.getId(),
+                "Ticket reopened: " + reason, null);
     }
 
     @Override
     @Transactional
     public void recordSatisfaction(Long ticketId, int rating, String feedback) {
-        SupportTicket ticket = findTicketForCaller(ticketId);
+        if (rating < 1 || rating > 5) {
+            throw new BadRequestException("Rating must be between 1 and 5");
+        }
+        SupportTicket ticket = lockTicketForCaller(ticketId);
+        User current = securityUtil.getCurrentUser();
+        if (ticket.getCreatedBy() == null || current == null
+                || !ticket.getCreatedBy().getId().equals(current.getId())) {
+            throw new ForbiddenException("Only the person who raised this ticket can rate it");
+        }
+        if (ticket.getStatus() != TicketStatus.RESOLVED && ticket.getStatus() != TicketStatus.CLOSED) {
+            throw new BadRequestException("A ticket can only be rated once it is resolved or closed");
+        }
 
         ticket.setSatisfactionRating(rating);
         ticket.setSatisfactionFeedback(feedback);
         ticketRepository.save(ticket);
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public List<SupportTicketResponse> getSLABreachedTickets() {
-        Long companyId = securityUtil.getCurrentCompanyId();
-        // Scoped at the database for tenant callers - only a platform-staff
-        // caller with no company context gets the cross-company scan.
-        List<SupportTicket> tickets = companyId != null
-                ? ticketRepository.findSLABreachedTickets(companyId, CLOSED_STATUSES, LocalDateTime.now())
-                : ticketRepository.findSLABreachedTickets(CLOSED_STATUSES, LocalDateTime.now());
-        return tickets.stream()
-                .map(SupportTicketMapper::toResponse)
-                .collect(Collectors.toList());
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public List<SupportTicketResponse> getOpenCriticalTickets() {
-        Long companyId = securityUtil.getCurrentCompanyId();
-        List<SupportTicket> tickets = companyId != null
-                ? ticketRepository.findOpenCriticalTickets(companyId)
-                : ticketRepository.findOpenCriticalTickets();
-        return tickets.stream()
-                .map(SupportTicketMapper::toResponse)
-                .collect(Collectors.toList());
-    }
-
+    /** Applies only fields present in the request; a status change goes through the same guards as the action endpoints. */
     @Override
     @Transactional
-    public SupportTicketResponse update(Long id, SupportTicketRequest request) {
-        SupportTicket ticket = findTicketForCaller(id);
+    public SupportTicketResponse update(Long id, SupportTicketPatchRequest request) {
+        SupportTicket ticket = lockTicketForCaller(id);
 
-        ticket.setTitle(request.getTitle());
-        ticket.setDescription(request.getDescription());
-        ticket.setPriority(request.getPriority());
+        boolean editsFields = request.getTitle() != null || request.getDescription() != null
+                || request.getCategoryId() != null || request.getPriority() != null
+                || request.getAttachmentUrl() != null || request.getAttachmentFileName() != null;
+        if (editsFields && ticket.getStatus() == TicketStatus.CLOSED) {
+            throw new BadRequestException("A closed ticket can't be edited - reopen it first");
+        }
 
+        if (request.getTitle() != null) {
+            if (request.getTitle().isBlank()) throw new BadRequestException("Title cannot be blank");
+            ticket.setTitle(request.getTitle());
+        }
+        if (request.getDescription() != null) {
+            if (request.getDescription().isBlank()) throw new BadRequestException("Description cannot be blank");
+            ticket.setDescription(request.getDescription());
+        }
         if (request.getCategoryId() != null) {
             SupportCategory category = categoryRepository.findById(request.getCategoryId())
                     .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
             ticket.setCategory(category);
+        }
+        if (request.getAttachmentUrl() != null) ticket.setAttachmentUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getAttachmentUrl(), ticket.getAttachmentUrl()));
+        if (request.getAttachmentFileName() != null) ticket.setAttachmentFileName(request.getAttachmentFileName());
+
+        if (request.getPriority() != null && request.getPriority() != ticket.getPriority()) {
+            ticket.setPriority(request.getPriority());
+            recomputeDeadlinesForPriority(ticket);
+        }
+
+        if (request.getStatus() != null && request.getStatus() != ticket.getStatus()) {
+            applyStatusChange(ticket, request.getStatus());
         }
 
         ticket = ticketRepository.save(ticket);
         return SupportTicketMapper.toResponse(ticket);
     }
 
+    private void applyStatusChange(SupportTicket ticket, TicketStatus target) {
+        if (isTenantCaller() && ticket.getTicketType() != TicketType.CUSTOMER_SUPPORT) {
+            throw new ForbiddenException("Only support staff can change the status of a platform support ticket");
+        }
+        switch (target) {
+            case RESOLVED -> throw new BadRequestException(
+                    "Use the resolve action to resolve a ticket - resolution notes are required");
+            case CLOSED -> doClose(ticket);
+            case REOPENED -> doReopen(ticket, "status changed to REOPENED");
+            case NEW -> throw new BadRequestException("A ticket can't be moved back to NEW");
+            default -> {
+                if (!ticket.isActiveStatus()) {
+                    throw new BadRequestException("A " + ticket.getStatus() + " ticket must be reopened before its status can change to " + target);
+                }
+                TicketStatus from = ticket.getStatus();
+                ticket.setStatus(target);
+                logAudit(ticket.getCompanyId(), securityUtil.getCurrentUser().getId(), AuditAction.UPDATE, ticket.getId(),
+                        "Status changed from " + from + " to " + target, null);
+            }
+        }
+    }
+
+    /** Deadlines follow the new priority's SLA measured from when the ticket was raised; breach flags clear if the new deadline hasn't passed. */
+    private void recomputeDeadlinesForPriority(SupportTicket ticket) {
+        SLAPolicy policy = activePolicyFor(ticket.getPriority());
+        LocalDateTime start = ticket.getCreatedAt() != null ? ticket.getCreatedAt() : LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now();
+        if (policy == null) {
+            ticket.setFirstResponseDeadline(null);
+            ticket.setResolutionDeadline(null);
+        } else {
+            ticket.setFirstResponseDeadline(start.plusHours(policy.getFirstResponseTimeHours()));
+            ticket.setResolutionDeadline(start.plusHours(policy.getResolutionTimeHours()));
+        }
+        if (ticket.getResolutionDeadline() == null || ticket.getResolutionDeadline().isAfter(now)) {
+            ticket.setSlaBreached(false);
+        }
+        if (ticket.getFirstResponseDeadline() == null || ticket.getFirstResponseDeadline().isAfter(now)) {
+            ticket.setFirstResponseBreached(false);
+        }
+        if (!ticket.isSlaBreached() && !ticket.isFirstResponseBreached()) {
+            ticket.setSlaBreachReason(null);
+        }
+    }
+
     @Override
     @Transactional
     public void delete(Long id) {
-        SupportTicket ticket = findTicketForCaller(id);
+        SupportTicket ticket = lockTicketForCaller(id);
         ticket.softDelete();
         ticketRepository.save(ticket);
     }
 
+    /** Tenant = effective role is a company role (includes an impersonating platform admin). */
+    private boolean isTenantCaller() {
+        User current = securityUtil.getCurrentUser();
+        return current != null && !current.isPlatformUser();
+    }
+
     /**
-     * Tenant callers (COMPANY_OWNER/EMPLOYEE) are scoped strictly to their own
-     * company; platform support staff (SUPPORT_AGENT/SUPPORT_MANAGER/SUPER_ADMIN/
-     * SYSTEM_ADMIN) legitimately triage tickets across every company, same split
-     * as getAll()/getByStatus() above.
+     * A company's own staff may close out a CUSTOMER_SUPPORT ticket - their client asking them for help, the
+     * "Client Chat" screen. Until now resolve and close admitted only the PLATFORM's support roles, which no tenant
+     * can hold, so a company could never finish its own customer's ticket by any route and the queue only grew.
+     * Rating was stuck behind the same dead end, because only a RESOLVED or CLOSED ticket can be rated.
+     *
+     * Two things this deliberately does NOT open. A tenant still cannot touch a PLATFORM_SUPPORT ticket - the one
+     * their company raised with us - because resolving your own request to your supplier is not a thing to grant;
+     * the type check below is the whole of that rule, and lockTicketForCaller has already confined a tenant caller
+     * to their own company. And platform staff keep their existing reach over both kinds.
+     *
+     * Gated on SUPPORT_MESSAGE_VIEW, which is the code that already governs staff working a client's ticket
+     * (replyToClientTicket and getClientTicketMessagesForCompany both use it): anyone who may answer the client may
+     * also mark the answer done. That needs no new code granting, which is what makes this work for existing roles.
      */
-    // SupportAgent has no company_id (support staff are platform-wide, not
-    // tenant-scoped) - "same company" doesn't apply the way it does elsewhere,
-    // but assign/reassign never checked the target agent was even active or
-    // under their own concurrent-ticket cap - maxConcurrentTickets was a
-    // decorative field with no backing logic in assignment.
-    private void requireActiveAgent(SupportAgent agent) {
-        if (agent.getStatus() != SupportAgentStatus.ACTIVE) {
-            throw new com.zuhoocms.shared.exception.BadRequestException(
-                    "Cannot assign to " + agent.getUser().getFullName() + " - they are not an active agent");
+    private void requireOwnClientTicketIfTenant(SupportTicket ticket, String action) {
+        if (!isTenantCaller()) {
+            return;
         }
-        long openCount = ticketRepository.countByAssignedToAgentIdAndStatusNotIn(agent.getId(), CLOSED_STATUSES);
-        if (openCount >= agent.getMaxConcurrentTickets()) {
-            throw new com.zuhoocms.shared.exception.BadRequestException(
-                    "Cannot assign to " + agent.getUser().getFullName() + " - they already have "
-                            + openCount + " open ticket(s), at their limit of " + agent.getMaxConcurrentTickets());
+        if (ticket.getTicketType() != TicketType.CUSTOMER_SUPPORT) {
+            throw new ForbiddenException("Only platform support staff can " + action + " this ticket");
+        }
+        authorizationService.checkPermission(PermissionCode.SUPPORT_MESSAGE_VIEW);
+    }
+
+    private void requireSupportStaff(String action) {
+        User current = securityUtil.getCurrentUser();
+        if (current == null || !current.isPlatformUser()) {
+            throw new ForbiddenException("Only platform support staff can " + action);
         }
     }
 
+    /** Only PLATFORM_SUPPORT tickets that are still being worked can take a SupportAgent. */
+    private void requireAssignable(SupportTicket ticket) {
+        if (!ticket.isActiveStatus()) {
+            throw new BadRequestException("Cannot assign a " + ticket.getStatus() + " ticket - reopen it first");
+        }
+        if (ticket.getTicketType() == TicketType.CUSTOMER_SUPPORT) {
+            throw new BadRequestException("Customer support tickets are handled by the company's own staff, not platform agents");
+        }
+    }
+
+    /** Locks the agent row so concurrent assignments can't both slip under maxConcurrentTickets. */
+    private SupportAgent lockAgent(Long agentId) {
+        return agentRepository.lockById(agentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Agent not found"));
+    }
+
+    // SupportAgent has no company_id (support staff are platform-wide, not tenant-scoped).
+    private void requireAgentCapacity(SupportAgent agent) {
+        if (agent.getStatus() != SupportAgentStatus.ACTIVE) {
+            throw new BadRequestException("Cannot assign to " + agentLabel(agent) + " - they are not an active agent");
+        }
+        if (!agent.isAcceptingTickets()) {
+            throw new BadRequestException("Cannot assign to " + agentLabel(agent) + " - they are not accepting tickets");
+        }
+        long openCount = ticketRepository.countByAssignedToAgentIdAndStatusNotIn(agent.getId(), CLOSED_STATUSES);
+        if (openCount >= agent.getMaxConcurrentTickets()) {
+            throw new BadRequestException("Cannot assign to " + agentLabel(agent) + " - they already have "
+                    + openCount + " open ticket(s), at their limit of " + agent.getMaxConcurrentTickets());
+        }
+    }
+
+    private static String agentLabel(SupportAgent agent) {
+        String name = agent.getUser() != null ? agent.getUser().getFullName() : "agent";
+        return name + " (agent #" + agent.getId() + ")";
+    }
+
+    /** Tolerates legacy duplicate active policies for one priority - newest wins. */
+    private SLAPolicy activePolicyFor(TicketPriority priority) {
+        if (priority == null) return null;
+        return slaPolicyRepository.findFirstByApplicablePriorityAndActiveTrueOrderByIdDesc(priority).orElse(null);
+    }
+
+    /** Read path: tenant callers (including an impersonating admin) are scoped to their own company, platform staff to every company. */
     private SupportTicket findTicketForCaller(Long id) {
-        User current = securityUtil.getCurrentUser();
-        if (current != null && !current.isPlatformUser()) {
+        if (isTenantCaller()) {
             return ticketRepository.findByIdAndCompanyId(id, securityUtil.getCurrentCompanyId())
                     .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
         }
@@ -501,29 +698,24 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
     }
 
-    /** Used where the ticket was fetched by a non-tenant-scoped lookup (ticket number). */
-    private void requireCallerOwns(SupportTicket ticket) {
-        User current = securityUtil.getCurrentUser();
-        if (current != null && !current.isPlatformUser()
-                && !java.util.Objects.equals(ticket.getCompanyId(), securityUtil.getCurrentCompanyId())) {
+    /** Write path: same scoping as findTicketForCaller(), with the row locked for the transaction. */
+    private SupportTicket lockTicketForCaller(Long id) {
+        SupportTicket ticket = ticketRepository.lockById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
+        if (isTenantCaller() && !Objects.equals(ticket.getCompanyId(), securityUtil.getCurrentCompanyId())) {
             throw new ResourceNotFoundException("Ticket not found");
         }
+        return ticket;
     }
 
-    private String generateTicketNumber() {
-        long count = ticketRepository.count() + 1;
-        return String.format("TKT-%04d-%06d", LocalDate.now().getYear(), count);
-    }
-
-    private void logAudit(Long companyId, Long userId, String actionType, Long resourceId,
-                          String resourceType, String description, String changes) {
-        Company company = companyRepository.findById(companyId).orElse(null);
+    private void logAudit(Long companyId, Long userId, AuditAction action, Long resourceId,
+                          String description, String changes) {
         AuditLog log = AuditLog.builder()
-                .company(company)
-                .performedBy(userRepository.findById(userId).orElse(null))
-                .action(com.zuhoocms.enums.AuditAction.valueOf(actionType))
+                .company(companyId != null ? companyRepository.getReferenceById(companyId) : null)
+                .performedBy(userId != null ? userRepository.getReferenceById(userId) : null)
+                .action(action)
                 .entityId(resourceId)
-                .entityType(com.zuhoocms.enums.AuditEntityType.valueOf("SUPPORT_TICKET"))
+                .entityType(AuditEntityType.SUPPORT_TICKET)
                 .oldValue(description)
                 .newValue(changes)
                 .build();

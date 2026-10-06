@@ -49,6 +49,8 @@ public class ClientController {
         return ResponseEntity.ok(clientService.listActive());
     }
 
+    // Matches its PATCH sibling: unguarded, any authenticated principal could ask this route for "my client profile", which it resolves from the caller's own user id.
+    @PreAuthorize("hasRole('CLIENT')")
     @GetMapping("/me")
     public ResponseEntity<ClientResponse> getMyProfile() {
         return ResponseEntity.ok(clientService.getMyProfile());
@@ -74,10 +76,7 @@ public class ClientController {
         return ResponseEntity.ok(clientService.update(id, request));
     }
 
-    /**
-     * Creates a portal login for this client and emails a one-time
-     * set-password link. Safe to call again to re-send an expired invite.
-     */
+    /** Creates a portal login and emails a one-time set-password link; safe to call again to re-send an expired invite. */
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PostMapping("/{id}/invite-portal")
     public ResponseEntity<ClientResponse> inviteToPortal(@PathVariable Long id) {

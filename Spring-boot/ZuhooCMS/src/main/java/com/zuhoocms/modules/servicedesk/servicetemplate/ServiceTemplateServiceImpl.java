@@ -5,6 +5,10 @@ import com.zuhoocms.modules.servicedesk.servicecategory.ServiceCategoryRepositor
 import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
+import com.zuhoocms.shared.exception.ForbiddenException;
+import com.zuhoocms.auth.role.enums.Role;
+import com.zuhoocms.auth.user.User;
+import com.zuhoocms.security.SecurityUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,11 +25,12 @@ public class ServiceTemplateServiceImpl implements ServiceTemplateService {
     private final ServiceTemplateRepository templateRepository;
     private final ServiceCategoryRepository categoryRepository;
     private final AuthorizationService authorizationService;
+    private final SecurityUtil securityUtil;
 
     @Override
     @Transactional
     public ServiceTemplateResponse create(ServiceTemplateRequest request) {
-        authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_CREATE);
+        requirePlatformAdmin();
         ServiceCategory category = categoryRepository.findById(request.getCategoryId())
                 .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
 
@@ -87,7 +92,7 @@ public class ServiceTemplateServiceImpl implements ServiceTemplateService {
     @Override
     @Transactional
     public ServiceTemplateResponse update(Long id, ServiceTemplateRequest request) {
-        authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_UPDATE);
+        requirePlatformAdmin();
         ServiceTemplate template = templateRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Template not found"));
 
@@ -111,6 +116,9 @@ public class ServiceTemplateServiceImpl implements ServiceTemplateService {
     @Override
     @Transactional(readOnly = true)
     public ServiceTemplateResponse getById(Long id) {
+        // Gated the same way as listAll below, which is the read beside it: platform admins pass, everyone else
+        // needs SERVICE_TEMPLATE_VIEW. Reading one template by id was open to any authenticated user.
+        if (!isPlatformAdmin()) authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_VIEW);
         return ServiceTemplateMapper.toResponse(templateRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Template not found")));
     }
@@ -118,7 +126,7 @@ public class ServiceTemplateServiceImpl implements ServiceTemplateService {
     @Override
     @Transactional(readOnly = true)
     public Page<ServiceTemplateResponse> listAll(boolean activeOnly, Pageable pageable) {
-        authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_VIEW);
+        if (!isPlatformAdmin()) authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_VIEW);
         if (activeOnly) {
             return templateRepository.findByActive(true, pageable).map(ServiceTemplateMapper::toResponse);
         }
@@ -136,9 +144,21 @@ public class ServiceTemplateServiceImpl implements ServiceTemplateService {
     @Override
     @Transactional
     public void delete(Long id) {
-        authorizationService.checkPermission(PermissionCode.SERVICE_TEMPLATE_DELETE);
+        requirePlatformAdmin();
         ServiceTemplate template = templateRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Template not found"));
         template.softDelete();
+    }
+
+    /** ServiceTemplate has no company column, so a tenant's COMPANY_OWNER (who passes every checkPermission) could rename or delete templates other tenants depend on; mutations are platform-admin only. */
+    private void requirePlatformAdmin() {
+        if (!isPlatformAdmin()) {
+            throw new ForbiddenException("Service templates are platform-managed - only a platform admin can change them");
+        }
+    }
+
+    private boolean isPlatformAdmin() {
+        User user = securityUtil.getCurrentUser();
+        return user != null && user.getRole() == Role.SUPER_ADMIN && !securityUtil.isImpersonating();
     }
 }

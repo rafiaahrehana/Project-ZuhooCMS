@@ -8,14 +8,8 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 /**
- * A push target: one row per app install that has registered for notifications.
- *
- * The token is unique because FCM can hand the same token to a different account on the same
- * device after a reinstall or account switch — re-registering must move the row to the new user
- * rather than leave the old one pointing at a device that no longer belongs to them.
- *
- * companyId is denormalised the same way Notification does it, so a tenant's tokens can be
- * scoped without joining through the user.
+ * One row per app install registered for notifications; the token is unique because FCM can hand it to another account after a reinstall and re-registering must move the row.
+ * companyId is denormalised so a tenant's tokens can be scoped without joining through the user.
  */
 @Entity
 @Table(name = "device_tokens",

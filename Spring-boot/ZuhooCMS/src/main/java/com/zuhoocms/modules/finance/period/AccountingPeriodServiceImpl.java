@@ -32,6 +32,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AccountingPeriodServiceImpl implements AccountingPeriodService {
 
+    /** Sanity bounds for any fiscal year accepted from a request - see requireSaneFiscalYear(). */
+    private static final int MIN_FISCAL_YEAR = 2000;
+    private static final int MAX_FISCAL_YEAR = 2100;
+
+    /** Namespace salt for the per-company year-end-close advisory lock - see yearEndCloseLockKey(). */
+    private static final long YEAR_END_CLOSE_LOCK_SALT = 0x5945_4143L; // "YEAC"
+
     private final AccountingPeriodRepository periodRepository;
     private final CompanyRepository companyRepository;
     private final ChartOfAccountRepository coaRepository;
@@ -46,18 +53,13 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
     @Transactional
     public List<AccountingPeriodResponse> listForYear(int fiscalYear) {
         authorizationService.checkPermission(PermissionCode.ACCOUNTING_PERIOD_VIEW);
+        requireSaneFiscalYear(fiscalYear);
         Long companyId = requireCompanyId();
         List<AccountingPeriod> periods = ensureYearExists(companyId, fiscalYear);
         return periods.stream().map(AccountingPeriodMapper::toResponse).collect(Collectors.toList());
     }
 
-    /**
-     * Generates any of the 12 monthly periods for this fiscal year that don't exist yet,
-     * from the company's fiscalYearStartMonth. Convention: fiscal year Y's period 1 starts
-     * on (fiscalYearStartMonth, Y) and runs 12 months forward - e.g. a July-start company's
-     * "FY2026" is Jul 2026 - Jun 2027. (Some real companies instead name a July-start year
-     * by its END year; this app picks the start-year convention consistently everywhere.)
-     */
+    /** Generates missing monthly periods from fiscalYearStartMonth; convention is start-year: FY Y period 1 starts (fiscalYearStartMonth, Y), so a July-start FY2026 is Jul 2026 - Jun 2027. */
     private List<AccountingPeriod> ensureYearExists(Long companyId, int fiscalYear) {
         List<AccountingPeriod> existing = periodRepository.findByCompanyIdAndFiscalYearOrderByPeriodNumberAsc(companyId, fiscalYear);
         Map<Integer, AccountingPeriod> byNumber = new HashMap<>();
@@ -68,8 +70,20 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
                 .orElseThrow(() -> new ResourceNotFoundException("Company not found"));
         int startMonth = company.getFiscalYearStartMonth() != null ? company.getFiscalYearStartMonth() : 1;
 
+        // Compare actual dates, not year numbers, and refuse before writing: after fiscalYearStartMonth changes, a regenerated year's months can fall inside a stored year's periods.
+        LocalDate yearStart = LocalDate.of(fiscalYear, startMonth, 1);
+        LocalDate yearEnd = yearStart.plusMonths(12).minusDays(1);
+        List<AccountingPeriod> clashes = periodRepository.findOverlappingOtherYears(companyId, fiscalYear, yearStart, yearEnd);
+        if (!clashes.isEmpty()) {
+            AccountingPeriod first = clashes.get(0);
+            throw new BadRequestException("Fiscal year " + fiscalYear + " (" + yearStart + " to " + yearEnd
+                    + ") overlaps periods already generated for fiscal year " + first.getFiscalYear()
+                    + " (period " + first.getPeriodNumber() + ": " + first.getStartDate() + " to " + first.getEndDate()
+                    + "). The fiscal year start month appears to have changed - delete the conflicting periods first.");
+        }
+
         List<AccountingPeriod> result = new ArrayList<>();
-        LocalDate cursor = LocalDate.of(fiscalYear, startMonth, 1);
+        LocalDate cursor = yearStart;
         for (int i = 1; i <= 12; i++) {
             AccountingPeriod period = byNumber.get(i);
             if (period == null) {
@@ -147,13 +161,11 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
             throw new BadRequestException("This period is already closed");
         }
 
-        // Close strictly in date order - otherwise a later period could close while an
-        // earlier one is still open, letting someone backdate into the still-open gap
-        // and produce financials that contradict a period already reported as final.
+        // Close strictly in date order, else someone backdates into the still-open earlier gap and contradicts financials already reported as final.
+        // Scoped across ALL fiscal years by date: per-year scoping left December of the old year open while January of the new year could close.
         LocalDate periodStart = period.getStartDate();
-        boolean earlierStillOpen = periodRepository.findByCompanyIdAndFiscalYearOrderByPeriodNumberAsc(companyId, period.getFiscalYear())
-                .stream()
-                .anyMatch(p -> p.getStartDate().isBefore(periodStart) && p.getStatus() == PeriodStatus.OPEN);
+        boolean earlierStillOpen = periodRepository.existsByCompanyIdAndStartDateLessThanAndStatus(
+                companyId, periodStart, PeriodStatus.OPEN);
         if (earlierStillOpen) {
             throw new BadRequestException("Close earlier periods first - periods must be closed in date order");
         }
@@ -175,23 +187,17 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
         if (period.getStatus() != PeriodStatus.CLOSED) {
             throw new BadRequestException("This period isn't closed");
         }
-        // A closed fiscal year already posted its YEAR_END_CLOSE entry, computed
-        // from exactly the GL movement its 12 periods had at that moment.
-        // Reopening one of those periods and posting into it would silently
-        // invalidate that already-posted closing entry with no way to
-        // regenerate it (closeFiscalYear refuses to run twice) - block it here
-        // instead, same check closeFiscalYear itself uses.
+        // Posting into a reopened period would invalidate the already-posted YEAR_END_CLOSE entry, which cannot be regenerated since closeFiscalYear refuses to run twice.
         if (isFiscalYearClosed(companyId, period.getFiscalYear())) {
             throw new BadRequestException(
                     "Fiscal year " + period.getFiscalYear() + " has already been closed - its periods can no longer be reopened");
         }
-        // Reopen strictly in reverse date order, mirroring the close constraint - otherwise
-        // you'd have an open period sitting before a still-closed later one.
+        // Reopen in reverse date order, mirroring closePeriod: the violation is a LATER period still being CLOSED, not one already OPEN.
+        // Scoped across ALL fiscal years by date: December of the old year must not reopen while January of the new year is still closed.
         LocalDate periodStart = period.getStartDate();
-        boolean laterAlreadyOpen = periodRepository.findByCompanyIdAndFiscalYearOrderByPeriodNumberAsc(companyId, period.getFiscalYear())
-                .stream()
-                .anyMatch(p -> p.getStartDate().isAfter(periodStart) && p.getStatus() == PeriodStatus.OPEN);
-        if (laterAlreadyOpen) {
+        boolean laterStillClosed = periodRepository.existsByCompanyIdAndStartDateGreaterThanAndStatus(
+                companyId, periodStart, PeriodStatus.CLOSED);
+        if (laterStillClosed) {
             throw new BadRequestException("Reopen later periods first - periods must be reopened in reverse date order");
         }
 
@@ -206,7 +212,11 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
     @Transactional
     public void closeFiscalYear(int fiscalYear) {
         authorizationService.checkPermission(PermissionCode.ACCOUNTING_PERIOD_CLOSE);
+        requireSaneFiscalYear(fiscalYear);
         Long companyId = requireCompanyId();
+
+        // Serialise the close per company BEFORE the "already closed" GL read, else two rapid clicks both post a closing entry and double the year's profit into Retained Earnings. Transaction-scoped, so no unlock needed.
+        periodRepository.acquireYearEndCloseLock(yearEndCloseLockKey(companyId));
 
         List<AccountingPeriod> periods = periodRepository.findByCompanyIdAndFiscalYearOrderByPeriodNumberAsc(companyId, fiscalYear);
         if (periods.size() < 12) {
@@ -217,6 +227,7 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
             throw new BadRequestException("All 12 periods must be closed before closing fiscal year " + fiscalYear);
         }
 
+        // Read AFTER the advisory lock: the loser of the race sees the winner's committed closing entry and is rejected.
         if (isFiscalYearClosed(companyId, fiscalYear)) {
             throw new BadRequestException("Fiscal year " + fiscalYear + " has already been closed");
         }
@@ -225,27 +236,23 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
         LocalDate end = periods.get(periods.size() - 1).getEndDate();
         String description = "Fiscal year " + fiscalYear + " (" + start + " to " + end + ") closing entry";
 
-        // Zero out every Revenue/Contra-Revenue/Expense account's movement for the year,
-        // routing the net into Retained Earnings - the same "close the books" entry real
-        // bookkeeping makes so next year's P&L starts from zero, not last year's total.
-        // Collected into one line list and posted as a single recordBalancedTransaction()
-        // call, so the whole closing entry either lands atomically and balanced, or not
-        // at all - rather than trusting dozens of individually-balanced pairs to add up.
+        // Zero every Revenue/Contra-Revenue/Expense movement for the year into Retained Earnings, so next year's P&L starts from zero.
+        // Posted as one recordBalancedTransaction() call so the whole closing entry lands atomically and balanced, or not at all.
         List<LedgerLine> lines = new ArrayList<>();
         BigDecimal netIncome = BigDecimal.ZERO;
         netIncome = netIncome.add(closeAccountsOfType(companyId, AccountType.REVENUE, start, end, lines));
         netIncome = netIncome.subtract(closeAccountsOfType(companyId, AccountType.CONTRA_REVENUE, start, end, lines));
         netIncome = netIncome.subtract(closeAccountsOfType(companyId, AccountType.EXPENSE, start, end, lines));
 
-        if (netIncome.compareTo(BigDecimal.ZERO) == 0) {
-            return; // nothing moved this year - no closing entry needed
-        }
-
         ChartOfAccount retainedEarnings = accountResolver.retainedEarnings(companyId);
         if (netIncome.compareTo(BigDecimal.ZERO) > 0) {
             lines.add(LedgerLine.credit(retainedEarnings.getId(), netIncome));
-        } else {
+        } else if (netIncome.compareTo(BigDecimal.ZERO) < 0) {
             lines.add(LedgerLine.debit(retainedEarnings.getId(), netIncome.negate()));
+        } else if (lines.isEmpty()) {
+            // A year with no movement at all must still post a marker row: isFiscalYearClosed() looks for a GL row tagged YEAR_END_CLOSE/<fiscalYear>, and posting nothing left it false forever.
+            // recordBalancedTransaction keeps the first line of an all-zero batch as that marker.
+            lines.add(LedgerLine.debit(retainedEarnings.getId(), BigDecimal.ZERO));
         }
 
         glService.recordBalancedTransaction(companyId, lines, description,
@@ -258,11 +265,7 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
                 .isEmpty();
     }
 
-    /**
-     * Appends the zeroing line(s) for every account of one type to `lines` and returns the
-     * total "normal-direction" movement closed out (positive = that type had a normal
-     * credit-normal-or-debit-normal balance for the year, as appropriate to its type).
-     */
+    /** Appends zeroing lines for every account of one type and returns the total normal-direction movement closed out. */
     private BigDecimal closeAccountsOfType(Long companyId, AccountType type, LocalDate start, LocalDate end,
                                             List<LedgerLine> lines) {
         boolean creditNormal = type.isCreditNormal();
@@ -279,9 +282,7 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
 
             if (movement.compareTo(BigDecimal.ZERO) == 0) continue;
 
-            // Zero this account's contribution by posting the opposite side of its movement -
-            // same four cases as the original single-posting version, just building a line
-            // instead of posting immediately.
+            // Zero this account's contribution by posting the opposite side of its movement.
             if (creditNormal) {
                 if (movement.compareTo(BigDecimal.ZERO) > 0) {
                     lines.add(LedgerLine.debit(account.getId(), movement));
@@ -309,6 +310,19 @@ public class AccountingPeriodServiceImpl implements AccountingPeriodService {
     private AccountingPeriod findInTenant(Long id, Long companyId) {
         return periodRepository.findByIdAndCompanyId(id, companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Accounting period not found: " + id));
+    }
+
+    /** A query-string typo like 202 or 20266 reached LocalDate.of() as a 500, or generated far-future periods that blocked later years as overlaps; 2000..2100 keeps it a clear 400. */
+    private void requireSaneFiscalYear(int fiscalYear) {
+        if (fiscalYear < MIN_FISCAL_YEAR || fiscalYear > MAX_FISCAL_YEAR) {
+            throw new BadRequestException("Fiscal year must be between " + MIN_FISCAL_YEAR + " and " + MAX_FISCAL_YEAR
+                    + " - got " + fiscalYear);
+        }
+    }
+
+    /** pg_advisory_xact_lock() keys share one global 64-bit namespace, so the company id is salted: otherwise company 7's close blocks on any feature locking key 7. */
+    private static long yearEndCloseLockKey(Long companyId) {
+        return YEAR_END_CLOSE_LOCK_SALT * 31L + companyId;
     }
 
     private Long requireCompanyId() {

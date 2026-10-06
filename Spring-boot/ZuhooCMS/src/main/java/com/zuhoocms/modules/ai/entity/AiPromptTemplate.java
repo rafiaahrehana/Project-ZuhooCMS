@@ -19,11 +19,7 @@ import org.hibernate.annotations.ParamDef;
     }
 )
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
-// Same reasoning as AiProviderConfig: a company_id IS NULL row is a platform
-// default template shared with every tenant. findActiveForFeature documents and
-// relies on that "company-specific wins, else platform default" fallback, but a
-// strict "company_id = :companyId" filter silently deleted the IS NULL branch
-// from the query, so the platform defaults were unreachable for tenant users.
+// As in AiProviderConfig, a company_id IS NULL row is a shared platform default: a strict "company_id = :companyId" filter dropped the IS NULL branch findActiveForFeature relies on, making those defaults unreachable.
 @Filter(name = "tenantFilter", condition = "(company_id = :companyId or company_id is null)")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class AiPromptTemplate extends BaseEntity {

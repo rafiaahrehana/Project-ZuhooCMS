@@ -13,9 +13,7 @@ public interface SubscriptionHistoryRepository extends JpaRepository<Subscriptio
 
     Page<SubscriptionHistory> findByCompanyId(Long companyId, Pageable pageable);
 
-    // Bucketed by day in Java (DashboardServiceImpl) rather than a DB-side GROUP BY -
-    // keeps this portable across JPA providers instead of relying on dialect-specific
-    // date-truncation functions.
+    // Bucketed by day in Java (DashboardServiceImpl), not a DB GROUP BY, to avoid dialect-specific date-truncation functions.
     java.util.List<SubscriptionHistory> findByChangedAtGreaterThanEqualOrderByChangedAtAsc(LocalDateTime from);
 
     @Query("SELECT COALESCE(SUM(h.amountPaid), 0) FROM SubscriptionHistory h")

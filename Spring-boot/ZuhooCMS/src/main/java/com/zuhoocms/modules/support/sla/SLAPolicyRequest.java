@@ -8,9 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-// AllArgsConstructor access is package-private: a public one is picked up by Jackson as
-// a deserialization creator, which fails on any missing primitive field ("Cannot map
-// null into type int/boolean") instead of defaulting it to 0/false via no-args+setters.
+// AllArgsConstructor is package-private: a public one is picked up by Jackson as a creator and fails on a missing primitive with "Cannot map null into type int".
 @Data
 @Builder
 @NoArgsConstructor
@@ -28,6 +26,7 @@ public class SLAPolicyRequest {
     private int firstResponseTimeHours;
     private int resolutionTimeHours;
     private boolean businessHoursOnly;
-    private boolean active;
+    // Boolean, not boolean: an update without "active" keeps the current value instead of silently deactivating the policy.
+    private Boolean active;
     private String notes;
 }

@@ -18,11 +18,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 
-/**
- * Standalone CRM dashboard summary - deliberately separate from DashboardController/
- * DashboardServiceImpl (the global company dashboard), so CRM gets its own lightweight
- * KPI set instead of being folded into the existing widget-registry framework.
- */
+/** Standalone CRM dashboard summary, deliberately separate from DashboardServiceImpl's widget-registry framework so CRM keeps its own lightweight KPI set. */
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -45,14 +41,16 @@ public class CrmDashboardServiceImpl implements CrmDashboardService {
         long convertedLeads = leadRepository.countByCompanyIdAndConvertedTrue(companyId);
         double conversionRate = totalLeads == 0 ? 0.0 : (convertedLeads * 100.0) / totalLeads;
 
+        // LIMIT 5 in the query, not .limit(5) after the fact: the whole follow-up backlog was otherwise hydrated to render a five-row widget.
         List<CrmActivity> upcoming = crmActivityRepository
                 .findByCompanyIdAndFollowUpDoneFalseAndFollowUpAtGreaterThanEqualOrderByFollowUpAtAsc(
-                        companyId, LocalDateTime.now())
-                .stream()
-                .limit(5)
-                .toList();
+                        companyId, LocalDateTime.now(), org.springframework.data.domain.PageRequest.of(0, 5));
 
         List<OpportunityStage> closedStages = List.of(OpportunityStage.WON, OpportunityStage.LOST);
+
+        // One grouped query, reused for the funnel and the won/lost/open figures below; this dashboard used to fire roughly 25 queries per load, one per enum constant.
+        List<OpportunityRepository.PipelineStageSummary> pipeline =
+                opportunityRepository.summarizePipeline(companyId);
 
         return CrmDashboardSummaryResponse.builder()
                 .pipelineValue(opportunityRepository.sumOpenPipelineValue(companyId))
@@ -68,29 +66,37 @@ public class CrmDashboardServiceImpl implements CrmDashboardService {
                 .wonValue(opportunityRepository.sumAmountByCompanyIdAndStage(companyId, OpportunityStage.WON))
                 .lostCount(opportunityRepository.countByCompanyIdAndStage(companyId, OpportunityStage.LOST))
                 .lostValue(opportunityRepository.sumAmountByCompanyIdAndStage(companyId, OpportunityStage.LOST))
-                .stageFunnel(stageFunnel(companyId))
+                .stageFunnel(stageFunnel(pipeline))
                 .leadSources(leadSources(companyId))
                 .recentDeals(recentDeals(companyId))
                 .build();
     }
 
-    /** Open-stage funnel: count, value and share of open pipeline value. */
-    private List<CrmDashboardSummaryResponse.StageSlice> stageFunnel(Long companyId) {
-        List<CrmDashboardSummaryResponse.StageSlice> slices = new java.util.ArrayList<>();
-        java.math.BigDecimal total = java.math.BigDecimal.ZERO;
-        java.util.Map<OpportunityStage, java.math.BigDecimal> values = new java.util.EnumMap<>(OpportunityStage.class);
-        for (OpportunityStage stage : OpportunityStage.values()) {
-            if (stage == OpportunityStage.WON || stage == OpportunityStage.LOST) continue;
-            java.math.BigDecimal value = orZero(opportunityRepository.sumAmountByCompanyIdAndStage(companyId, stage));
-            values.put(stage, value);
-            total = total.add(value);
+    /** Open-stage funnel built from the caller's single summarizePipeline() result; stages missing from it are emitted as explicit zeroes, or the funnel's shape lies about where deals are stuck. */
+    private List<CrmDashboardSummaryResponse.StageSlice> stageFunnel(
+            List<OpportunityRepository.PipelineStageSummary> pipeline) {
+
+        java.util.Map<OpportunityStage, OpportunityRepository.PipelineStageSummary> byStage =
+                new java.util.EnumMap<>(OpportunityStage.class);
+        for (OpportunityRepository.PipelineStageSummary row : pipeline) {
+            byStage.put(row.getStage(), row);
         }
+
+        java.math.BigDecimal total = java.math.BigDecimal.ZERO;
         for (OpportunityStage stage : OpportunityStage.values()) {
-            if (stage == OpportunityStage.WON || stage == OpportunityStage.LOST) continue;
-            java.math.BigDecimal value = values.get(stage);
+            if (stage.isClosed()) continue;
+            OpportunityRepository.PipelineStageSummary row = byStage.get(stage);
+            total = total.add(row != null ? orZero(row.getTotalAmount()) : java.math.BigDecimal.ZERO);
+        }
+
+        List<CrmDashboardSummaryResponse.StageSlice> slices = new java.util.ArrayList<>();
+        for (OpportunityStage stage : OpportunityStage.values()) {
+            if (stage.isClosed()) continue;
+            OpportunityRepository.PipelineStageSummary row = byStage.get(stage);
+            java.math.BigDecimal value = row != null ? orZero(row.getTotalAmount()) : java.math.BigDecimal.ZERO;
             slices.add(CrmDashboardSummaryResponse.StageSlice.builder()
                     .stage(stage.name())
-                    .count(opportunityRepository.countByCompanyIdAndStage(companyId, stage))
+                    .count(row != null ? row.getDealCount() : 0L)
                     .value(value)
                     .percent(total.signum() > 0
                             ? value.multiply(java.math.BigDecimal.valueOf(100))
@@ -101,13 +107,14 @@ public class CrmDashboardServiceImpl implements CrmDashboardService {
         return slices;
     }
 
+    /** One GROUP BY source query in place of one count per LeadSource constant. */
     private List<CrmDashboardSummaryResponse.SourceSlice> leadSources(Long companyId) {
-        return java.util.Arrays.stream(com.zuhoocms.enums.LeadSource.values())
-                .map(s -> CrmDashboardSummaryResponse.SourceSlice.builder()
-                        .source(s.name())
-                        .count(leadRepository.countByCompanyIdAndSource(companyId, s))
+        return leadRepository.countByCompanyIdGroupedBySource(companyId).stream()
+                .filter(row -> row.getSource() != null && row.getTotal() != null && row.getTotal() > 0)
+                .map(row -> CrmDashboardSummaryResponse.SourceSlice.builder()
+                        .source(row.getSource().name())
+                        .count(row.getTotal())
                         .build())
-                .filter(s -> s.getCount() > 0)
                 .sorted((a, b) -> Long.compare(b.getCount(), a.getCount()))
                 .toList();
     }

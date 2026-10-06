@@ -2,11 +2,15 @@ package com.zuhoocms.modules.finance.journalentry;
 
 import com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccount;
 import com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccountRepository;
+import com.zuhoocms.modules.finance.generalledger.DocumentNumberService;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerService;
 import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.generalledger.LedgerLine;
 import com.zuhoocms.auth.role.enums.PermissionCode;
+import com.zuhoocms.auth.role.enums.Role;
 import com.zuhoocms.auth.role.service.AuthorizationService;
+import com.zuhoocms.auth.user.User;
+import com.zuhoocms.modules.finance.period.PeriodLockChecker;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import com.zuhoocms.shared.exception.BadRequestException;
@@ -26,8 +30,10 @@ public class JournalEntryServiceImpl implements JournalEntryService {
     private final JournalEntryRepository jeRepository;
     private final ChartOfAccountRepository coaRepository;
     private final GeneralLedgerService glService;
+    private final DocumentNumberService documentNumberService;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
+    private final PeriodLockChecker periodLockChecker;
 
     @Override
     @Transactional
@@ -35,16 +41,16 @@ public class JournalEntryServiceImpl implements JournalEntryService {
         authorizationService.checkPermission(PermissionCode.JOURNAL_ENTRY_CREATE);
         Long companyId = securityUtil.getCurrentCompanyId();
 
-        // Normalize to the multi-line form: an explicit lines list, or two lines
-        // synthesized from the legacy single debit/credit fields.
+        // Normalize to the multi-line form: an explicit lines list, or two lines synthesized from the legacy single debit/credit fields.
         List<JournalEntryLineRequest> lineRequests = normalizeLines(request);
         validateLines(lineRequests);
 
-        String jeNumber = generateJENumber(companyId);
+        LocalDate entryDate = request.getEntryDate() != null ? request.getEntryDate() : LocalDate.now();
+        String jeNumber = generateJENumber(companyId, entryDate);
         JournalEntry je = JournalEntry.builder()
                 .companyId(companyId)
                 .journalEntryNumber(jeNumber)
-                .entryDate(request.getEntryDate() != null ? request.getEntryDate() : LocalDate.now())
+                .entryDate(entryDate)
                 .description(request.getDescription())
                 .notes(request.getNotes())
                 .createdBy(securityUtil.getCurrentUser().getUsername())
@@ -86,22 +92,26 @@ public class JournalEntryServiceImpl implements JournalEntryService {
         return JournalEntryMapper.toResponse(je);
     }
 
-    /**
-     * The UI shows a "NO DIRECT POSTING" badge and explains isHeaderAccount /
-     * !allowDirectPosting as a real restriction, but nothing server-side ever
-     * enforced it - any user could post a manual journal entry directly to an
-     * account meant as a pure rollup, silently breaking its hierarchy. System-
-     * generated postings (invoices, expenses, payroll) always resolve to
-     * specific leaf accounts via DefaultAccountResolver, never a header
-     * account, so this only needs to guard the one place a human picks an
-     * account by hand.
-     */
+    /** Server-side enforcement of isHeaderAccount / !allowDirectPosting: posting a manual entry to a rollup account breaks its hierarchy. System postings resolve to leaf accounts via DefaultAccountResolver, so only hand-picked accounts need guarding. */
     private void requireDirectPostingAllowed(ChartOfAccount account) {
         if (account.isHeaderAccount() || !account.isAllowDirectPosting()) {
             throw new BadRequestException(
                     "\"" + account.getAccountName() + "\" (" + account.getAccountCode()
                             + ") does not allow direct posting - it's a header/rollup account. Post to one of its child accounts instead.");
         }
+    }
+
+    /** Re-runs the account check at POST time: between drafting and posting an account can be deactivated or turned into a header account. Applies to reversals too, which reuse the original's accounts. */
+    private void requirePostableAccount(ChartOfAccount account) {
+        if (account == null) {
+            throw new BadRequestException("Journal entry line has no account");
+        }
+        if (!account.isActive()) {
+            throw new BadRequestException(
+                    "\"" + account.getAccountName() + "\" (" + account.getAccountCode()
+                            + ") is no longer active - it cannot be posted to. Edit the entry to use an active account.");
+        }
+        requireDirectPostingAllowed(account);
     }
 
     /** Either the explicit lines list, or two lines built from the legacy 1:1 fields. */
@@ -188,16 +198,25 @@ public class JournalEntryServiceImpl implements JournalEntryService {
             throw new BadRequestException("Journal entry is already approved");
         }
 
-        // Maker-checker: the person who wrote an entry must not be the one who approves
-        // it - otherwise the approval step is theater and one compromised/mistaken user
-        // can move money through the books alone.
+        // Maker-checker: the writer of an entry must not approve it, or one user can move money through the books alone.
+        // The company owner is exempt (they already hold every tenant permission - see AuthorizationServiceImpl); their self-approvals are flagged instead.
         String approver = securityUtil.getCurrentUser().getUsername();
-        if (approver != null && approver.equalsIgnoreCase(je.getCreatedBy())) {
+        boolean selfApproval = approver != null && approver.equalsIgnoreCase(je.getCreatedBy());
+        if (selfApproval && !canSelfApprove()) {
             throw new BadRequestException("You created this journal entry - a different user must approve it");
         }
 
-        je.approve(approver);
+        je.approve(approver, selfApproval);
         jeRepository.save(je);
+    }
+
+    /** Only the company owner and an impersonating platform admin (impersonation mints owner-level authority - see ImpersonationServiceImpl) may waive maker-checker; CustomRole holders always need a second person. */
+    private boolean canSelfApprove() {
+        if (securityUtil.isImpersonating()) {
+            return true;
+        }
+        User user = securityUtil.getCurrentUser();
+        return user != null && user.getRole() == Role.COMPANY_OWNER;
     }
 
     @Override
@@ -218,21 +237,20 @@ public class JournalEntryServiceImpl implements JournalEntryService {
         jeRepository.save(je);
     }
 
-    /**
-     * Records the entry's GL lines as one balanced batch (rejected up front if debits
-     * don't equal credits) and flips it to posted. Shared by {@link #post} and
-     * {@link #reverse}. Pre-lines entries fall back to the legacy 1:1 columns.
-     */
+    /** Records the GL lines as one balanced batch (rejected if debits != credits) and flips to posted; shared by {@link #post} and {@link #reverse}, with pre-lines entries falling back to the legacy 1:1 columns. */
     private void postToLedger(JournalEntry je) {
         LocalDate transactionDate = je.getEntryDate() != null ? je.getEntryDate() : LocalDate.now();
 
         List<LedgerLine> ledgerLines;
         if (je.getLines() != null && !je.getLines().isEmpty()) {
+            je.getLines().forEach(line -> requirePostableAccount(line.getAccount()));
             ledgerLines = je.getLines().stream()
                     .map(line -> new LedgerLine(line.getAccount().getId(),
                             nz(line.getDebitAmount()), nz(line.getCreditAmount())))
                     .collect(java.util.stream.Collectors.toList());
         } else {
+            requirePostableAccount(je.getDebitAccount());
+            requirePostableAccount(je.getCreditAccount());
             ledgerLines = List.of(
                     LedgerLine.debit(je.getDebitAccount().getId(), je.getAmount()),
                     LedgerLine.credit(je.getCreditAccount().getId(), je.getAmount()));
@@ -256,18 +274,29 @@ public class JournalEntryServiceImpl implements JournalEntryService {
         if (original.isReversed()) {
             throw new BadRequestException("Journal entry is already reversed");
         }
+        // Reversing a reversal re-posts the original amounts under a third number, leaving the audit trail an unreadable chain.
+        if (original.isReversalEntry()) {
+            throw new BadRequestException(
+                    "This entry is itself a reversal and cannot be reversed. Create a new journal entry instead.");
+        }
 
         Long companyId = original.getCompanyId();
         String actor = securityUtil.getCurrentUser().getUsername();
         LocalDate today = LocalDate.now();
 
-        // Reversing entry mirrors the original with debit and credit swapped, so
-        // posting it produces the exact offsetting ledger movement. It's created
-        // pre-approved and posted immediately.
+        // Date the reversal on the original's date so the two cancel inside the same period; once that period is closed PeriodLockChecker rejects it, so it falls to today.
+        LocalDate reversalDate = periodLockChecker.isDateInClosedPeriod(companyId, original.getEntryDate())
+                ? today
+                : original.getEntryDate();
+        if (reversalDate == null) {
+            reversalDate = today;
+        }
+
+        // Mirrors the original with debit and credit swapped for an exact offsetting movement; created pre-approved and posted immediately.
         JournalEntry reversal = JournalEntry.builder()
                 .companyId(companyId)
-                .journalEntryNumber(generateJENumber(companyId))
-                .entryDate(today)
+                .journalEntryNumber(generateJENumber(companyId, reversalDate))
+                .entryDate(reversalDate)
                 .debitAccount(original.getCreditAccount())
                 .creditAccount(original.getDebitAccount())
                 .amount(original.getAmount())
@@ -283,8 +312,7 @@ public class JournalEntryServiceImpl implements JournalEntryService {
                 .posted(false)
                 .build();
 
-        // Mirror every line of the original with debit/credit swapped - a multi-line
-        // original needs a matching multi-line reversal, not just the summary pair.
+        // A multi-line original needs a matching multi-line reversal, not just the summary pair.
         if (original.getLines() != null && !original.getLines().isEmpty()) {
             for (JournalEntryLine line : original.getLines()) {
                 reversal.getLines().add(JournalEntryLine.builder()
@@ -323,14 +351,22 @@ public class JournalEntryServiceImpl implements JournalEntryService {
         return JournalEntryMapper.toResponse(je);
     }
 
-    private String generateJENumber(Long companyId) {
-        int year = LocalDate.now().getYear();
+    /** The year comes from the entry's own date, not today, or a backdated entry lands in the wrong year's sequence and the JE register reads non-chronologically. Counter is a locked sequence row, not MAX+1 - see DocumentNumberService. */
+    private String generateJENumber(Long companyId, LocalDate entryDate) {
+        int year = (entryDate != null ? entryDate : LocalDate.now()).getYear();
         String prefix = "JE-" + year + "-";
-        String maxNumber = jeRepository
-                .findMaxJENumberByCompanyAndPrefix(companyId, prefix)
-                .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId, DocumentNumberService.JOURNAL_ENTRY, year, prefix,
+                () -> seedFrom(jeRepository.findMaxJENumberByCompanyAndPrefix(companyId, prefix).orElse(null), prefix));
+    }
+
+    /** First value for a brand-new counter: one past whatever the old MAX+1 scheme already issued. */
+    private static long seedFrom(String maxNumber, String prefix) {
+        if (maxNumber == null || !maxNumber.startsWith(prefix)) return 1L;
+        try {
+            return Long.parseLong(maxNumber.substring(prefix.length())) + 1L;
+        } catch (NumberFormatException e) {
+            return 1L;
+        }
     }
 }
 

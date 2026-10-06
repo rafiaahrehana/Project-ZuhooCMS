@@ -15,14 +15,8 @@ import java.util.List;
 
 /**
  * Sends a notification to a user's registered devices.
- *
- * Firebase is optional. If no service-account file is configured the service logs once at
- * startup and every send becomes a no-op — the app still works, it just falls back to the
- * existing in-app STOMP push and the notification list. That matters because a developer
- * checkout without Firebase credentials must still be able to run the whole backend.
- *
- * Nothing here is allowed to fail a caller: push is a best-effort side channel, and the
- * Notification row is already persisted by the time this runs.
+ * Firebase is optional: with no service-account file every send is a no-op falling back to the in-app STOMP push, so a checkout without credentials still runs the backend.
+ * Nothing here may fail a caller: push is best-effort and the Notification row is already persisted.
  */
 @Service
 @RequiredArgsConstructor
@@ -31,8 +25,7 @@ public class FcmPushService {
 
     private final DeviceTokenService deviceTokenService;
 
-    // Injected rather than initialised here: Google sign-in needs Firebase too, so startup is
-    // owned by FirebaseInitializer and this just asks whether it succeeded.
+    // Injected, not initialised here: Google sign-in needs Firebase too, so startup is owned by FirebaseInitializer.
     private final FirebaseInitializer firebase;
 
     private boolean enabled() {
@@ -72,9 +65,7 @@ public class FcmPushService {
     /** @return false when the token is dead and should be pruned. */
     private boolean send(DeviceToken device, Notification notification) {
 
-        // Data-only message, no notification payload: it means the Android client builds the
-        // system notification itself, so it can localise the type label and attach the deep link
-        // — and it gets the same treatment whether the app is foregrounded or not.
+        // Data-only message: the client builds the system notification itself, so it behaves the same foregrounded or not.
         Message message = Message.builder()
                 .setToken(device.getToken())
                 .putData("type", notification.getType() != null ? notification.getType().name() : "GENERAL")

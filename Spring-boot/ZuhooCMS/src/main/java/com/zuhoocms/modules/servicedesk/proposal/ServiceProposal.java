@@ -14,9 +14,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
-// One proposal per service request - staff edits and re-sends the same row
-// rather than versioning, since "here's our latest thinking" is what a client
-// wants to see, not a history of drafts.
+// One proposal per service request: staff edit and re-send the same row rather than versioning drafts.
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity
@@ -35,8 +33,7 @@ public class ServiceProposal extends BaseEntity {
     @Column(columnDefinition = "TEXT")
     private String summary;
 
-    // Informal, pre-negotiation figure - the binding number is the Quotation
-    // that follows once the client accepts this proposal.
+    // Informal pre-negotiation figure; the binding number is the Quotation that follows acceptance.
     private String estimatedBudget;
 
     @Enumerated(EnumType.STRING)

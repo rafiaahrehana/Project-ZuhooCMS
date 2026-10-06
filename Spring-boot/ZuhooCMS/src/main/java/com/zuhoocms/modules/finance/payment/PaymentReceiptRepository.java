@@ -15,7 +15,14 @@ public interface PaymentReceiptRepository extends JpaRepository<PaymentReceipt, 
     Page<PaymentReceipt> findByCompanyId(Long companyId, Pageable pageable);
     Page<PaymentReceipt> findByCompanyIdAndClientId(Long companyId, Long clientId, Pageable pageable);
 
-    /** Used by PaymentReceiptServiceImpl.generateReceiptNumber - MAX-based, scoped per company. */
-    @Query("SELECT MAX(r.receiptNumber) FROM PaymentReceipt r WHERE r.companyId = :companyId AND r.receiptNumber LIKE CONCAT(:prefix, '%')")
-    Optional<String> findMaxReceiptNumberByCompanyAndPrefix(@Param("companyId") Long companyId, @Param("prefix") String prefix);
+    /** Seed for the RCP- counter (see DocumentNumberService): the highest number under this company/prefix including soft-deleted receipts - native, so BaseEntity's @SQLRestriction cannot hide one the unique constraint still counts. */
+    @Query(value = """
+        SELECT MAX(CASE WHEN SUBSTRING(receipt_number FROM :start) ~ '^[0-9]+$'
+                        THEN CAST(SUBSTRING(receipt_number FROM :start) AS BIGINT) END)
+        FROM payment_receipts
+        WHERE company_id = :companyId AND receipt_number LIKE CONCAT(:prefix, '%')
+        """, nativeQuery = true)
+    Long findMaxReceiptSequenceIncludingDeleted(@Param("companyId") Long companyId,
+                                                @Param("prefix") String prefix,
+                                                @Param("start") int start);
 }

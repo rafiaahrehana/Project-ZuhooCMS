@@ -15,6 +15,7 @@ import com.zuhoocms.shared.audit.AuditService;
 import com.zuhoocms.shared.email.EmailService;
 import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.notification.NotificationPreferenceService;
+import com.zuhoocms.shared.ratelimit.ClientIpResolver;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.auth.authentication.google.GoogleTokenVerifier;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,15 +32,8 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Covers AuthServiceImpl.resetPassword()'s two mutually-exclusive paths after the
- * "forgot password" flow switched from a JWT link to a numeric code:
- *  - email+code: the new "forgot password" path.
- *  - token: the pre-existing JWT link ClientServiceImpl.invite() still emails to let
- *    a newly-invited client set their initial portal password. This is the one path
- *    that can't be exercised through the browser in this dev environment (no SMTP
- *    credentials configured to actually deliver the invite email), so it's covered
- *    here instead - using the real JwtService bean to mint the token, exactly the
- *    way ClientServiceImpl.invite() does, rather than hand-crafting one.
+ * Covers AuthServiceImpl.resetPassword()'s two mutually-exclusive paths: email+code, and the JWT link ClientServiceImpl.invite() emails.
+ * The token path is covered here because it cannot be exercised through the browser in dev (no SMTP credentials to deliver the invite), and uses the real JwtService bean rather than a hand-crafted token.
  */
 class ResetPasswordTest {
 
@@ -58,8 +52,7 @@ class ResetPasswordTest {
         tokenRepository = mock(TokenRepository.class);
         passwordEncoder = mock(PasswordEncoder.class);
 
-        // Real bean, not a mock - the whole point is to prove a token this class
-        // issues is one AuthServiceImpl.resetPassword() actually accepts.
+        // Real bean, not a mock: the point is that a token this class issues is one resetPassword() accepts.
         jwtService = new JwtService();
         ReflectionTestUtils.setField(jwtService, "secret", SECRET);
 
@@ -78,7 +71,11 @@ class ResetPasswordTest {
             mock(EmailService.class),
             mock(AuditService.class),
             mock(NotificationPreferenceService.class),
-            mock(SecurityUtil.class)
+            mock(SecurityUtil.class),
+            // A bare mock suffices: only login() uses this bean, and resetPassword() clears passwordResetAttempts on the entity directly.
+            mock(LoginAttemptService.class),
+            // Only the login/forgot-password paths resolve a caller IP; resetPassword() never touches this bean.
+            mock(ClientIpResolver.class)
         );
 
         when(passwordEncoder.encode(anyString())).thenAnswer(inv -> "encoded:" + inv.getArgument(0));
@@ -122,9 +119,7 @@ class ResetPasswordTest {
     @Test
     void tokenPath_rejectsATokenOfTheWrongActionType() {
         String email = "someone@example.com";
-        // A refresh-flow-style token has no actionType claim at all, unlike a
-        // PASSWORD_RESET action token - extractActionType() returns null for it,
-        // which must not equal TokenType.PASSWORD_RESET.
+        // A refresh-style token carries no actionType claim, so extractActionType() returns null, which must not equal TokenType.PASSWORD_RESET.
         String accessToken = jwtService.generateAccessToken(email, "COMPANY_OWNER", null);
 
         ResetPasswordRequest request = new ResetPasswordRequest();
@@ -174,6 +169,10 @@ class ResetPasswordTest {
         request.setConfirmPassword("AnotherPass1!");
 
         assertThrows(BadRequestException.class, () -> authService.resetPassword(request));
-        verify(userRepository, never()).save(any());
+
+        // A save is expected: registerBadCode() records the failed attempt, so never().save() would be wrong here - this test only asserts the password was left alone.
+        assertEquals("old-hash", user.getPassword());
+        assertEquals(1, user.getPasswordResetAttempts());
+        verify(passwordEncoder, never()).encode(anyString());
     }
 }

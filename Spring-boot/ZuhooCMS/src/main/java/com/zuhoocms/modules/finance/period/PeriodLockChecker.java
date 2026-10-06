@@ -5,13 +5,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
 
-/**
- * Thin, dependency-light check used by GeneralLedgerServiceImpl to reject posting into a
- * closed accounting period. Deliberately depends only on the repository (not
- * AccountingPeriodService) - AccountingPeriodServiceImpl itself calls into
- * GeneralLedgerService to post year-end closing entries, so routing this check through
- * the full service would create a circular bean dependency.
- */
+/** Closed-period check for GeneralLedgerServiceImpl, depending only on the repository: AccountingPeriodServiceImpl calls GeneralLedgerService for year-end entries, so routing through the full service would be a circular bean dependency. */
 @Component
 @RequiredArgsConstructor
 public class PeriodLockChecker {

@@ -44,75 +44,51 @@ public class SecurityConfig {
         "/api/auth/**",
         "/api/companies/public/**",
         "/api/clients/public/**",
-        "/uploads/**",
+        // Permitted here only so signed links and public files work tokenless; FileServeController enforces the real rule (public reference, bearer auth + company/uploader, or valid ?exp&sig).
+        "/uploads/*",
+        "/api/public/files/*",
         "/api/payments/sslcommerz/callback/**",
         "/api/payments/sslcommerz/ipn",
         // Public company portal content (anonymous visitors browsing /portal/:subdomain)
         "/api/website/**",
-        // Anonymous lead capture from the marketing site and tenant portal
-        // contact forms. Honeypot + dedupe inside; rate-limit at the edge.
+        // Anonymous lead capture; honeypot + dedupe inside, rate-limit at the edge.
         "/api/public/crm/**",
-        // "See Demo" session minting - the token it returns is read-only
-        // enforced by DemoReadOnlyFilter.
+        // "See Demo" session minting - the token it returns is made read-only by DemoReadOnlyFilter.
         "/api/public/demo/**",
-        // Public careers pages (candidates browsing /careers/:slug and
-        // applying). Slug-scoped, OPEN postings only; honeypot in the
-        // apply endpoint.
+        // Public careers pages: slug-scoped, OPEN postings only, honeypot in the apply endpoint.
         "/api/public/careers/**",
         // Landing-page live-traffic SSE stream (anonymous, unauthenticated /home)
         "/api/v1/metrics/**",
-        // WebSocket handshake - a browser's native WebSocket transport can't send an
-        // Authorization header, so this can't be gated by JwtAuthFilter like a normal
-        // endpoint. WebSocketAuthInterceptor authenticates the handshake itself via a
-        // ?token= query param and refuses the upgrade if it's missing/invalid - see
-        // WebSocketConfig.
+        // Browsers can't send an Authorization header on a WebSocket handshake, so WebSocketAuthInterceptor authenticates it via ?token= and refuses the upgrade instead - see WebSocketConfig.
         "/ws/**"
     };
 
     private static final String[] PUBLIC_GET_ENDPOINTS = {
+        // Private file download: bearer auth OR ?exp&sig, decided in FileServeController.
+        "/api/files/*",
         "/api/locations/**",
-        // Plan name/price/description only - nothing sensitive - needed so the public
-        // marketing homepage's pricing section can show real, current platform prices
-        // instead of hardcoded numbers that drift from what SslCommerzServiceImpl
-        // actually charges. Mutating endpoints on this controller stay SUPER_ADMIN-only.
+        // Name/price/description only, so the marketing homepage shows live prices rather than numbers that drift from what SslCommerzServiceImpl charges; mutating endpoints stay SUPER_ADMIN-only.
         "/api/subscription-plans"
     };
 
-    /**
-     * Uploaded files (avatars, documents) - permitAll like the rest of PUBLIC_ENDPOINTS,
-     * but on its own chain so it can opt out of the main chain's default Cache-Control:
-     * no-store header. Without this, every uploaded image is re-downloaded in full on
-     * every render (no browser caching at all) - fine for a small icon, but a multi-MB
-     * avatar effectively never finishes loading in time, showing blank.
-     * Filenames are content-hashed/unique per upload, so aggressive caching is safe.
-     */
     @Bean
-    @Order(1)
-    public SecurityFilterChain uploadsFilterChain(HttpSecurity http) throws Exception {
-        http
-            .securityMatcher("/uploads/**")
-            .cors(cors -> cors.configurationSource(corsConfigurationSource))
-            .csrf(AbstractHttpConfigurer::disable)
-            .headers(headers -> headers.cacheControl(cache -> cache.disable()))
-            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
-
-        return http.build();
-    }
-
-    @Bean
+    // /uploads/** has no separate chain on purpose: FileServeController serves files through this one and sets Cache-Control per file (public, else private no-store).
     @Order(2)
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
             .cors(cors -> cors.configurationSource(corsConfigurationSource))
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            // Without this, Spring Security's default entry point returns 403 for a
-            // missing/expired/invalid token, indistinguishable from a real "no permission"
-            // 403 - the frontend's silent-refresh-on-401 logic never fires and every
-            // module 403s once the access token expires. Return 401 so the interceptor
-            // can refresh and retry instead.
+            // 401, not Spring's default 403: a 403 is indistinguishable from "no permission", so the frontend's silent-refresh-on-401 never fires once the access token expires.
             .exceptionHandling(ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
             .authorizeHttpRequests(auth -> auth
+                    // Container-internal ERROR dispatch only (Tomcat forwarding to /error after an exception escaped
+                    // the DispatcherServlet). Without it the forward was authorized like a fresh request, /error is
+                    // not public, and HttpStatusEntryPoint answered 401 - so a 404 or 400 reached the client as a
+                    // misleading 401 with no body. This is a dispatcher-type matcher, not a path permit: a caller's
+                    // own GET /error is a REQUEST dispatch and still needs authentication, and an ERROR dispatch
+                    // cannot be triggered from outside.
+                    .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ERROR).permitAll()
                     .requestMatchers("/swagger-ui/**",
                             "/v3/api-docs/**",
                             "/swagger-ui.html").permitAll()
@@ -123,8 +99,7 @@ public class SecurityConfig {
             .authenticationProvider(authenticationProvider())
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterAfter(subscriptionEnforcementFilter, JwtAuthFilter.class)
-            // After JwtAuthFilter because it needs the authenticated user to
-            // know whether this is the demo account.
+            // Must run after JwtAuthFilter: it needs the authenticated user to tell whether this is the demo account.
             .addFilterAfter(demoReadOnlyFilter, SubscriptionEnforcementFilter.class);
 
         return http.build();

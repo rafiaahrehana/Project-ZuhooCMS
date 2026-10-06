@@ -44,10 +44,8 @@ public class OfferLetter extends BaseEntity {
     @Builder.Default
     private boolean acknowledged = false;
 
-    // Recipient — an existing Employee for employment letters, OR a recruitment
-    // candidate (JobApplication) for pre-employment OFFER/APPOINTMENT letters.
-    // Exactly one of the two is set; recipientName/Email are denormalized so the
-    // stored letter and its PDF keep the recipient even if the source record changes.
+    // Recipient: an Employee for employment letters, or a JobApplication for pre-employment OFFER/APPOINTMENT letters; exactly one is set.
+    // recipientName/Email are denormalized so the stored letter and its PDF keep the recipient even if the source record changes.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id")
     private Employee employee;

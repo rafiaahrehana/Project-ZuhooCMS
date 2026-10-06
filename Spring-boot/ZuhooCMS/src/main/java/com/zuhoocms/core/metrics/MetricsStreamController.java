@@ -18,23 +18,17 @@ public class MetricsStreamController {
     private final Random random = new Random();
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
-    /**
-     * Streams simulated live traffic metrics every 500ms using Server-Sent Events (SSE).
-     * Used by the frontend WebGL to control 3D particle simulation speed.
-     */
+    /** Streams simulated traffic metrics over SSE; the frontend WebGL uses them to drive particle simulation speed. */
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamTrafficMetrics() {
-        // Set timeout to 10 minutes (or -1L for infinite, but keeping it bound is safer)
+        // Bounded timeout rather than -1L (infinite).
         SseEmitter emitter = new SseEmitter(600000L);
         
         executor.execute(() -> {
             try {
-                // Keep streaming while the emitter is open
                 for (int i = 0; i < 1000; i++) {
-                    // Simulated traffic volume (e.g. active connections/requests)
                     int simulatedTraffic = 1000 + random.nextInt(4000); // 1000 to 5000
-                    
-                    // Send event data
+
                     emitter.send(SseEmitter.event()
                             .data(String.valueOf(simulatedTraffic)));
                     

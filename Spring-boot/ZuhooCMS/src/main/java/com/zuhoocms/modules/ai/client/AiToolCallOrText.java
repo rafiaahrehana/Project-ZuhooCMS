@@ -11,10 +11,7 @@ public class AiToolCallOrText {
     private final String text;
     private final String toolName;
     private final Map<String, Object> toolArgs;
-    // Provider-native id for this specific call (Claude's tool_use.id,
-    // OpenAI/Groq's tool_calls[].id). Null for Gemini/Mock, which don't need
-    // one - callWithTools() must accept it back unchanged on the follow-up
-    // call so each provider can stitch its own required message shape.
+    // Provider-native call id (Claude tool_use.id, OpenAI/Groq tool_calls[].id; null for Gemini/Mock) - callWithTools() must hand it back unchanged on the follow-up call.
     private final String callId;
 
     private AiToolCallOrText(String text, String toolName, Map<String, Object> toolArgs, String callId) {

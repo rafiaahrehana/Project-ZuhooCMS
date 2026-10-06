@@ -15,8 +15,7 @@ public interface FixedAssetRepository extends JpaRepository<FixedAsset, Long> {
 
     List<FixedAsset> findByCompanyIdAndStatus(Long companyId, FixedAssetStatus status);
 
-    // Cross-company (runs outside an HTTP request context - scheduler), matching
-    // the convention used by LicenseExpiryScheduler.
+    // Cross-company: runs from a scheduler outside any HTTP request context, matching LicenseExpiryScheduler's convention.
     @org.springframework.data.jpa.repository.Query(
             "SELECT DISTINCT f.companyId FROM FixedAsset f WHERE f.status = :status")
     List<Long> findDistinctCompanyIdsByStatus(FixedAssetStatus status);

@@ -26,13 +26,13 @@ import java.util.List;
 
 public class CompanyServiceServiceImpl implements CompanyServiceService {
 
-    // FIX: was HubServiceRepository — renamed to CompanyServiceRepository
     private final CompanyServiceRepository   companyServiceRepository;
     private final ServiceCategoryRepository  categoryRepository;
     private final WorkflowTemplateRepository templateRepository;
     private final com.zuhoocms.modules.servicedesk.servicetemplate.ServiceTemplateRepository serviceTemplateRepository;
     private final SecurityUtil               securityUtil;
     private final AuthorizationService       authorizationService;
+    private final com.zuhoocms.modules.company.CompanyRepository companyRepository;
 
     @Override
     @Transactional
@@ -69,7 +69,10 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
             .descriptionBn(request.getDescriptionBn())
             .price(request.getPrice())
             .priceType(request.getPriceType() != null ? request.getPriceType() : ServicePriceType.FIXED)
-            .currency(request.getCurrency() != null ? request.getCurrency() : "USD")
+            // Default to the company's base currency, not "USD": invoices are raised in this currency and nothing supplies an exchange rate.
+            .currency(request.getCurrency() != null && !request.getCurrency().isBlank()
+                ? request.getCurrency().trim().toUpperCase()
+                : companyRepository.findById(companyId).map(Company::getBaseCurrency).orElse("BDT"))
             .estimatedDays(request.getEstimatedDays())
             .defaultPriority(request.getDefaultPriority() != null
                 ? request.getDefaultPriority() : ServiceRequestPriority.NORMAL)
@@ -77,16 +80,16 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
             .category(category)
             .workflowTemplate(workflow)
             .serviceTemplate(serviceTemplate)
-            .featured(request.isFeatured())
-            .remote(request.isRemote())
-            .onSite(request.isOnSite())
-            .online(request.isOnline())
+            .featured(Boolean.TRUE.equals(request.getFeatured()))
+            .remote(Boolean.TRUE.equals(request.getRemote()))
+            .onSite(Boolean.TRUE.equals(request.getOnSite()))
+            .online(Boolean.TRUE.equals(request.getOnline()))
             .maximumOrders(request.getMaximumOrders())
-            .autoApproval(request.isAutoApproval())
-            .requiresQuotation(request.isRequiresQuotation())
-            .requiresDocuments(request.isRequiresDocuments())
-            .supportsCustomWorkflow(request.isSupportsCustomWorkflow())
-            .aiAssisted(request.isAiAssisted())
+            .autoApproval(Boolean.TRUE.equals(request.getAutoApproval()))
+            .requiresQuotation(Boolean.TRUE.equals(request.getRequiresQuotation()))
+            .requiresDocuments(Boolean.TRUE.equals(request.getRequiresDocuments()))
+            .supportsCustomWorkflow(Boolean.TRUE.equals(request.getSupportsCustomWorkflow()))
+            .aiAssisted(Boolean.TRUE.equals(request.getAiAssisted()))
             .visibility(request.getVisibility() != null ? request.getVisibility() : com.zuhoocms.enums.ServiceVisibility.DRAFT)
             .build();
 
@@ -98,6 +101,9 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
     @Override
     @Transactional(readOnly = true)
     public CompanyServiceResponse getById(Long id) {
+        // The list beside this one checks the same code; reading one service by id was open to any member of the
+        // company. findInTenant scopes it, so this was never a cross-tenant read - only an ungated one.
+        authorizationService.checkPermission(PermissionCode.SERVICE_CATALOG_VIEW);
         return CompanyServiceMapper.toResponse(findInTenant(id));
     }
 
@@ -112,10 +118,7 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
         return page.map(CompanyServiceMapper::toResponse);
     }
 
-    // Deliberately NOT gated by SERVICE_CATALOG_VIEW here: this is the active-service
-    // picker consumed by Requests (creating a service request) and Packages (attaching
-    // services to a package) - users with SERVICE_REQUEST_VIEW/SERVICE_PACKAGE_VIEW but
-    // not SERVICE_CATALOG_VIEW still need it to populate that dropdown.
+    // Deliberately not gated by SERVICE_CATALOG_VIEW: the Requests and Packages pickers need it for users holding only SERVICE_REQUEST_VIEW/SERVICE_PACKAGE_VIEW.
     @Override
     @Transactional(readOnly = true)
     public List<CompanyServiceResponse> listActive() {
@@ -138,17 +141,21 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
         if (request.getPriceType()       != null) service.setPriceType(request.getPriceType());
         if (request.getEstimatedDays()   != null) service.setEstimatedDays(request.getEstimatedDays());
         if (request.getDefaultPriority() != null) service.setDefaultPriority(request.getDefaultPriority());
-        if (request.getCurrency()        != null) service.setCurrency(request.getCurrency());
-        service.setFeatured(request.isFeatured());
-        service.setRemote(request.isRemote());
-        service.setOnSite(request.isOnSite());
-        service.setOnline(request.isOnline());
+        // Trimmed and upper-cased the same way create does. Assigned raw, " bdt " and "BDT" were two different
+        // currencies on the same service depending on which path wrote it.
+        if (request.getCurrency() != null && !request.getCurrency().isBlank()) {
+            service.setCurrency(request.getCurrency().trim().toUpperCase());
+        }
+        if (request.getFeatured() != null) service.setFeatured(request.getFeatured());
+        if (request.getRemote() != null) service.setRemote(request.getRemote());
+        if (request.getOnSite() != null) service.setOnSite(request.getOnSite());
+        if (request.getOnline() != null) service.setOnline(request.getOnline());
         if (request.getMaximumOrders()   != null) service.setMaximumOrders(request.getMaximumOrders());
-        service.setAutoApproval(request.isAutoApproval());
-        service.setRequiresQuotation(request.isRequiresQuotation());
-        service.setRequiresDocuments(request.isRequiresDocuments());
-        service.setSupportsCustomWorkflow(request.isSupportsCustomWorkflow());
-        service.setAiAssisted(request.isAiAssisted());
+        if (request.getAutoApproval() != null) service.setAutoApproval(request.getAutoApproval());
+        if (request.getRequiresQuotation() != null) service.setRequiresQuotation(request.getRequiresQuotation());
+        if (request.getRequiresDocuments() != null) service.setRequiresDocuments(request.getRequiresDocuments());
+        if (request.getSupportsCustomWorkflow() != null) service.setSupportsCustomWorkflow(request.getSupportsCustomWorkflow());
+        if (request.getAiAssisted() != null) service.setAiAssisted(request.getAiAssisted());
         if (request.getVisibility()      != null) service.setVisibility(request.getVisibility());
 
         if (request.getCategoryId() != null) {
@@ -161,6 +168,14 @@ public class CompanyServiceServiceImpl implements CompanyServiceService {
                 templateRepository.findByIdAndCompanyId(request.getWorkflowTemplateId(), companyId)
                     .orElseThrow(() -> new ResourceNotFoundException(
                         "Workflow template not found: " + request.getWorkflowTemplateId())));
+        }
+        // Accepted on create and silently dropped here, so the web's template picker did nothing on an edit: you
+        // chose a different template, saved, got a 200 and the old one back. Not company-scoped because service
+        // templates are platform-level and carry no company - the same findById create uses.
+        if (request.getServiceTemplateId() != null) {
+            service.setServiceTemplate(serviceTemplateRepository.findById(request.getServiceTemplateId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                    "Service template not found: " + request.getServiceTemplateId())));
         }
 
         return CompanyServiceMapper.toResponse(service);

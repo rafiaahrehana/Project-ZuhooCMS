@@ -20,6 +20,15 @@ public class AiProperties {
     private int dailyCompanyLimit = 200;
     private int hourlyUserLimit   = 20;
 
+    /** Read (response) timeout for provider calls; connect uses globalTimeoutMs. */
+    private int readTimeoutMs = 60000;
+
+    /** Local testing only: forces every AI call to the MOCK provider whatever is configured. Never enable in production. */
+    private boolean forceMock = false;
+
+    /** Local testing only: makes the MOCK provider echo the full prompt it received, so what was sent can be checked over HTTP. */
+    private boolean mockEchoPrompt = false;
+
     private final Gemini  gemini  = new Gemini();
     private final Openai  openai  = new Openai();
     private final Claude  claude  = new Claude();

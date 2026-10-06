@@ -7,8 +7,7 @@ import lombok.*;
 
 import java.time.LocalDateTime;
 
-// Not a BaseEntity - like AuditLog, this is an append-only compliance record and must
-// never be soft-deletable or hidden by the standard @SQLRestriction("deleted = false").
+// Not a BaseEntity: an append-only compliance record must never be soft-deletable or hidden by @SQLRestriction("deleted = false").
 @Entity
 @Table(name = "impersonation_audit_logs")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

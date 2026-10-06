@@ -38,7 +38,9 @@ public class AssetImportController {
 
     @PostMapping
     public ResponseEntity<AssetImportResultResponse> importCsv(@RequestParam("file") MultipartFile file) {
+        // Importing creates hardware assets, so it needs HARDWARE_CREATE as well as access to the import screen.
         authorizationService.checkPermission(PermissionCode.ASSET_IMPORT_VIEW);
+        authorizationService.checkPermission(PermissionCode.HARDWARE_CREATE);
         return ResponseEntity.ok(assetImportService.importCsv(file));
     }
 }

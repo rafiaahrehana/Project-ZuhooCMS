@@ -89,11 +89,12 @@ public interface ServiceRequestRepository extends JpaRepository<ServiceRequest, 
         @Param("closedStatuses") List<ServiceRequestStatus> closedStatuses
     );
 
-    // Newly breached open requests — read before bulkMarkSlaBreaches to notify assignees
+    // Newly breached open requests, skipping paused (WAITING_CLIENT) clocks; SlaBreachScheduler marks exactly these rows, so nothing is marked without being notified.
     @Query("""
         SELECT r FROM ServiceRequest r
         WHERE r.slaDeadline < :now
           AND r.slaBreach = false
+          AND r.slaPausedAt IS NULL
           AND r.status NOT IN :closedStatuses
           AND r.deleted = false
         """)
@@ -109,6 +110,34 @@ public interface ServiceRequestRepository extends JpaRepository<ServiceRequest, 
 
     List<ServiceRequest> findAllByStatusInAndCreatedAtBefore(
         List<ServiceRequestStatus> statuses, LocalDateTime cutoff);
+
+    /** Payment reminder candidates: old enough, and not yet reminded (no fixed time window). */
+    List<ServiceRequest> findAllByStatusInAndCreatedAtBeforeAndPaymentReminderSentAtIsNull(
+        List<ServiceRequestStatus> statuses, LocalDateTime cutoff);
+
+    /** In-flight (non-terminal) requests running on a workflow template - guards stage edits. */
+    @Query("""
+        SELECT COUNT(r) FROM ServiceRequest r
+        WHERE r.companyService.workflowTemplate.id = :templateId
+          AND r.status NOT IN :closedStatuses
+          AND r.deleted = false
+        """)
+    long countInFlightByWorkflowTemplate(
+        @Param("templateId") Long templateId,
+        @Param("closedStatuses") List<ServiceRequestStatus> closedStatuses);
+
+    /** Open orders for one service - enforces CompanyService.maximumOrders. */
+    @Query("""
+        SELECT COUNT(r) FROM ServiceRequest r
+        WHERE r.company.id = :companyId
+          AND r.companyService.id = :serviceId
+          AND r.status NOT IN :closedStatuses
+          AND r.deleted = false
+        """)
+    long countOpenByService(
+        @Param("companyId") Long companyId,
+        @Param("serviceId") Long serviceId,
+        @Param("closedStatuses") List<ServiceRequestStatus> closedStatuses);
 
     Page<ServiceRequest> findByCompanyIdAndTitleContainingIgnoreCaseAndDeletedFalse(
         Long companyId, String keyword, Pageable pageable);

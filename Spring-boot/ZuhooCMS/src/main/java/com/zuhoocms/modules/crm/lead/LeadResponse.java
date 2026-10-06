@@ -85,8 +85,7 @@ public class LeadResponse {
 
     private String aiSummary;
 
-    // Set only right after creation, when a possible-duplicate Client was found.
-    // A nudge, not a block - the Lead is created either way.
+    // Set only right after creation when a possible duplicate was found; a nudge, not a block, since the Lead is created either way.
     private DuplicateMatch possibleDuplicate;
 
     private java.util.List<com.zuhoocms.modules.crm.tag.TagResponse> tags;

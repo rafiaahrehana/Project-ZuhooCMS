@@ -1,6 +1,7 @@
 package com.zuhoocms.modules.finance.expense;
 import com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccount;
 import com.zuhoocms.modules.finance.chartofaccounts.DefaultAccountResolver;
+import com.zuhoocms.modules.finance.generalledger.DocumentNumberService;
 import com.zuhoocms.modules.finance.generalledger.GeneralLedgerService;
 import com.zuhoocms.modules.finance.generalledger.GlReferenceType;
 import com.zuhoocms.modules.finance.generalledger.LedgerLine;
@@ -39,10 +40,12 @@ public class ExpenseServiceImpl implements ExpenseService {
     private final UserRepository userRepository;
     private final SecurityUtil securityUtil;
     private final GeneralLedgerService glService;
+    private final DocumentNumberService documentNumberService;
     private final DefaultAccountResolver accountResolver;
     private final AuthorizationService authorizationService;
     private final com.zuhoocms.modules.finance.chartofaccounts.ChartOfAccountRepository coaRepository;
     private final com.zuhoocms.modules.finance.budget.BudgetService budgetService;
+    private final com.zuhoocms.modules.finance.period.PeriodLockChecker periodLockChecker;
     private final AiService aiService;
 
     /** Resolves + validates an optional COA expense account (must exist in-tenant and be EXPENSE type). */
@@ -57,9 +60,19 @@ public class ExpenseServiceImpl implements ExpenseService {
         return account;
     }
 
+    /** The DTO's @DecimalMin only runs behind a controller's @Valid; internal callers like the AI agent's submit_expense tool build the DTO directly, so enforce it here too. */
+    private static void requirePositiveAmount(java.math.BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new BadRequestException("Expense amount must be greater than zero");
+        }
+    }
+
     @Override
     @Transactional
     public ExpenseResponse create(ExpenseRequest request) {
+        // Without this check anyone merely authenticated into the tenant could post an expense claim.
+        authorizationService.checkPermission(PermissionCode.EXPENSE_CREATE);
+        requirePositiveAmount(request.getAmount());
         Long companyId = securityUtil.getCurrentCompanyId();
         User currentUser = securityUtil.getCurrentUser();
         if (currentUser == null) {
@@ -73,12 +86,15 @@ public class ExpenseServiceImpl implements ExpenseService {
             employee = employeeRepository.findByIdAndCompanyId(reqEmployeeId, companyId)
                     .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
         } else if (currentUser.isTenantUser()) {
-            employee = employeeRepository.findByUserId(currentUserId).orElse(null);
+            // Only the record for the ACTIVE company: a user with an employee record in two tenants would
+            // otherwise file a company-A claim against their company-B employee row.
+            employee = employeeRepository.findByUserId(currentUserId)
+                    .filter(e -> e.getCompany() != null && e.getCompany().getId().equals(companyId))
+                    .orElse(null);
         }
 
 
 
-        // Generate unique expense number
         String expenseNumber = generateExpenseNumber(companyId);
 
         Expense expense = Expense.builder()
@@ -87,13 +103,15 @@ public class ExpenseServiceImpl implements ExpenseService {
                 .title(request.getTitle() != null ? request.getTitle() : "Expense " + expenseNumber)
                 .currency(request.getCurrency() != null ? request.getCurrency() : "BDT")
                 .submittedBy(employee)
+                // Recorded so maker-checker can also bar whoever keyed the expense in from approving it - see approveExpense().
+                .createdBy(currentUser)
                 .description(request.getDescription())
                 .amount(request.getAmount())
                 .vendorName(request.getVendorName())
                 .category(request.getCategory())
                 .expenseAccount(resolveExpenseAccount(companyId, request.getExpenseAccountId()))
                 .expenseDate(request.getExpenseDate())
-                .receiptUrl(request.getReceiptUrl())
+                .receiptUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getReceiptUrl()))
                 .status(ExpenseStatus.PENDING)
                 .submittedAt(LocalDateTime.now())
                 .notes(request.getNotes())
@@ -108,9 +126,7 @@ public class ExpenseServiceImpl implements ExpenseService {
     @Transactional(readOnly = true)
     public ExpenseResponse getById(Long id) {
         Expense expense = findInTenant(id);
-        // Platform expenses have no CustomRole to check EXPENSE_VIEW against - the
-        // controller's role-based @PreAuthorize (PLATFORM_ACCOUNTANT/SUPER_ADMIN)
-        // already gates this for that branch (mirrors SupportTicketServiceImpl.getAll).
+        // Platform expenses have no CustomRole to check EXPENSE_VIEW against; the controller's role-based @PreAuthorize gates that branch.
         if (isPlatformCaller()) {
             return ExpenseMapper.toResponse(expense);
         }
@@ -125,9 +141,7 @@ public class ExpenseServiceImpl implements ExpenseService {
         return current != null && current.isPlatformUser();
     }
 
-    // Platform expenses (SaaS provider's own operating costs) are stored with a null
-    // companyId - they belong to no tenant, so they're looked up/listed separately
-    // from tenant expenses rather than by the caller's (nonexistent) company id.
+    // Platform expenses (the SaaS provider's own costs) have a null companyId, so they are looked up separately rather than by the caller's company id.
     private Expense findInTenant(Long id) {
         if (isPlatformCaller()) {
             return expenseRepository.findByIdAndCompanyIdIsNull(id)
@@ -191,14 +205,21 @@ public class ExpenseServiceImpl implements ExpenseService {
     @Transactional(readOnly = true)
     public Page<ExpenseResponse> getMyExpenses(Long employeeId, Pageable pageable) {
         Long companyId = securityUtil.getCurrentCompanyId();
+        User currentUser = securityUtil.getCurrentUser();
+        if (currentUser == null) {
+            throw new ResourceNotFoundException("User not authenticated");
+        }
+        Long ownEmployeeId = employeeRepository.findByUserId(currentUser.getId())
+                .map(Employee::getId).orElse(null);
         if (employeeId == null) {
-            User currentUser = securityUtil.getCurrentUser();
-            if (currentUser == null) {
-                throw new ResourceNotFoundException("User not authenticated");
+            if (ownEmployeeId == null) {
+                throw new ResourceNotFoundException("Employee profile not found");
             }
-            employeeId = employeeRepository.findByUserId(currentUser.getId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Employee profile not found"))
-                    .getId();
+            employeeId = ownEmployeeId;
+        } else if (!employeeId.equals(ownEmployeeId) && !isPlatformCaller()) {
+            // "my-expenses" with someone else's employeeId read any colleague's claims; that is an EXPENSE_VIEW operation, while asking for your own stays permission-free.
+            // Platform callers have no CustomRole to check against - same carve-out as getAll.
+            authorizationService.checkPermission(PermissionCode.EXPENSE_VIEW);
         }
         return expenseRepository.findByCompanyIdAndSubmittedById(companyId, employeeId, pageable)
                 .map(ExpenseMapper::toResponse);
@@ -216,16 +237,31 @@ public class ExpenseServiceImpl implements ExpenseService {
         if (expense.getStatus() != ExpenseStatus.PENDING) {
             throw new BadRequestException("Can only update pending expenses");
         }
+        requirePositiveAmount(request.getAmount());
 
+        // Every optional field is null-skipped. Four of these used to be assigned unconditionally - category,
+        // notes, the expense account and the receipt - so a PATCH carrying only what the user touched plus the
+        // three the DTO requires silently wiped the rest. Category mattered most: it is what the budget check
+        // aggregates on approval, so an edited expense could miss its budget warning with no trace that a
+        // category had ever been set.
+        //
+        // description, amount and expenseDate are @NotNull on the request, so they are always present and need no
+        // guard. The receipt is guarded on the request value rather than inside requireOwn, because requireOwn
+        // treats a null as "clear the column", which is right for an explicit clear and wrong for an absent key.
         if (request.getTitle() != null) expense.setTitle(request.getTitle());
         if (request.getCurrency() != null) expense.setCurrency(request.getCurrency());
         expense.setDescription(request.getDescription());
         expense.setAmount(request.getAmount());
-        expense.setCategory(request.getCategory());
-        expense.setExpenseAccount(resolveExpenseAccount(expense.getCompanyId(), request.getExpenseAccountId()));
+        if (request.getCategory() != null) expense.setCategory(request.getCategory());
+        if (request.getExpenseAccountId() != null) {
+            expense.setExpenseAccount(resolveExpenseAccount(expense.getCompanyId(), request.getExpenseAccountId()));
+        }
         expense.setExpenseDate(request.getExpenseDate());
-        expense.setReceiptUrl(request.getReceiptUrl());
-        expense.setNotes(request.getNotes());
+        if (request.getReceiptUrl() != null) {
+            expense.setReceiptUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(
+                    request.getReceiptUrl(), expense.getReceiptUrl()));
+        }
+        if (request.getNotes() != null) expense.setNotes(request.getNotes());
 
         if (request.getVendorName() != null) {
             expense.setVendorName(request.getVendorName());
@@ -243,6 +279,12 @@ public class ExpenseServiceImpl implements ExpenseService {
         }
         Expense expense = findInTenant(id);
 
+        // Re-approving would post the same Dr Expense / Cr Payable liability a second time for one expense.
+        if (expense.getStatus() != ExpenseStatus.PENDING) {
+            throw new BadRequestException(
+                    "This expense is " + expense.getStatus() + " - only a pending expense can be approved");
+        }
+
         User currentUser = securityUtil.getCurrentUser();
         if (currentUser == null) {
             throw new ResourceNotFoundException("User not authenticated");
@@ -251,21 +293,22 @@ public class ExpenseServiceImpl implements ExpenseService {
         User approver = userRepository.findById(currentUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        // Maker-checker: you can't approve your own expense claim - the whole point of
-        // the approval step is a second person's eyes on the money.
+        // Maker-checker: you can't approve your own expense claim.
         if (expense.getSubmittedBy() != null && expense.getSubmittedBy().getUser() != null
                 && expense.getSubmittedBy().getUser().getId().equals(currentUserId)) {
             throw new BadRequestException("You submitted this expense - a different user must approve it");
+        }
+        // Checking only submittedBy let a user raise an expense on a colleague's behalf and then approve it themselves.
+        if (expense.getCreatedBy() != null && expense.getCreatedBy().getId().equals(currentUserId)) {
+            throw new BadRequestException("You created this expense - a different user must approve it");
         }
 
         expense.approve(approver);
         expense.setApprovalNotes(approvalNotes);
         expenseRepository.save(expense);
 
-        // Vendor bills post Dr Expense / Cr Payable at approval; expense claims
-        // posted nothing until actually paid - a balance sheet pulled between
-        // approval and reimbursement understated period-end liabilities for this
-        // spend channel but not the other. Mirrors VendorBillService.approve().
+        // Post Dr Expense / Cr Payable at approval, mirroring VendorBillService.approve(): posting only at payment understated period-end liabilities for this spend channel.
+        // Guarded on companyId: platform expenses have no company chart of accounts, so posting would fail or land in the wrong tenant's books.
         if (expense.getCompanyId() != null) {
             Long companyId = expense.getCompanyId();
             String description = "Expense approved: " + expense.getTitle()
@@ -282,10 +325,7 @@ public class ExpenseServiceImpl implements ExpenseService {
                     description, GlReferenceType.EXPENSE, expense.getId(), expense.getExpenseNumber(), transactionDate);
         }
 
-        // Non-blocking: the approver is warned when this pushes the category over (or
-        // near) its budget, but the approval still stands - real companies want a
-        // human judgment call here, not a hard stop. Platform expenses have no company
-        // and therefore no budgets.
+        // Non-blocking by design: the approver is warned when this pushes the category over budget, but the approval stands. Platform expenses have no company and so no budgets.
         if (expense.getCompanyId() != null) {
             return budgetService.warningFor(expense.getCompanyId(), expense.getCategory(),
                     expense.getExpenseDate(), expense.getAmount());
@@ -308,13 +348,16 @@ public class ExpenseServiceImpl implements ExpenseService {
         expense.setApprovalNotes(reason);
         expenseRepository.save(expense);
 
-        // approveExpense() now posts a real Dr Expense / Cr Payable liability -
-        // rejecting an already-approved expense must reverse it, or the liability
-        // sits in Accounts Payable forever with nothing left to pay it off. Same
-        // reversal shape as VendorBillService.cancel()'s wasPosted branch.
+        // Rejecting an already-approved expense must reverse approval's Dr Expense / Cr Payable, or the liability sits in AP forever - same shape as VendorBillService.cancel()'s wasPosted branch.
+        // Guarded on companyId: platform expenses never posted anything at approval.
         if (wasApproved && expense.getCompanyId() != null) {
             Long companyId = expense.getCompanyId();
             String description = "Expense " + expense.getExpenseNumber() + " rejected after approval - reversal";
+            // Date the reversal on the expense date so both legs net to zero in the same period; falls back to today when that period is closed, since the ledger rejects closed-period postings.
+            LocalDate reversalDate = expense.getExpenseDate() != null
+                    && !periodLockChecker.isDateInClosedPeriod(companyId, expense.getExpenseDate())
+                    ? expense.getExpenseDate()
+                    : LocalDate.now();
             ChartOfAccount expenseAccount = expense.getExpenseAccount() != null
                     ? expense.getExpenseAccount()
                     : accountResolver.operatingExpenses(companyId);
@@ -322,7 +365,7 @@ public class ExpenseServiceImpl implements ExpenseService {
             glService.recordBalancedTransaction(companyId, java.util.List.of(
                             LedgerLine.credit(expenseAccount.getId(), expense.getAmount()),
                             LedgerLine.debit(ap.getId(), expense.getAmount())),
-                    description, GlReferenceType.EXPENSE, expense.getId(), expense.getExpenseNumber(), LocalDate.now());
+                    description, GlReferenceType.EXPENSE, expense.getId(), expense.getExpenseNumber(), reversalDate);
         }
     }
 
@@ -333,14 +376,24 @@ public class ExpenseServiceImpl implements ExpenseService {
             authorizationService.checkPermission(PermissionCode.EXPENSE_APPROVE);
         }
         Expense expense = findInTenant(id);
+
+        // Without this, calling mark-as-paid twice on the same expense posts
+        // Dr Accounts Payable / Cr Cash a second time - cash paid out twice for
+        // one reimbursement, and AP driven negative by the phantom second clear.
+        if (expense.getStatus() != ExpenseStatus.APPROVED) {
+            throw new BadRequestException(
+                    "This expense is " + expense.getStatus() + " - only an approved expense can be marked paid");
+        }
+
         expense.markAsPaid(reimbursementMethod, referenceNumber);
         expenseRepository.save(expense);
 
-        // The expense itself was already recognized as Dr Expense / Cr Payable at
-        // approval time (above) - paying it now clears that liability rather than
-        // re-recognizing the expense a second time: Dr Accounts Payable / Cr Cash,
-        // the same shape as VendorBillService.recordPayment().
+        // Approval already recognized Dr Expense / Cr Payable, so paying clears the liability instead of re-recognizing: Dr AP / Cr Cash, as in VendorBillService.recordPayment().
+        // Platform expenses (companyId == null) are records only, never posted: resolving AP/Cash for a null company would book platform spend into a tenant's books.
         Long companyId = expense.getCompanyId();
+        if (companyId == null) {
+            return;
+        }
         String description = "Expense reimbursed: " + expense.getTitle()
                 + (expense.getCategory() != null ? " (" + expense.getCategory() + ")" : "")
                 + " - " + expense.getExpenseNumber();
@@ -361,8 +414,7 @@ public class ExpenseServiceImpl implements ExpenseService {
             requireOwnExpense(expense);
         }
         if (expense.getStatus() == ExpenseStatus.PAID || expense.getStatus() == ExpenseStatus.APPROVED) {
-            // APPROVED now posts a real Dr Expense / Cr Payable liability - deleting
-            // it would leave that GL entry dangling with nothing left to reference it.
+            // APPROVED has posted a Dr Expense / Cr Payable liability; deleting would leave that GL entry dangling.
             throw new BadRequestException("Cannot delete a " + expense.getStatus()
                     + " expense - it has GL entries. Reject it first if it needs to be undone.");
         }
@@ -394,8 +446,7 @@ public class ExpenseServiceImpl implements ExpenseService {
             response.setTitle(node.path("title").asText(null));
             response.setDescription(node.path("description").asText(null));
         } catch (Exception ignored) {
-            // Model didn't return valid JSON despite instructions - fall back to the
-            // raw text as the description rather than failing the whole request.
+            // Model didn't return valid JSON - fall back to the raw text as the description rather than failing the request.
         }
         if (response.getTitle() == null || response.getTitle().isBlank()) {
             response.setTitle(fallbackNotes.length() > 60
@@ -407,17 +458,16 @@ public class ExpenseServiceImpl implements ExpenseService {
         return response;
     }
 
+    /** EXP-YYYY-NNNNNN from the locked DocumentNumberService counter; the unlocked MAX+1 let two concurrent creators read the same maximum and build the same number. */
     private String generateExpenseNumber(Long companyId) {
         int year = LocalDate.now().getYear();
         String prefix = "EXP-" + year + "-";
-        // companyId is null for platform expenses - the tenant query's "= :companyId"
-        // never matches NULL rows, so the sequence needs its own IS NULL lookup or
-        // every platform expense would collide on 000001.
-        String maxNumber = (companyId == null
-                ? expenseRepository.findMaxExpenseNumberByPlatformAndPrefix(prefix)
-                : expenseRepository.findMaxExpenseNumberByCompanyAndPrefix(companyId, prefix))
-                .orElse(prefix + "000000");
-        long sequence = Long.parseLong(maxNumber.substring(prefix.length())) + 1;
-        return String.format("%s%06d", prefix, sequence);
+        return documentNumberService.next(companyId, DocumentNumberService.EXPENSE, year, prefix, () -> {
+            // The tenant query's "= :companyId" never matches the NULL companyId of platform expenses, so they need an IS NULL lookup or every one collides on 000001.
+            Long max = companyId == null
+                    ? expenseRepository.findMaxPlatformExpenseSequenceIncludingDeleted(prefix, prefix.length() + 1)
+                    : expenseRepository.findMaxExpenseSequenceIncludingDeleted(companyId, prefix, prefix.length() + 1);
+            return max == null ? 1L : max + 1L;
+        });
     }
 }

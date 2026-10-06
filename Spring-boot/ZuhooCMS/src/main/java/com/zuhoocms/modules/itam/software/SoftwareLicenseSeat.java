@@ -10,13 +10,7 @@ import org.hibernate.annotations.ParamDef;
 
 import java.time.LocalDate;
 
-/**
- * Tracks which employee currently holds a seat on a software license - the
- * license itself only stores an aggregate seat count, so without this there is
- * no way to answer "which licenses does this employee have?" (needed for
- * offboarding, and for showing seat holders on the license itself).
- * releasedAt == null means the seat is currently held.
- */
+/** Which employee holds a seat: the licence itself only stores an aggregate count, so offboarding could not answer "which licences does this employee have?". releasedAt == null means still held. */
 @FilterDef(name = "tenantFilter", parameters = @ParamDef(name = "companyId", type = Long.class))
 @Filter(name = "tenantFilter", condition = "company_id = :companyId")
 @Entity

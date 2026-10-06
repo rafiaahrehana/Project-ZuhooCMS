@@ -15,18 +15,20 @@ import java.util.List;
 public class GeminiProviderAdapter implements AiProviderAdapter {
 
     private final GeminiClient client;
+    // Carried here rather than mutated onto the singleton, cross-tenant client bean — see AiHttpClient.call.
+    private final String apiKey;
     private final AiModel model;
     private final double temperature;
     private final int maxTokens;
 
     @Override
     public String generate(String prompt) {
-        return client.call(prompt, model.getModelId(), temperature, maxTokens);
+        return client.call(apiKey, prompt, model.getModelId(), temperature, maxTokens);
     }
 
     @Override
     public AiToolCallOrText callWithTools(String prompt, List<AiTool> tools, List<AiToolExchange> priorExchanges) {
-        return client.callWithTools(prompt, model.getModelId(), temperature, maxTokens, tools, priorExchanges);
+        return client.callWithTools(apiKey, prompt, model.getModelId(), temperature, maxTokens, tools, priorExchanges);
     }
 
     @Override

@@ -32,11 +32,9 @@ public class TagServiceImpl implements TagService {
     public TagResponse create(TagRequest request) {
         authorizationService.checkPermission(PermissionCode.TAG_MANAGE);
         Long companyId = requireCompanyId();
-        if (tagRepository.existsByNameIgnoreCaseAndCompanyId(request.getName(), companyId)) {
-            throw new BadRequestException("A tag with this name already exists");
-        }
+        requireNameAvailable(request.getName(), companyId, null);
         Tag tag = Tag.builder()
-                .name(request.getName())
+                .name(request.getName().trim())
                 .color(request.getColor())
                 .company(companyRef(companyId))
                 .build();
@@ -46,10 +44,23 @@ public class TagServiceImpl implements TagService {
     @Override
     public TagResponse update(Long id, TagRequest request) {
         authorizationService.checkPermission(PermissionCode.TAG_MANAGE);
+        Long companyId = requireCompanyId();
         Tag tag = findOwned(id);
-        if (request.getName() != null) tag.setName(request.getName());
+        if (request.getName() != null) {
+            // update() skipped the check create() does, so a rename onto an existing name hit the database as an opaque 409; excluding this row keeps renaming a tag to its own name working.
+            requireNameAvailable(request.getName(), companyId, id);
+            tag.setName(request.getName().trim());
+        }
         if (request.getColor() != null) tag.setColor(request.getColor());
         return TagMapper.toResponse(tagRepository.save(tag));
+    }
+
+    /** Case-insensitive, live tags only, excluding the row being edited, so it agrees with the partial unique index in CrmSchemaMigrationRunner about what is a collision. */
+    private void requireNameAvailable(String name, Long companyId, Long excludeId) {
+        if (name == null || name.isBlank()) return;
+        if (tagRepository.existsByNameIgnoringCase(name.trim(), companyId, excludeId)) {
+            throw new BadRequestException("A tag named \"" + name.trim() + "\" already exists");
+        }
     }
 
     @Override

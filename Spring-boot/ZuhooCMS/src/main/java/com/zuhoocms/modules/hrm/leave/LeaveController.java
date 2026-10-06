@@ -10,6 +10,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -34,9 +35,20 @@ public class LeaveController {
     private final SecurityUtil securityUtil;
     private final EmployeeRepository employeeRepository;
 
+    /**
+     * No permission check beyond being an employee or the owner of this company, deliberately.
+     *
+     * It used to require LEAVE_CREATE, which an ordinary employee has none of - an employee with no custom role
+     * holds no permissions at all - so the "apply for leave" screen in every client answered 403 for exactly the
+     * people it exists for. They could read and cancel a request they were unable to create.
+     *
+     * This endpoint cannot act on anybody else: apply() resolves the caller's own employee record for the active
+     * company and ignores any id in the body, so there is nothing here to gate. The rules that DO need a
+     * permission are already applied inside it - backdating past today still takes LEAVE_APPROVE, which is what
+     * stops somebody reclassifying an unexcused absence as leave just before payroll.
+     */
     @PostMapping
     public ResponseEntity<LeaveRequestResponse> apply(@Valid @RequestBody LeaveRequestDto request) {
-        authorizationService.checkPermission(PermissionCode.LEAVE_CREATE);
         return new ResponseEntity<>(leaveService.apply(request), HttpStatus.CREATED);
     }
 
@@ -100,7 +112,8 @@ public class LeaveController {
         }
 
         leaveService.cancel(id);
-        return ResponseEntity.ok("Leave requeststatus cancelled");
+        // Angular reads this as JSON, so send a quoted JSON string, not plain text.
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body("\"Leave request cancelled\"");
     }
 
     @GetMapping("/balances/my")

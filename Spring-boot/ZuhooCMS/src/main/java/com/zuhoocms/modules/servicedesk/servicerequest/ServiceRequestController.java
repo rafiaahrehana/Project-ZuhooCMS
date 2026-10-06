@@ -165,9 +165,7 @@ public class ServiceRequestController {
                 serviceRequestService.getComments(id, PageRequest.of(page, size)));
     }
 
-    // Clients included: getStatusHistory() resolves the request through findInTenant(), whose
-    // guardAccess() already refuses a CLIENT any request that isn't their own. The status
-    // timeline is the client's own history — there's nothing staff-internal in it.
+    // CLIENT is safe here: findInTenant()'s guardAccess() refuses any request that isn't their own, and the status timeline holds nothing staff-internal.
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
     @GetMapping("/{id}/history")
     public ResponseEntity<List<RequestStatusHistoryResponse>> getHistory(
@@ -175,27 +173,19 @@ public class ServiceRequestController {
         return ResponseEntity.ok(serviceRequestService.getStatusHistory(id));
     }
 
-    // Workflow stage progress: was implemented in the service layer but never
-    // reached a route, so a service with a workflow attached had no way to
-    // actually move a request through its stages unless every stage happened
-    // to require approval (the only other caller is StageApprovalServiceImpl,
-    // after an approval decision).
+    // Without this route, stages could only advance via StageApprovalServiceImpl after an approval decision.
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @PostMapping("/{id}/advance-stage")
     public ResponseEntity<ServiceRequestResponse> advanceStage(@PathVariable Long id) {
         return ResponseEntity.ok(serviceRequestService.advanceStage(id));
     }
 
-    // Clients included: this is the same "which stage is my request in" view
-    // as getHistory() above, just shaped around the workflow's stages instead
-    // of the status timeline.
+    // CLIENT is safe for the same reason as getHistory(): the stage view holds nothing staff-internal.
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
     @GetMapping("/{id}/stage-progress")
     public ResponseEntity<StageProgressResponse> getStageProgress(@PathVariable Long id) {
         return ResponseEntity.ok(serviceRequestService.getStageProgress(id));
     }
-
-    // Quotation Endpoints
 
     @PostMapping("/{id}/quotation")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")

@@ -27,7 +27,7 @@ public class SoftwareLicenseResponse {
     private LocalDate licenseExpiryDate;
     private boolean expiringSoon;
     private boolean expired;
-    private long daysUntilExpiry;
+    private Long daysUntilExpiry; // null when the licence has no expiry date
 
     private LicenseRenewalType renewalType;
     private LocalDate nextRenewalDate;

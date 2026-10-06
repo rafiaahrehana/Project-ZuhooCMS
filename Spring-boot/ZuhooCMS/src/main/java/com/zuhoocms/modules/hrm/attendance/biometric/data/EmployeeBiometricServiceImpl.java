@@ -7,6 +7,7 @@ import com.zuhoocms.auth.role.enums.PermissionCode;
 import com.zuhoocms.auth.role.service.AuthorizationService;
 import com.zuhoocms.auth.user.User;
 import com.zuhoocms.security.SecurityUtil;
+import com.zuhoocms.shared.exception.BadRequestException;
 import com.zuhoocms.shared.exception.ForbiddenException;
 import com.zuhoocms.shared.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -25,12 +26,10 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
     private final BiometricDeviceRepository deviceRepository;
     private final AuthorizationService authorizationService;
     private final SecurityUtil securityUtil;
+    private final com.zuhoocms.modules.hrm.attendance.biometric.verification.BiometricMatcher matcher;
 
     private void requireViewOrOwn(Long employeeId) {
-        // employeeRepository.findById is scoped by the request-level Hibernate tenant
-        // filter, so this only succeeds for an employeeId in the caller's own company -
-        // needed because hasPermission() alone only reflects the caller's own role, not
-        // which company the target employeeId belongs to.
+        // findById is scoped by the request-level Hibernate tenant filter; hasPermission() alone says nothing about which company the target employeeId is in.
         boolean sameTenantEmployee = employeeId != null && employeeRepository.findById(employeeId).isPresent();
         if (sameTenantEmployee && authorizationService.hasPermission(PermissionCode.BIOMETRIC_VIEW)) {
             return;
@@ -44,10 +43,7 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
         }
     }
 
-    // EmployeeBiometricData has no company_id column/tenant filter of its own (unlike
-    // Employee), so every lookup by the enrollment record's own id must explicitly verify
-    // it belongs to the caller's company - otherwise any authenticated user could read or
-    // mutate another company's biometric templates by guessing an id.
+    // EmployeeBiometricData has no company_id or tenant filter, so a lookup by its own id must verify ownership, or any user could read another company's biometric templates by id.
     private void requireSameTenant(EmployeeBiometricData data) {
         Long companyId = securityUtil.getCurrentCompanyId();
         Employee employee = data.getEmployee();
@@ -61,32 +57,57 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
     @Transactional
     public BiometricDataResponse enrollEmployee(BiometricEnrollmentRequest request) {
         authorizationService.checkPermission(PermissionCode.BIOMETRIC_MANAGE);
-        Employee employee = employeeRepository.findById(request.getEmployeeId())
+        // Both ids come from the request body - scope them to the caller's company so nobody can enroll another tenant's employee or device.
+        Long companyId = securityUtil.getCurrentCompanyId();
+        Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found"));
 
-        BiometricDevice device = deviceRepository.findById(request.getDeviceId())
+        BiometricDevice device = deviceRepository.findByIdAndCompanyId(request.getDeviceId(), companyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Device not found"));
 
-        // Check if at device capacity
         if (device.isAtCapacity()) {
-            throw new RuntimeException("Device is at maximum enrollment capacity");
+            throw new BadRequestException("Device is at maximum enrollment capacity");
         }
 
-        EmployeeBiometricData biometricData = EmployeeBiometricData.builder()
-                .employee(employee)
-                .device(device)
-                .biometricType(request.getBiometricType())
-                .biometricTemplate(request.getBiometricTemplate())
-                .templateFormat(request.getTemplateFormat())
-                .enrollmentDate(LocalDateTime.now())
-                .enrollmentQualityScore(request.getQualityScore())
-                .enrolled(true)
-                .active(true)
-                .build();
+        EmployeeBiometricData biometricData;
+        if (request.getBiometricType() != null && biometricDataRepository.reviveDeleted(
+                employee.getId(), device.getId(), request.getBiometricType()) > 0) {
+            // A soft-deleted enrollment still holds the unique key; reuse it as a fresh enrollment.
+            biometricData = biometricDataRepository
+                    .findByEmployeeIdAndDeviceIdAndBiometricType(employee.getId(), device.getId(), request.getBiometricType())
+                    .orElseThrow(() -> new ResourceNotFoundException("Enrollment not found"));
+            biometricData.setEmployee(employee);
+            biometricData.setDevice(device);
+            biometricData.setBiometricType(request.getBiometricType());
+            biometricData.setBiometricTemplate(request.getBiometricTemplate());
+            biometricData.setTemplateFormat(request.getTemplateFormat());
+            biometricData.setEnrollmentDate(LocalDateTime.now());
+            biometricData.setEnrolledBy(null);
+            biometricData.setEnrollmentAttempts(0);
+            biometricData.setEnrollmentQualityScore(request.getQualityScore());
+            biometricData.setEnrolled(true);
+            biometricData.setActive(true);
+            biometricData.setLastVerifiedTime(null);
+            biometricData.setSuccessfulMatches(0);
+            biometricData.setFailedMatches(0);
+            biometricData.setNotes(null);
+            biometricData.setSecurityNotes(null);
+        } else {
+            biometricData = EmployeeBiometricData.builder()
+                    .employee(employee)
+                    .device(device)
+                    .biometricType(request.getBiometricType())
+                    .biometricTemplate(request.getBiometricTemplate())
+                    .templateFormat(request.getTemplateFormat())
+                    .enrollmentDate(LocalDateTime.now())
+                    .enrollmentQualityScore(request.getQualityScore())
+                    .enrolled(true)
+                    .active(true)
+                    .build();
+        }
 
         biometricData = biometricDataRepository.save(biometricData);
 
-        // Update device enrollment count
         device.setTotalEnrollments(device.getTotalEnrollments() + 1);
         deviceRepository.save(device);
 
@@ -127,9 +148,13 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
     @Override
     @Transactional
     public boolean verifyBiometric(Long employeeId, Long deviceId, String template, double threshold) {
+        authorizationService.checkPermission(PermissionCode.BIOMETRIC_MANAGE);
+        // Fails closed before any enrollment is read or any match counter is touched - see BiometricMatcher.
+        matcher.requireAvailable();
         EmployeeBiometricData data = biometricDataRepository
                 .findByEmployeeIdAndDeviceIdAndBiometricType(employeeId, deviceId, "FINGERPRINT")
                 .orElseThrow(() -> new ResourceNotFoundException("Enrollment not found"));
+        requireSameTenant(data);
 
         double matchScore = calculateMatch(data.getBiometricTemplate(), template);
 
@@ -145,6 +170,9 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
     @Override
     @Transactional
     public boolean verifyBiometric(Long id, String template, double threshold) {
+        authorizationService.checkPermission(PermissionCode.BIOMETRIC_MANAGE);
+        // Fails closed before any enrollment is read or any match counter is touched - see BiometricMatcher.
+        matcher.requireAvailable();
         EmployeeBiometricData data = biometricDataRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Enrollment not found"));
         requireSameTenant(data);
@@ -213,20 +241,9 @@ public class EmployeeBiometricServiceImpl implements EmployeeBiometricService {
         return BiometricDataMapper.toResponse(data);
     }
 
+    /** Delegates to the one gate; there is no local copy of "matching" any more - see BiometricMatcher for why it is off by default. */
     private double calculateMatch(String template1, String template2) {
-        if (template1 == null || template2 == null) return 0.0;
-
-        // Simple comparison (in production use actual fingerprint matching)
-        int matches = 0;
-        int total = Math.min(template1.length(), template2.length());
-
-        for (int i = 0; i < total; i++) {
-            if (template1.charAt(i) == template2.charAt(i)) {
-                matches++;
-            }
-        }
-
-        return total > 0 ? (matches * 100.0 / total) : 0.0;
+        return matcher.score(template1, template2);
     }
 }
 

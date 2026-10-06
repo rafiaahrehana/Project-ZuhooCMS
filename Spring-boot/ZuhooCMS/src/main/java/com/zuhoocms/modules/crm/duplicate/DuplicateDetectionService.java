@@ -7,18 +7,15 @@ import com.zuhoocms.modules.crm.contact.ClientContactRepository;
 import com.zuhoocms.security.SecurityUtil;
 import com.zuhoocms.shared.exception.BadRequestException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
 
-/**
- * Nudge-not-block duplicate detection for Lead and Client creation, matching on
- * company name / email / phone / domain. No fuzzy/trigram matching exists elsewhere
- * in this codebase, so this uses normalized exact/LIKE matching (lowercase + trim on
- * company name and domain, exact on email/phone) rather than introducing pg_trgm.
- */
+/** Nudge-not-block duplicate detection on company name / email / phone / domain, using normalized exact/LIKE matching rather than introducing pg_trgm for the one case. */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DuplicateDetectionService {
@@ -42,9 +39,9 @@ public class DuplicateDetectionService {
         if (email != null && !email.isBlank()) {
             Optional<ClientContact> byEmail = clientContactRepository
                     .findFirstByEmailIgnoreCaseAndCompanyIdAndDeletedFalse(email.trim(), companyId);
-            if (byEmail.isPresent()) {
-                Client c = byEmail.get().getClient();
-                return Optional.of(new DuplicateMatch(c.getId(), c.getClientCompanyName(), "email"));
+            Optional<DuplicateMatch> emailMatch = toMatch(byEmail, "email");
+            if (emailMatch.isPresent()) {
+                return emailMatch;
             }
 
             String domain = extractDomain(email);
@@ -57,16 +54,37 @@ public class DuplicateDetectionService {
             }
         }
 
-        if (phone != null && !phone.isBlank()) {
+        // Digits-only, not raw string equality: "+966 50 123 4567" and "0501234567" are one person.
+        String phoneKey = com.zuhoocms.modules.crm.support.PhoneMatching.matchKey(phone);
+        if (phoneKey != null) {
             Optional<ClientContact> byPhone = clientContactRepository
-                    .findFirstByPhoneAndCompanyIdAndDeletedFalse(phone.trim(), companyId);
-            if (byPhone.isPresent()) {
-                Client c = byPhone.get().getClient();
-                return Optional.of(new DuplicateMatch(c.getId(), c.getClientCompanyName(), "phone"));
+                    .findFirstByNormalisedPhone(phoneKey, companyId);
+            Optional<DuplicateMatch> phoneMatch = toMatch(byPhone, "phone");
+            if (phoneMatch.isPresent()) {
+                return phoneMatch;
             }
         }
 
         return Optional.empty();
+    }
+
+    /** Turns a matched contact into a DuplicateMatch, skipping unresolvable clients: {@code contact.getClient()} for a contact orphaned by a soft-deleted client threw EntityNotFoundException, surfacing as a 500 or a 404 "Client not found" while marking an unrelated deal Won. */
+    private Optional<DuplicateMatch> toMatch(Optional<ClientContact> contact, String reason) {
+        if (contact.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            Client client = contact.get().getClient();
+            if (client == null || client.isDeleted()) {
+                return Optional.empty();
+            }
+            return Optional.of(new DuplicateMatch(client.getId(), client.getClientCompanyName(), reason));
+        } catch (jakarta.persistence.EntityNotFoundException
+                 | org.hibernate.ObjectNotFoundException ex) {
+            log.warn("Duplicate-detection contact {} points at a client that no longer resolves - ignoring",
+                    contact.get().getId());
+            return Optional.empty();
+        }
     }
 
     private String extractDomain(String email) {

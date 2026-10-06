@@ -2,24 +2,8 @@ package com.zuhoocms.modules.itam.offboarding;
 
 public class OffboardingChecklistMapper {
 
-    /**
-     * getFullName() forces Hibernate to initialize the Employee proxy, which
-     * re-runs the entity's own @SQLRestriction("deleted = false") - a
-     * terminated (soft-deleted) employee's proxy throws EntityNotFoundException
-     * on any field access beyond its id, which would 500 the whole offboarding
-     * list the moment one entry's employee has actually been terminated -
-     * exactly the case this checklist exists to track.
-     */
-    private static String safeFullName(com.zuhoocms.modules.hrm.employee.Employee emp) {
-        if (emp == null) return null;
-        try {
-            return emp.getFullName();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    public static OffboardingChecklistResponse toResponse(OffboardingChecklist entity) {
+    /** employeeName comes from the caller (ItamEmployeeGuard.fullNames, one batch query): the Employee proxy would be one query per row and throws EntityNotFoundException for terminated employees under @SQLRestriction. */
+    public static OffboardingChecklistResponse toResponse(OffboardingChecklist entity, String employeeName) {
         if (entity == null) {
             return null;
         }
@@ -27,7 +11,7 @@ public class OffboardingChecklistMapper {
         return OffboardingChecklistResponse.builder()
                 .id(entity.getId())
                 .employeeId(entity.getEmployee() != null ? entity.getEmployee().getId() : null)
-                .employeeName(safeFullName(entity.getEmployee()))
+                .employeeName(employeeName)
                 .offboardingDate(entity.getOffboardingDate())
                 .targetCompletionDate(entity.getTargetCompletionDate())
                 .hardwareCollected(entity.isHardwareCollected())

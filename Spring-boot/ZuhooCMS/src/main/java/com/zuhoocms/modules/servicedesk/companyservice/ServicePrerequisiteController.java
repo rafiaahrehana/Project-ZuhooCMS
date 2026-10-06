@@ -21,8 +21,8 @@ public class ServicePrerequisiteController {
         return ResponseEntity.ok(prerequisiteService.create(serviceId, request));
     }
 
-    // No role gate - a client picking a service benefits from seeing what it
-    // depends on before ordering (mirrors required-documents/form-fields).
+    // CLIENT included so a client can see what a service depends on before ordering; the service layer resolves the parent service inside the caller's company.
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'CLIENT')")
     @GetMapping
     public ResponseEntity<List<ServicePrerequisiteResponse>> listByService(@PathVariable Long serviceId) {
         return ResponseEntity.ok(prerequisiteService.listByService(serviceId));

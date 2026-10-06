@@ -14,12 +14,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 
-/**
- * Reads and applies one company's payroll policy.
- *
- * Payroll calls {@link #perDayRate} rather than dividing by anything itself, so
- * there is a single place where "what is a day worth" is decided.
- */
+/** Reads and applies one company's payroll policy; payroll calls {@link #perDayRate} rather than dividing itself, so "what is a day worth" is decided in one place. */
 @Service
 @RequiredArgsConstructor
 public class PayrollSettingsService {
@@ -29,16 +24,9 @@ public class PayrollSettingsService {
     private final SecurityUtil securityUtil;
 
     /**
-     * The company's settings, creating the default row on first access so
-     * callers never deal with an empty Optional.
-     *
-     * Callers include read paths (the salary sheet runs readOnly = true), and
-     * @Transactional participates in the caller's transaction - so for a
-     * company with no row yet, the save exploded with "cannot execute INSERT
-     * in a read-only transaction". A company's first-ever salary sheet view
-     * was a 500. When the row is missing, a defaults instance is returned
-     * unsaved instead; the row is actually written the first time a
-     * read-write caller (the settings PUT, a payroll run) comes through.
+     * The company's settings, so callers never deal with an empty Optional.
+     * Missing rows return an unsaved defaults instance: read-only callers (the salary sheet) hit "cannot execute INSERT in a read-only transaction" and 500ed on a company's first view.
+     * The row is written the first time a read-write caller (settings PUT, a payroll run) comes through.
      */
     @Transactional
     public PayrollSettings getOrCreate(Long companyId) {
@@ -90,9 +78,7 @@ public class PayrollSettingsService {
     }
 
     /**
-     * What one day of the given monthly amount is worth, under this company's
-     * policy, for the given month.
-     *
+     * What one day of the given monthly amount is worth under this company's policy.
      * @param monthlyAmount basic or gross, per {@code absenceDeductionBase}
      */
     public BigDecimal perDayRate(PayrollSettings settings, BigDecimal monthlyAmount, int payMonth, int payYear) {
@@ -113,14 +99,9 @@ public class PayrollSettingsService {
     }
 
     /**
-     * Working days in the month: every date that is not a company holiday and
-     * not a Friday or Saturday.
-     *
-     * The weekend is taken as Fri/Sat rather than read from each employee's
-     * shift, because this divisor prices a *month* for the whole company - an
-     * employee-specific divisor would make two people's day rates differ for
-     * the same salary. Never returns zero, so a misconfigured holiday table
-     * cannot produce a divide-by-zero.
+     * Working days in the month: every date that is not a company holiday and not a Friday or Saturday.
+     * The weekend is company-wide rather than per-employee shift, or two people on the same salary would get different day rates.
+     * Never returns zero, so a misconfigured holiday table cannot cause a divide-by-zero.
      */
     private int workingDaysIn(Long companyId, LocalDate monthStart) {
         int days = 0;

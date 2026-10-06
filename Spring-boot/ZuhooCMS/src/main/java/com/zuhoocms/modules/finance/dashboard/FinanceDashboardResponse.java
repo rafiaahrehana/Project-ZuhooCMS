@@ -7,10 +7,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * Finance dashboard for one month, aggregated live from invoices, expenses and
- * budgets. Nothing here is stored - it is a read of the current position.
- */
+/** Finance dashboard for one month, aggregated live from invoices, expenses and budgets; nothing here is stored. */
 @Data
 @Builder
 public class FinanceDashboardResponse {
@@ -18,7 +15,6 @@ public class FinanceDashboardResponse {
     private int payMonth;
     private int payYear;
 
-    // ── Headline figures for the month ───────────────────────
     /** Invoiced total, excluding drafts and cancelled invoices. */
     private BigDecimal totalRevenue;
     /** Approved and reimbursed expenses. */

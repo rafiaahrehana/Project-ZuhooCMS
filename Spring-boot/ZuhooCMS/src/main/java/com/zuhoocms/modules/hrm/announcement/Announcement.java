@@ -49,9 +49,7 @@ public class Announcement extends BaseEntity {
     @Column(name = "published_at")
     private LocalDateTime publishedAt;
 
-    // When set on a still-unpublished announcement, AnnouncementScheduledPublishScheduler
-    // auto-publishes it once this time passes - HR can draft a holiday notice
-    // Friday to auto-publish Monday 9am instead of remembering to click Publish.
+    // Set on an unpublished announcement, AnnouncementScheduledPublishScheduler auto-publishes it once this time passes.
     @Column(name = "scheduled_at")
     private LocalDateTime scheduledAt;
 

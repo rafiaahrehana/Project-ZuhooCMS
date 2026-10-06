@@ -22,8 +22,7 @@ public class TimesheetResponse {
     private LocalDateTime submittedAt;
     private boolean approved;
     private LocalDateTime approvedAt;
-    // NOT_SUBMITTED / SUBMITTED / APPROVED - derived, saves the frontend from
-    // re-deriving the same submitted/approved combination in three different tables.
+    // NOT_SUBMITTED / SUBMITTED / APPROVED - derived here so three frontend tables don't each re-derive the submitted/approved combination.
     private String status;
     private Long employeeId;
     private String employeeName;

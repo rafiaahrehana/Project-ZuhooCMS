@@ -1,5 +1,6 @@
 package com.zuhoocms.modules.hrm.recruitment.careerpage;
 
+import com.zuhoocms.core.base.SoftDeletedProxies;
 import com.zuhoocms.enums.ApplicationSource;
 import com.zuhoocms.enums.ApplicationStatus;
 import com.zuhoocms.enums.JobPostingStatus;
@@ -35,15 +36,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * The PUBLIC careers page - no authentication. The slug is the only tenant
- * key: every query is scoped through the CareerPageSettings row it resolves
- * to, and only OPEN postings whose deadline hasn't passed are ever exposed.
- */
+/** The PUBLIC careers page, unauthenticated: the slug is the only tenant key, every query is scoped through the CareerPageSettings row it resolves to, and only OPEN postings within deadline are exposed. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/public/careers")
 public class PublicCareersController {
+
+    static final String APPLY_SUCCESS_MESSAGE = "Application received - we'll be in touch";
 
     private final CareerPageSettingsRepository settingsRepository;
     private final CompanyRepository companyRepository;
@@ -83,16 +82,13 @@ public class PublicCareersController {
         CareerPageSettings settings = requirePublished(slug);
         JobPosting posting = requireOpenPosting(settings, jobId);
 
-        // Honeypot: real users never see this field; bots that fill every
-        // input get a success response and no record.
+        // Honeypot: real users never see this field, so bots that fill every input get a success response and no record.
         if (request.getWebsite() != null && !request.getWebsite().isBlank()) {
             return ResponseEntity.ok(new ApplyResult("Application received"));
         }
 
         String name = trimToNull(request.getApplicantName());
-        // Lowercase to match RecruitmentServiceImpl.apply()'s duplicate check -
-        // without it, "Jane@Gmail.com" and "jane@gmail.com" bypassed the
-        // duplicate guard entirely on the actual public entry point.
+        // Lowercase to match RecruitmentServiceImpl.apply()'s duplicate check: "Jane@Gmail.com" vs "jane@gmail.com" bypassed the duplicate guard entirely here.
         String email = trimToNull(request.getApplicantEmail() != null ? request.getApplicantEmail().toLowerCase() : null);
         if (name == null || email == null) {
             throw new BadRequestException("Name and email are required");
@@ -101,19 +97,29 @@ public class PublicCareersController {
             throw new BadRequestException("Enter a valid email address");
         }
 
-        // The public form always implies CAREER_PAGE - it's never worth
-        // trusting a client-supplied source here the way staff-logged
-        // applications (RecruitmentServiceImpl.apply) can be.
-        Candidate candidate = candidateService.findOrCreate(settings.getCompanyId(), name, email,
-                trimToNull(request.getApplicantPhone()), ApplicationSource.CAREER_PAGE,
-                trimToNull(request.getResumeUrl()), trimToNull(request.getLinkedInUrl()), trimToNull(request.getPortfolioUrl()));
+        // The public form always implies CAREER_PAGE: a client-supplied source is never trusted here, unlike staff-logged applications.
+        String phone = trimToNull(request.getApplicantPhone());
+        // Only a resume uploaded through this company's careers form, never an arbitrary external link.
+        String resumeUrl = com.zuhoocms.shared.storage.FileReferencePolicy.requireOwnForCompany(
+                trimToNull(request.getResumeUrl()), settings.getCompanyId());
+        String linkedInUrl = trimToNull(request.getLinkedInUrl());
+        String portfolioUrl = trimToNull(request.getPortfolioUrl());
+        if (name.length() > 150 || (phone != null && phone.length() > 30) || email.length() > 200
+                || (resumeUrl != null && resumeUrl.length() > 500) || (linkedInUrl != null && linkedInUrl.length() > 500)
+                || (portfolioUrl != null && portfolioUrl.length() > 500)) {
+            throw new BadRequestException("One of the fields is too long");
+        }
 
-        // OFFER_REJECTED included alongside REJECTED/WITHDRAWN - see
-        // RecruitmentServiceImpl.apply()'s identical exclusion list.
+        // Anonymous: the submitter proves nothing about owning the email, so an existing candidate's details are never refreshed from it (refreshExistingDetails=false).
+        Candidate candidate = candidateService.findOrCreate(settings.getCompanyId(), name, email,
+                phone, ApplicationSource.CAREER_PAGE, resumeUrl, linkedInUrl, portfolioUrl, false);
+
+        // OFFER_REJECTED included alongside REJECTED/WITHDRAWN - see RecruitmentServiceImpl.apply()'s identical exclusion list.
         if (applicationRepository.existsByJobPostingIdAndCandidateIdAndStatusNotIn(posting.getId(), candidate.getId(),
                 java.util.List.of(com.zuhoocms.enums.ApplicationStatus.REJECTED, com.zuhoocms.enums.ApplicationStatus.WITHDRAWN,
                         com.zuhoocms.enums.ApplicationStatus.OFFER_REJECTED))) {
-            throw new BadRequestException("You have already applied for this position with that email");
+            // Same 200 and message as a successful application: a distinct "already applied" answer let anyone probe whether an email is in the pipeline.
+            return ResponseEntity.ok(new ApplyResult(APPLY_SUCCESS_MESSAGE));
         }
 
         Company companyRef = new Company();
@@ -123,33 +129,30 @@ public class PublicCareersController {
                 .jobPosting(posting)
                 .company(companyRef)
                 .candidate(candidate)
+                .applicantName(name)
+                .applicantPhone(phone)
+                .resumeUrl(resumeUrl)
+                .linkedInUrl(linkedInUrl)
+                .portfolioUrl(portfolioUrl)
                 .coverLetter(trimToNull(request.getCoverLetter()))
                 .source(ApplicationSource.CAREER_PAGE)
                 .status(ApplicationStatus.APPLIED)
                 .build();
         applicationRepository.save(application);
         cvScoringService.scheduleAfterCommit(settings.getCompanyId(), application.getId());
-        return ResponseEntity.ok(new ApplyResult("Application received - we'll be in touch"));
+        return ResponseEntity.ok(new ApplyResult(APPLY_SUCCESS_MESSAGE));
     }
 
-    /**
-     * Anonymous resume upload for the public apply form - storeFile() already
-     * handles the unauthenticated case gracefully (a "guest_{uuid}" filename,
-     * see LocalFileStorageService.persist()), so this is a thin pass-through
-     * with no new validation logic. The returned URL is what the apply form
-     * then sends back as resumeUrl - only a URL under our own /uploads/ path
-     * is ever read for ATS scoring (see CvScoringService).
-     */
+    /** Anonymous resume upload for the public apply form, stored as a PRIVATE RESUME file of the career page's company; the returned /api/files/{id} URL is the only resumeUrl apply() accepts, and what ATS scoring reads (see CvScoringService). */
     @PostMapping("/{slug}/upload-resume")
     public ResponseEntity<Map<String, String>> uploadResume(@PathVariable String slug,
                                                               @RequestParam("file") MultipartFile file) {
-        requirePublished(slug);
+        CareerPageSettings settings = requirePublished(slug);
         Map<String, String> response = new HashMap<>();
-        response.put("fileUrl", fileStorageService.storeFile(file));
+        // Resume-only store: PDF/DOC/DOCX by extension AND file signature, 10MB max; the general storeFile() accepted images, spreadsheets and SVG from anonymous visitors.
+        response.put("fileUrl", fileStorageService.storeResume(file, settings.getCompanyId()));
         return ResponseEntity.ok(response);
     }
-
-    // ── Helpers ───────────────────────────────────────────────
 
     private CareerPageSettings requirePublished(String slug) {
         return settingsRepository.findBySlugIgnoreCase(slug)
@@ -179,8 +182,6 @@ public class PublicCareersController {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    // ── Public DTOs ───────────────────────────────────────────
-
     @Getter @Setter
     public static class CareerPageView {
         private String companyName;
@@ -188,6 +189,12 @@ public class PublicCareersController {
         private String about;
         private String brandColor;
         private List<JobCard> jobs;
+    }
+
+    /** The posting's department name, via loadable(): the lazy proxy is non-null and throws once the department is soft-deleted (BaseEntity's {@code @SQLRestriction}), which would 500 the public careers page. */
+    private static String departmentName(JobPosting p) {
+        var department = SoftDeletedProxies.loadable(p.getDepartment());
+        return department != null ? department.getName() : null;
     }
 
     @Getter @Setter
@@ -208,7 +215,7 @@ public class PublicCareersController {
             c.employmentType = p.getEmploymentType() != null ? p.getEmploymentType().name() : null;
             c.remote = Boolean.TRUE.equals(p.getRemote());
             c.deadline = p.getDeadline();
-            c.departmentName = p.getDepartment() != null ? p.getDepartment().getName() : null;
+            c.departmentName = departmentName(p);
             return c;
         }
     }
@@ -230,7 +237,7 @@ public class PublicCareersController {
             d.setEmploymentType(p.getEmploymentType() != null ? p.getEmploymentType().name() : null);
             d.setRemote(Boolean.TRUE.equals(p.getRemote()));
             d.setDeadline(p.getDeadline());
-            d.setDepartmentName(p.getDepartment() != null ? p.getDepartment().getName() : null);
+            d.setDepartmentName(departmentName(p));
             d.description = p.getDescription();
             d.requirements = p.getRequirements();
             d.responsibilities = p.getResponsibilities();

@@ -47,10 +47,7 @@ public class LocationServiceImpl implements LocationService {
         if (parentId == null) {
             throw new BadRequestException("Parent ID is required to fetch children");
         }
-        // Location-to-Location only (levels 2-4). Country -> LEVEL1 lookups go through
-        // getDivisionsForCountry() instead - Country.id and Location.id are independent
-        // auto-increment sequences that can collide, so probing "does a Location with
-        // this id exist" here would silently resolve to the wrong table for some countries.
+        // Location-to-Location only (levels 2-4): Country.id and Location.id are independent sequences that collide, so a LEVEL1 probe here would resolve against the wrong table (see getDivisionsForCountry).
         if (!locationRepository.existsById(parentId)) {
             throw new ResourceNotFoundException("Parent node not found with ID: " + parentId);
         }

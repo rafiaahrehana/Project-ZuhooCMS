@@ -4,15 +4,8 @@ import org.springframework.stereotype.Component;
 
 
 /**
- * Strips characters that providers reject inside a JSON string body - control
- * characters other than tab/newline/carriage-return - and trims surrounding
- * whitespace.
- *
- * It deliberately does NOT escape backslashes or rewrite double quotes: the
- * outgoing body is serialised by Jackson via RestTemplate, which escapes both
- * correctly. Doing it here as well double-escaped every backslash and turned
- * every quote in the user's prompt into an apostrophe, corrupting code snippets
- * and quoted text before the model ever saw them.
+ * Strips control characters other than tab/newline/carriage-return, which providers reject inside a JSON string body, and trims whitespace.
+ * Deliberately does NOT escape backslashes or quotes: Jackson already does, and doing it here too double-escaped backslashes and turned quotes into apostrophes.
  */
 @Component
 public class AiTextSanitizer {

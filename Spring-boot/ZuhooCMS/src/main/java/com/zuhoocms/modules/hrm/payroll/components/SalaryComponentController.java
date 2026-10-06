@@ -10,11 +10,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Salary component catalog, reusable structure templates, and per-employee
- * extra components. Same access rule as SalaryStructureController: the
- * fine-grained checks are permission-service driven inside the services.
- */
+/** Salary component catalog, structure templates and per-employee extras; like SalaryStructureController, fine-grained checks live in the services. */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/hr/salary-components")
@@ -23,7 +19,6 @@ public class SalaryComponentController {
 
     private final SalaryComponentService service;
 
-    // ── Catalog ────────────────────────────────────────────────
     @GetMapping
     public ResponseEntity<List<SalaryComponent>> catalog() {
         return ResponseEntity.ok(service.listCatalog());
@@ -39,7 +34,6 @@ public class SalaryComponentController {
         return ResponseEntity.ok(service.updateComponent(id, input));
     }
 
-    // ── Templates ──────────────────────────────────────────────
     @GetMapping("/templates")
     public ResponseEntity<List<SalaryStructureTemplate>> templates() {
         return ResponseEntity.ok(service.listTemplates());
@@ -68,7 +62,6 @@ public class SalaryComponentController {
         return ResponseEntity.ok(service.breakdown(id, gross));
     }
 
-    // ── Extra components on one employee's structure ───────────
     @GetMapping("/structure/{structureId}")
     public ResponseEntity<List<ExtraDto>> extras(@PathVariable Long structureId) {
         return ResponseEntity.ok(service.listExtras(structureId).stream().map(ExtraDto::of).toList());

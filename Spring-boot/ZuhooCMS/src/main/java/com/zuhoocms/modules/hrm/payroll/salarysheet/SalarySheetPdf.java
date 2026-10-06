@@ -17,13 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * The salary sheet as a downloadable PDF.
- *
- * Uses the shared SimpleTablePdfRenderer rather than a bespoke layout: this is
- * a list export like any other, and the renderer already carries the company
- * header block that the finance exports use.
- */
+/** The salary sheet as a PDF, via the shared SimpleTablePdfRenderer, which already carries the company header block the finance exports use. */
 @Component
 @RequiredArgsConstructor
 public class SalarySheetPdf {
@@ -35,12 +29,7 @@ public class SalarySheetPdf {
 
     public record Document(byte[] content, String fileName) {}
 
-    /**
-     * Transactional because the company's address is a lazy association and the
-     * header block dereferences it. The controller is not itself transactional,
-     * so without this the render dies on a LazyInitializationException the
-     * moment a company has an address on file.
-     */
+    /** Transactional because the header dereferences the company's lazy address; the controller is not, so this otherwise dies on LazyInitializationException. */
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public Document render(SalarySheetResponse sheet) {
         List<String> headers = List.of(
@@ -61,9 +50,7 @@ public class SalarySheetPdf {
                     money(r.getNetPayable())));
         }
 
-        // The totals ride as a final row rather than a separate block: the
-        // renderer draws one table, and a column total is only useful directly
-        // under the column it totals.
+        // Totals ride as a final row, not a separate block: the renderer draws one table and a total belongs under its column.
         rows.add(List.of(
                 "TOTAL (" + sheet.getRows().size() + " employees)",
                 money(sheet.getTotalBasic()),
@@ -103,8 +90,7 @@ public class SalarySheetPdf {
         StringBuilder sb = new StringBuilder(r.getEmployeeName() != null ? r.getEmployeeName() : "-");
         if (notBlank(r.getEmployeeNumber())) sb.append(" (").append(r.getEmployeeNumber()).append(")");
         if (notBlank(r.getPosition())) sb.append(" - ").append(r.getPosition());
-        // A row with no salary structure would otherwise print as a line of
-        // zeroes with no explanation.
+        // A row with no salary structure would otherwise print as unexplained zeroes.
         if (notBlank(r.getNote())) sb.append(" [").append(r.getNote()).append("]");
         return sb.toString();
     }

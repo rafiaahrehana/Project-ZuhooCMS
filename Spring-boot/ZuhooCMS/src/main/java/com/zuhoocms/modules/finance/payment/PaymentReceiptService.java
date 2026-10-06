@@ -13,12 +13,7 @@ public interface PaymentReceiptService {
     void confirmPayment(Long id);
     void markAsDeposited(Long id, String bank);
 
-    /**
-     * Unwinds a CONFIRMED/DEPOSITED payment that bounced (NSF cheque, chargeback):
-     * posts Cr Cash / Dr AR, restores the linked invoice's paidAmount/status, and
-     * marks the receipt REVERSED. Previously the REVERSED status existed in the enum
-     * with no code path into it - a bounced payment simply couldn't be recorded.
-     */
+    /** Unwinds a bounced CONFIRMED/DEPOSITED payment (NSF cheque, chargeback): posts Cr Cash / Dr AR, restores the invoice's paidAmount/status, and marks the receipt REVERSED. */
     void reverse(Long id, String reason);
     void delete(Long id);
 }

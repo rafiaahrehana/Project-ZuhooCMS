@@ -1,6 +1,13 @@
 package com.zuhoocms.modules.hrm.payroll.run;
 
 import com.zuhoocms.enums.PaymentMethod;
+import com.zuhoocms.modules.hrm.payroll.PayrollPeriods;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,9 +25,29 @@ public class PayrollRunController {
 
     private final PayrollRunService service;
 
-    public record CreateRunRequest(int month, int year, String remarks) {}
-    public record RejectRequest(String reason) {}
-    public record PayRequest(PaymentMethod paymentMethod, String referencePrefix, LocalDate paymentDate) {}
+    public record CreateRunRequest(
+            @NotNull(message = PayrollPeriods.MONTH_MESSAGE)
+            @Min(value = 1, message = PayrollPeriods.MONTH_MESSAGE)
+            @Max(value = 12, message = PayrollPeriods.MONTH_MESSAGE)
+            Integer month,
+            @NotNull(message = PayrollPeriods.YEAR_MESSAGE)
+            @Min(value = 2000, message = PayrollPeriods.YEAR_MESSAGE)
+            @Max(value = 2100, message = PayrollPeriods.YEAR_MESSAGE)
+            Integer year,
+            @Size(max = 2000, message = "Remarks cannot exceed 2000 characters")
+            String remarks) {}
+
+    public record RejectRequest(
+            @NotBlank(message = "Rejection reason is required")
+            @Size(max = 2000, message = "Rejection reason cannot exceed 2000 characters")
+            String reason) {}
+
+    public record PayRequest(
+            @NotNull(message = "Payment method is required")
+            PaymentMethod paymentMethod,
+            @Size(max = 20, message = "Reference prefix cannot exceed 20 characters")
+            String referencePrefix,
+            LocalDate paymentDate) {}
 
     @GetMapping
     public ResponseEntity<List<PayrollRun>> list() {
@@ -35,7 +62,7 @@ public class PayrollRunController {
     }
 
     @PostMapping
-    public ResponseEntity<PayrollRun> create(@RequestBody CreateRunRequest request) {
+    public ResponseEntity<PayrollRun> create(@Valid @RequestBody CreateRunRequest request) {
         return new ResponseEntity<>(service.create(request.month(), request.year(), request.remarks()), HttpStatus.CREATED);
     }
 
@@ -55,7 +82,7 @@ public class PayrollRunController {
     }
 
     @PostMapping("/{id}/reject")
-    public ResponseEntity<PayrollRun> reject(@PathVariable Long id, @RequestBody RejectRequest request) {
+    public ResponseEntity<PayrollRun> reject(@PathVariable Long id, @Valid @RequestBody RejectRequest request) {
         return ResponseEntity.ok(service.reject(id, request.reason()));
     }
 
@@ -65,7 +92,7 @@ public class PayrollRunController {
     }
 
     @PostMapping("/{id}/pay")
-    public ResponseEntity<PayrollRun> pay(@PathVariable Long id, @RequestBody PayRequest request) {
+    public ResponseEntity<PayrollRun> pay(@PathVariable Long id, @Valid @RequestBody PayRequest request) {
         return ResponseEntity.ok(service.pay(id, request.paymentMethod(), request.referencePrefix(), request.paymentDate()));
     }
 }

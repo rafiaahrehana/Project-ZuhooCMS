@@ -43,7 +43,15 @@ public class AttendanceController {
     @GetMapping("/my/today")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<AttendanceResponse> getMyTodayAttendance() {
-        return ResponseEntity.ok(attendanceService.getMyTodayAttendance());
+        AttendanceResponse today = attendanceService.getMyTodayAttendance();
+        // 204, not a 200 carrying a null body. Having no record yet is the normal state of every employee
+        // before their first check-in of the day, but a 200 with Content-Length: 0 is not something an HTTP
+        // client can deserialise: Retrofit tolerates an empty body only for 204/205, so Android's
+        // Call<AttendanceResponse> threw EOFException and routed every pre-check-in morning into onFailure.
+        // The Check In button is drawn by the success path, so the screen's whole purpose was unreachable and
+        // it read to the user as a server fault. Flutter had already special-cased the same empty 200 inside
+        // its repository, which is the tell that the status code was wrong rather than each client in turn.
+        return today == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(today);
     }
 
     @GetMapping("/my")
@@ -81,13 +89,7 @@ public class AttendanceController {
         return ResponseEntity.ok(attendanceService.checkOut(id, request));
     }
 
-    // ── HR / Admin: Manual Entry ──────────────────────────────────────────────
-
-    /**
-     * POST /api/v1/company/attendance/manual
-     * HR or Admin manually creates an attendance record for any employee / any
-     * date.
-     */
+    /** HR or Admin manually creates an attendance record for any employee and date. */
     @PostMapping("/manual")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<AttendanceResponse> createManual(
@@ -95,20 +97,12 @@ public class AttendanceController {
         return new ResponseEntity<>(attendanceService.createManual(request), HttpStatus.CREATED);
     }
 
-    // ── Reads ─────────────────────────────────────────────────────────────────
-
-    /**
-     * GET /api/v1/company/attendance/{id}
-     */
     @GetMapping("/{id}")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<AttendanceResponse> getById(@PathVariable Long id) {
         return ResponseEntity.ok(attendanceService.getById(id));
     }
 
-    /**
-     * GET /api/v1/company/attendance/employee/{employeeId}?date=2026-07-03
-     */
     @GetMapping("/employee/{employeeId}")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<Page<AttendanceResponse>> getByEmployee(
@@ -120,10 +114,6 @@ public class AttendanceController {
                 PageRequest.of(page, size, Sort.by("attendanceDate").descending())));
     }
 
-    /**
-     * GET /api/v1/company/attendance/employee/{employeeId}/date?date=2026-07-03
-     * Returns a single attendance record for an employee on a specific date.
-     */
     @GetMapping("/employee/{employeeId}/date")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<AttendanceResponse> getByEmployeeAndDate(
@@ -132,10 +122,6 @@ public class AttendanceController {
         return ResponseEntity.ok(attendanceService.getByEmployeeAndDate(employeeId, date));
     }
 
-    /**
-     * GET
-     * /api/v1/company/attendance/date-range?startDate=2026-07-01&endDate=2026-07-31
-     */
     @GetMapping("/date-range")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<Page<AttendanceResponse>> getByDateRange(
@@ -147,9 +133,6 @@ public class AttendanceController {
                 startDate, endDate, PageRequest.of(page, size, Sort.by("attendanceDate").descending())));
     }
 
-    /**
-     * GET /api/v1/company/attendance/status/{status}
-     */
     @GetMapping("/status/{status}")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<Page<AttendanceResponse>> getByStatus(
@@ -172,14 +155,7 @@ public class AttendanceController {
         return ResponseEntity.ok(attendanceService.getAbsentees(date));
     }
 
-    /**
-     * POST /api/company/attendance/backfill-absentees?startDate=2026-07-19&endDate=2026-07-21
-     *
-     * Manually run the absentee marker for the current company over a date range -
-     * lets an owner immediately fill in missing ABSENT days (e.g. when the nightly
-     * scheduler was offline) instead of waiting for 23:00. Idempotent and scoped to
-     * the caller's own company. Returns the number of ABSENT records created.
-     */
+    /** Runs the absentee marker over a date range for the caller's own company, e.g. after the nightly scheduler was offline; idempotent, returns the number of ABSENT records created. */
     @PostMapping("/backfill-absentees")
     @PreAuthorize("hasRole('COMPANY_OWNER')")
     public ResponseEntity<Map<String, Object>> backfillAbsentees(
@@ -190,8 +166,7 @@ public class AttendanceController {
             return ResponseEntity.badRequest()
                     .body(Map.of("error", "startDate must not be after endDate"));
         }
-        // Never process future dates, and cap the span so a stray request can't
-        // sweep years of history in one call.
+        // Never process future dates, and cap the span so a stray request cannot sweep years of history in one call.
         LocalDate cappedEnd = endDate.isAfter(LocalDate.now()) ? LocalDate.now() : endDate;
         if (startDate.plusDays(366).isBefore(cappedEnd)) {
             return ResponseEntity.badRequest()
@@ -206,12 +181,7 @@ public class AttendanceController {
                 "endDate", cappedEnd.toString()));
     }
 
-    // ── Admin Mutations ───────────────────────────────────────────────────────
-
-    /**
-     * PATCH /api/v1/company/attendance/{id}/status
-     * Body: { "status": "PRESENT" }
-     */
+    /** Body: { "status": "PRESENT" } */
     @PatchMapping("/{id}/status")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<Void> updateStatus(
@@ -221,11 +191,7 @@ public class AttendanceController {
         return ResponseEntity.ok().build();
     }
 
-    /**
-     * PATCH /api/v1/company/attendance/{id}/approve
-     * Fixed: was hardcoding "Admin" as approver name. Now derives name from the
-     * authenticated principal via SecurityUtil.
-     */
+    /** Approver name comes from the authenticated principal via SecurityUtil, not a hardcoded "Admin". */
     @PatchMapping("/{id}/approve")
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<Void> approveAttendance(@PathVariable Long id) {

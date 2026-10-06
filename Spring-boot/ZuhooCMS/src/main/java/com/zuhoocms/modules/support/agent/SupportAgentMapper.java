@@ -7,6 +7,7 @@ public class SupportAgentMapper {
 
         return SupportAgentResponse.builder()
                 .id(entity.getId())
+                .userId(entity.getUser() != null ? entity.getUser().getId() : null)
                 .userName(entity.getUser() != null ? entity.getUser().getUsername() : null)
                 .fullName(entity.getUser() != null ? entity.getUser().getFullName() : null)
                 .email(entity.getUser() != null ? entity.getUser().getEmail() : null)
@@ -20,6 +21,7 @@ public class SupportAgentMapper {
                 .acceptingTickets(entity.isAcceptingTickets())
                 .maxConcurrentTickets(entity.getMaxConcurrentTickets())
                 .lastActiveTime(entity.getLastActiveTime())
+                .notes(entity.getNotes())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -31,7 +33,7 @@ public class SupportAgentMapper {
         return SupportAgent.builder()
                 .department(request.getDepartment())
                 .specialization(request.getSpecialization())
-                .status(request.getStatus())
+                .status(request.getStatus() != null ? request.getStatus() : SupportAgentStatus.ACTIVE)
                 .maxConcurrentTickets(request.getMaxConcurrentTickets())
                 .notes(request.getNotes())
                 .build();

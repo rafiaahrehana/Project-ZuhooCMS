@@ -33,19 +33,18 @@ public class ShiftServiceImpl implements ShiftService {
         if (shiftRepository.existsByCompanyIdAndName(companyId, request.getName())) {
             throw new BadRequestException("Shift '" + request.getName() + "' already exists");
         }
+        validateTimes(request);
         Shift s = Shift.builder()
             .name(request.getName())
             .shiftType(request.getShiftType())
             .startTime(request.getStartTime())
             .endTime(request.getEndTime())
             .gracePeriodMinutes(request.getGracePeriodMinutes() != null ? request.getGracePeriodMinutes() : 10)
-            // Matches Shift.weeklyOffDays' own default - was "SAT,SUN" here, a
-            // mismatch that was functionally dormant (both are just fallbacks
-            // for a field almost every request already supplies) but confusing.
+            // Must match Shift.weeklyOffDays' own default; this was "SAT,SUN", a dormant but confusing mismatch.
             .weeklyOffDays(request.getWeeklyOffDays() != null ? request.getWeeklyOffDays() : "FRI,SAT")
             .flexible(request.isFlexible())
             .nightShift(request.isNightShift())
-            .workingMinutes(request.getStartTime() != null && request.getEndTime() != null ? java.time.temporal.ChronoUnit.MINUTES.between(request.getStartTime(), request.getEndTime()) : 0)
+            .workingMinutes(workingMinutes(request))
             .description(request.getDescription())
             .notes(request.getNotes())
             .company(companyRef(companyId))
@@ -57,6 +56,7 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(readOnly = true)
     public ShiftResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.SHIFT_VIEW);
         return ShiftMapper.toShiftResponse(findInTenant(id));
     }
 
@@ -68,9 +68,7 @@ public class ShiftServiceImpl implements ShiftService {
             .map(ShiftMapper::toShiftResponse);
     }
 
-    // Deliberately NOT gated by SHIFT_VIEW: this is the active-shift picker consumed by
-    // the Employees form and Attendance Shift Assignments page - users with
-    // EMPLOYEE_UPDATE/SHIFT_ASSIGNMENT_VIEW but not SHIFT_VIEW still need it.
+    // Deliberately NOT gated by SHIFT_VIEW: the shift picker is needed by users with EMPLOYEE_UPDATE/SHIFT_ASSIGNMENT_VIEW only.
     @Override
     @Transactional(readOnly = true)
     public List<ShiftResponse> listActive() {
@@ -83,6 +81,7 @@ public class ShiftServiceImpl implements ShiftService {
     public ShiftResponse update(Long id, ShiftRequest request) {
         authorizationService.checkPermission(PermissionCode.SHIFT_UPDATE);
         Shift s = findInTenant(id);
+        validateTimes(request);
         s.setName(request.getName());
         s.setShiftType(request.getShiftType());
         s.setStartTime(request.getStartTime());
@@ -91,7 +90,7 @@ public class ShiftServiceImpl implements ShiftService {
         if (request.getWeeklyOffDays() != null) s.setWeeklyOffDays(request.getWeeklyOffDays());
         s.setFlexible(request.isFlexible());
         s.setNightShift(request.isNightShift());
-        s.setWorkingMinutes(request.getStartTime() != null && request.getEndTime() != null ? java.time.temporal.ChronoUnit.MINUTES.between(request.getStartTime(), request.getEndTime()) : 0);
+        s.setWorkingMinutes(workingMinutes(request));
         s.setDescription(request.getDescription());
         s.setNotes(request.getNotes());
         return ShiftMapper.toShiftResponse(s);
@@ -118,6 +117,20 @@ public class ShiftServiceImpl implements ShiftService {
                     + " employee(s). Reassign them first.");
         }
         shift.softDelete();
+    }
+
+    private void validateTimes(ShiftRequest request) {
+        if (!request.isNightShift() && request.getStartTime() != null && request.getEndTime() != null
+                && !request.getEndTime().isAfter(request.getStartTime())) {
+            throw new BadRequestException("End time must be after start time unless this is a night shift");
+        }
+    }
+
+    private long workingMinutes(ShiftRequest request) {
+        if (request.getStartTime() == null || request.getEndTime() == null) return 0;
+        long minutes = java.time.temporal.ChronoUnit.MINUTES.between(request.getStartTime(), request.getEndTime());
+        // Night shifts end the next day.
+        return minutes <= 0 ? minutes + 1440 : minutes;
     }
 
     private Shift findInTenant(Long id) {

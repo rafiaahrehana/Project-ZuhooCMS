@@ -38,13 +38,29 @@ public class LeaveBalanceServiceImpl implements LeaveBalanceService {
                     "A " + request.getLeaveType() + " balance for " + request.getYear() + " already exists for this employee");
             });
 
-        LeaveBalance balance = LeaveBalance.builder()
-            .employee(employee)
-            .company(employee.getCompany())
-            .leaveType(request.getLeaveType())
-            .year(request.getYear())
-            .totalDays(request.getTotalDays())
-            .build();
+        LeaveBalance balance;
+        if (leaveBalanceRepository.reviveDeleted(
+                employee.getId(), request.getLeaveType().name(), request.getYear()) > 0) {
+            // A soft-deleted row still holds the unique key; reuse it as a fresh balance.
+            balance = leaveBalanceRepository.findByEmployeeIdAndLeaveTypeAndYear(
+                    employee.getId(), request.getLeaveType(), request.getYear())
+                .orElseThrow(() -> new ResourceNotFoundException("Leave balance not found"));
+            balance.setEmployee(employee);
+            balance.setCompany(employee.getCompany());
+            balance.setLeaveType(request.getLeaveType());
+            balance.setYear(request.getYear());
+            balance.setTotalDays(request.getTotalDays());
+            balance.setUsedDays(0);
+            balance.setPendingDays(0);
+        } else {
+            balance = LeaveBalance.builder()
+                .employee(employee)
+                .company(employee.getCompany())
+                .leaveType(request.getLeaveType())
+                .year(request.getYear())
+                .totalDays(request.getTotalDays())
+                .build();
+        }
 
         leaveBalanceRepository.save(balance);
         return LeaveBalanceMapper.toLeaveBalanceResponse(balance);
@@ -86,13 +102,7 @@ public class LeaveBalanceServiceImpl implements LeaveBalanceService {
             .map(LeaveBalanceMapper::toLeaveBalanceResponse);
     }
 
-    /**
-     * The caller's own balances. Deliberately NOT gated on
-     * LEAVE_BALANCE_VIEW: that permission governs seeing OTHER people's
-     * balances, and an employee must always be able to see their own.
-     * Scoping is by the caller's own employee record, so there is nothing
-     * here they could reach that isn't theirs.
-     */
+    /** The caller's own balances, deliberately not gated on LEAVE_BALANCE_VIEW, which governs seeing other people's; scoped to the caller's own employee record. */
     @Override
     @Transactional(readOnly = true)
     public java.util.List<LeaveBalanceResponse> listMine(int year) {
@@ -100,8 +110,7 @@ public class LeaveBalanceServiceImpl implements LeaveBalanceService {
         Employee me = employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
             .orElseThrow(() -> new BadRequestException("No employee profile for the current user"));
 
-        // A user could in principle hold an employee record in more than one
-        // tenant; make sure we're reading the one for the active company.
+        // A user may hold an employee record in more than one tenant; read the one for the active company.
         if (me.getCompany() == null || !me.getCompany().getId().equals(companyId)) {
             throw new BadRequestException("Employee profile does not belong to the active company");
         }

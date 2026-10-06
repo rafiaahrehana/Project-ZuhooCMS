@@ -1,18 +1,34 @@
 package com.zuhoocms.shared.email;
 
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.HtmlUtils;
 
+import java.util.regex.Pattern;
+
+/** HTML email bodies: every interpolated value is HTML-escaped, URLs and colours for attribute context too, so callers pass plain text. */
 @Component
 public class EmailTemplate {
 
+    private static final String DEFAULT_COLOR = "#2563eb";
+    private static final Pattern SAFE_COLOR = Pattern.compile("^#[0-9a-fA-F]{3,8}$");
+
+    /** HTML-escape for element text and quoted attribute values (escapes &lt; &gt; &amp; &quot; &#39;). Null-safe. */
+    public static String esc(Object value) {
+        return value == null ? "" : HtmlUtils.htmlEscape(String.valueOf(value));
+    }
+
+    private static String safeColor(String color) {
+        return color != null && SAFE_COLOR.matcher(color.trim()).matches() ? color.trim() : DEFAULT_COLOR;
+    }
+
     public static String buildVerificationCodeTemplate(String name, String code, int expiryMinutes, EmailBranding.Data branding) {
         String title = "Verify your email address";
-        String body = "<p>Hi " + name + ",</p>"
-                    + "<p>Use the code below to verify your email and activate your " + branding.getCompanyName() + " workspace.</p>"
+        String body = "<p>Hi " + esc(name) + ",</p>"
+                    + "<p>Use the code below to verify your email and activate your " + esc(branding.getCompanyName()) + " workspace.</p>"
                     + "<div style=\"text-align:center;margin:30px 0;\">"
                     + "<div style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 40px;\">"
                     + "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#64748b;\">Verification code</p>"
-                    + "<p style=\"margin:0;font-size:36px;font-weight:700;letter-spacing:8px;color:#0f172a;font-family:monospace;\">" + code + "</p>"
+                    + "<p style=\"margin:0;font-size:36px;font-weight:700;letter-spacing:8px;color:#0f172a;font-family:monospace;\">" + esc(code) + "</p>"
                     + "</div></div>"
                     + "<p style=\"text-align:center;color:#64748b;font-size:13px;\">This code will expire " + expiryMinutes + " minutes after it was sent.</p>"
                     + "<p style=\"color:#94a3b8;font-size:13px;\">If you didn't request this, you can safely ignore this email.</p>";
@@ -21,12 +37,12 @@ public class EmailTemplate {
 
     public static String buildPasswordResetCodeTemplate(String name, String code, int expiryMinutes, EmailBranding.Data branding) {
         String title = "Reset your password";
-        String body = "<p>Hi " + name + ",</p>"
-                    + "<p>We received a request to reset your " + branding.getCompanyName() + " password. Use the code below to continue.</p>"
+        String body = "<p>Hi " + esc(name) + ",</p>"
+                    + "<p>We received a request to reset your " + esc(branding.getCompanyName()) + " password. Use the code below to continue.</p>"
                     + "<div style=\"text-align:center;margin:30px 0;\">"
                     + "<div style=\"display:inline-block;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 40px;\">"
                     + "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#64748b;\">Reset code</p>"
-                    + "<p style=\"margin:0;font-size:36px;font-weight:700;letter-spacing:8px;color:#0f172a;font-family:monospace;\">" + code + "</p>"
+                    + "<p style=\"margin:0;font-size:36px;font-weight:700;letter-spacing:8px;color:#0f172a;font-family:monospace;\">" + esc(code) + "</p>"
                     + "</div></div>"
                     + "<p style=\"text-align:center;color:#64748b;font-size:13px;\">This code will expire " + expiryMinutes + " minutes after it was sent.</p>"
                     + "<p style=\"color:#94a3b8;font-size:13px;\">If you didn't request this, you can safely ignore this email - your password won't change.</p>";
@@ -35,15 +51,15 @@ public class EmailTemplate {
 
     public static String buildTicketAssignedTemplate(String name, String ticketTitle, EmailBranding.Data branding) {
         String title = "New Ticket Assigned";
-        String body = "<p>Dear " + name + ",</p>"
-                    + "<p>A new service desk ticket (<strong>" + ticketTitle + "</strong>) has been assigned to you.</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
+                    + "<p>A new service desk ticket (<strong>" + esc(ticketTitle) + "</strong>) has been assigned to you.</p>"
                     + "<p>Please login to the portal to review and take action.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
     public static String buildSalaryRevisionTemplate(String name, EmailBranding.Data branding) {
         String title = "Salary Revision Notification";
-        String body = "<p>Dear " + name + ",</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
                     + "<p>Your salary structure has been revised.</p>"
                     + "<p>Please login to the employee portal to view your updated salary details.</p>";
         return wrapInTenantTheme(title, body, branding);
@@ -51,7 +67,7 @@ public class EmailTemplate {
 
     public static String buildTerminationTemplate(String name, EmailBranding.Data branding) {
         String title = "Offboarding Notification";
-        String body = "<p>Dear " + name + ",</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
                     + "<p>Your employment status has been updated to terminated. Thank you for your service.</p>"
                     + "<p>If you have any questions regarding your final settlement, please contact HR.</p>";
         return wrapInTenantTheme(title, body, branding);
@@ -59,7 +75,7 @@ public class EmailTemplate {
 
     public static String buildPerformanceReviewTemplate(String name, EmailBranding.Data branding) {
         String title = "Performance Review Scheduled";
-        String body = "<p>Dear " + name + ",</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
                     + "<p>A new performance review has been created for you.</p>"
                     + "<p>Please login to the portal to review your goals and feedback.</p>";
         return wrapInTenantTheme(title, body, branding);
@@ -67,52 +83,63 @@ public class EmailTemplate {
 
     public static String buildPaymentReceiptTemplate(String name, String invoiceNumber, String amount, EmailBranding.Data branding) {
         String title = "Payment Receipt";
-        String body = "<p>Dear " + name + ",</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
                     + "<p>Thank you for your payment!</p>"
-                    + "<p>We have successfully received your payment of <strong>" + amount + "</strong> for Invoice <strong>" + invoiceNumber + "</strong>.</p>";
+                    + "<p>We have successfully received your payment of <strong>" + esc(amount) + "</strong> for Invoice <strong>" + esc(invoiceNumber) + "</strong>.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
     public static String buildExpenseStatusTemplate(String name, String expenseTitle, String status, EmailBranding.Data branding) {
-        String title = "Expense Request " + status;
-        String body = "<p>Dear " + name + ",</p>"
-                    + "<p>Your expense request for <strong>" + expenseTitle + "</strong> has been <strong>" + status.toLowerCase() + "</strong>.</p>"
+        String safeStatus = status == null ? "" : status;
+        String title = "Expense Request " + safeStatus;
+        String body = "<p>Dear " + esc(name) + ",</p>"
+                    + "<p>Your expense request for <strong>" + esc(expenseTitle) + "</strong> has been <strong>" + esc(safeStatus.toLowerCase()) + "</strong>.</p>"
                     + "<p>Please login to the portal to view the details.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
-    // Candidates aren't platform users - they have no login, so a "View Offer"
-    // button pointing into the app (as the generic build() CTA template did,
-    // at a route - /offer - that never existed either) would only dead-end
-    // them at a login wall. HR still sends the actual offer details separately
-    // (email attachment/call); this just confirms it was sent.
+    // No CTA: candidates have no login, so a button into the app would dead-end them at a login wall.
     public static String buildOfferLetterTemplate(String name, EmailBranding.Data branding) {
-        String title = "Offer Letter from " + branding.getCompanyName();
-        String body = "<p>Hi " + name + ",</p>"
-                    + "<p>We are thrilled to offer you a position at " + branding.getCompanyName() + ".</p>"
+        String title = "Offer Letter from " + nullToEmpty(branding.getCompanyName());
+        String body = "<p>Hi " + esc(name) + ",</p>"
+                    + "<p>We are thrilled to offer you a position at " + esc(branding.getCompanyName()) + ".</p>"
                     + "<p>Our team will follow up with you directly with the full offer details and next steps.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
     public static String buildTicketCreatedTemplate(String name, String ticketTitle, EmailBranding.Data branding) {
         String title = "Support Ticket Created";
-        String body = "<p>Dear " + name + ",</p>"
-                    + "<p>We have received your support request: <strong>" + ticketTitle + "</strong>.</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
+                    + "<p>We have received your support request: <strong>" + esc(ticketTitle) + "</strong>.</p>"
                     + "<p>Our team is reviewing it and will get back to you shortly.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
     public static String buildTicketResolvedTemplate(String name, String ticketTitle, EmailBranding.Data branding) {
         String title = "Support Ticket Resolved";
-        String body = "<p>Dear " + name + ",</p>"
-                    + "<p>Your support ticket <strong>" + ticketTitle + "</strong> has been marked as resolved.</p>"
+        String body = "<p>Dear " + esc(name) + ",</p>"
+                    + "<p>Your support ticket <strong>" + esc(ticketTitle) + "</strong> has been marked as resolved.</p>"
                     + "<p>If you have any further questions or if the issue persists, please reply to this email or reopen the ticket.</p>";
         return wrapInTenantTheme(title, body, branding);
     }
 
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
+
+    private static String logoTag(EmailBranding.Data brand) {
+        String logoUrl = brand.getLogoUrl();
+        return (logoUrl == null || logoUrl.isBlank())
+                ? ""
+                : "<img src=\"" + esc(logoUrl) + "\" width=\"100\" style=\"margin-bottom:15px\" />";
+    }
+
+    /**
+     * @param title plain text (escaped here)
+     * @param body  trusted HTML fragment - every dynamic value in it must already be escaped
+     */
     private static String wrapInTenantTheme(String title, String body, EmailBranding.Data brand) {
-        String color = brand.getPrimaryColor() != null ? brand.getPrimaryColor() : "#2563eb";
-        String logoUrl = brand.getLogoUrl() != null ? brand.getLogoUrl() : "";
+        String color = safeColor(brand.getPrimaryColor());
 
         return """
                 <!DOCTYPE html>
@@ -141,13 +168,14 @@ public class EmailTemplate {
                 """
                 .formatted(
                         color,
-                        logoUrl.isEmpty() ? "" : "<img src=\"" + logoUrl + "\" width=\"100\" style=\"margin-bottom:15px\" />",
-                        title,
+                        logoTag(brand),
+                        esc(title),
                         body,
-                        brand.getCompanyName()
+                        esc(brand.getCompanyName())
                 );
     }
 
+    /** Generic call-to-action email; all arguments are plain text and escaped here, and a blank title falls back to the company name. */
     public String build(
             EmailBranding.Data brand,
             String title,
@@ -155,13 +183,8 @@ public class EmailTemplate {
             String buttonText,
             String buttonUrl
     ) {
-        String color = brand.getPrimaryColor() != null
-                ? brand.getPrimaryColor()
-                : "#2563eb";
-
-        String logoUrl = brand.getLogoUrl() != null
-                ? brand.getLogoUrl()
-                : "";
+        String color = safeColor(brand.getPrimaryColor());
+        String heading = (title == null || title.isBlank()) ? brand.getCompanyName() : title;
 
         return """
                 <!DOCTYPE html>
@@ -193,13 +216,13 @@ public class EmailTemplate {
                 """
                 .formatted(
                         color,
-                        logoUrl.isEmpty() ? "" : "<img src=\"" + logoUrl + "\" width=\"100\" style=\"margin-bottom:15px\" />",
-                        brand.getCompanyName(),
-                        message,
-                        buttonUrl,
+                        logoTag(brand),
+                        esc(heading),
+                        esc(message),
+                        esc(buttonUrl),
                         color,
-                        buttonText,
-                        brand.getCompanyName()
+                        esc(buttonText),
+                        esc(brand.getCompanyName())
                 );
     }
 }

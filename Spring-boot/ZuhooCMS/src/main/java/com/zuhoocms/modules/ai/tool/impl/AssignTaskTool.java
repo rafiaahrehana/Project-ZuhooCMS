@@ -2,6 +2,7 @@ package com.zuhoocms.modules.ai.tool.impl;
 
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.zuhoocms.modules.ai.tool.AiToolResult;
+import com.zuhoocms.modules.ai.tool.AiToolValidator;
 import com.zuhoocms.modules.hrm.employee.Employee;
 import com.zuhoocms.modules.hrm.employee.EmployeeRepository;
 import com.zuhoocms.modules.servicedesk.task.CreateTaskRequest;
@@ -22,6 +23,7 @@ import java.util.Map;
 public class AssignTaskTool implements AiTool {
 
     private final TaskService taskService;
+    private final AiToolValidator validator;
     private final EmployeeRepository employeeRepository;
 
     @Override
@@ -97,6 +99,10 @@ public class AssignTaskTool implements AiTool {
         }
 
         try {
+            String invalid = validator.problems(request);
+            if (invalid != null) {
+                return AiToolResult.failure("That doesn't look right - " + invalid + ".");
+            }
             TaskResponse response = taskService.addTask(requestId, request);
             return AiToolResult.ok(
                 "Added task \"" + response.getTitle() + "\" to request #" + requestId

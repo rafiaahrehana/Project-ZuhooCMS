@@ -16,7 +16,13 @@ public class SslCommerzProperties {
     private boolean sandbox = true;
     private String currency = "BDT";
 
+    /** Optional gateway host override (outbound proxy, or a local stub for testing the callback flow); blank derives it from {@link #sandbox}. */
+    private String baseUrl;
+
     public String baseUrl() {
+        if (baseUrl != null && !baseUrl.isBlank()) {
+            return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        }
         return sandbox ? "https://sandbox.sslcommerz.com" : "https://securepay.sslcommerz.com";
     }
 

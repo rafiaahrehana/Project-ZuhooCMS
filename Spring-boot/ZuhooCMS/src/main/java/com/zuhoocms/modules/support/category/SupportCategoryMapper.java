@@ -6,6 +6,7 @@ public class SupportCategoryMapper {
         return SupportCategoryResponse.builder()
                 .id(entity.getId())
                 .categoryName(entity.getCategoryName())
+                .name(entity.getCategoryName())
                 .description(entity.getDescription())
                 .active(entity.isActive())
                 .icon(entity.getIcon())

@@ -15,6 +15,20 @@ public interface CandidateRepository extends JpaRepository<Candidate, Long> {
 
     Optional<Candidate> findByCompanyIdAndEmailIgnoreCase(Long companyId, String email);
 
+    /** Tolerates legacy duplicates (the Optional variant above throws on them): oldest first. */
+    List<Candidate> findByCompanyIdAndEmailIgnoreCaseOrderByIdAsc(Long companyId, String email);
+
+    /** Transaction-scoped advisory lock on (company, lower(email)): two concurrent applications with the same email both missed the lookup and created duplicate Candidate rows. */
+    @Query(value = "SELECT 1 FROM (SELECT pg_advisory_xact_lock(CAST(:companyId AS int), hashtext(lower(:email)))) AS l",
+           nativeQuery = true)
+    Integer lockCompanyEmail(@Param("companyId") Long companyId, @Param("email") String email);
+
+    /** Application counts for a page of candidates in one grouped query. */
+    @Query("SELECT a.candidate.id, COUNT(a) FROM JobApplication a "
+        + "WHERE a.company.id = :companyId AND a.candidate.id IN :candidateIds GROUP BY a.candidate.id")
+    List<Object[]> countApplicationsByCandidate(@Param("companyId") Long companyId,
+                                                @Param("candidateIds") java.util.Collection<Long> candidateIds);
+
     @Query("select c from Candidate c where c.company.id = :companyId and ("
         + "lower(c.name) like lower(concat('%', :q, '%')) "
         + "or lower(c.email) like lower(concat('%', :q, '%')) "

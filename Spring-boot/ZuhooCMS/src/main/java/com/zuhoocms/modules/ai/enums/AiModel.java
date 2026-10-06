@@ -2,9 +2,7 @@ package com.zuhoocms.modules.ai.enums;
 
 public enum AiModel {
 
-    // Google's "-latest" aliases auto-track the current available model
-    // (2-week deprecation notice before the underlying version changes),
-    // instead of pinning to a dated version that Google eventually retires.
+    // Google's "-latest" aliases auto-track the current model, instead of pinning a dated version Google eventually retires.
     GEMINI_2_5_FLASH("gemini-flash-latest"),
     GEMINI_2_5_PRO("gemini-pro-latest"),
     GPT_4O("gpt-4o"),

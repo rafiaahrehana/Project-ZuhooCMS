@@ -27,6 +27,9 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long> 
 
     List<Opportunity> findByCompanyIdAndStageNotInOrderByExpectedCloseDateAsc(Long companyId, List<OpportunityStage> stages);
 
+    // Paged counterpart for the pipeline list's default view: what is still in play, without a year of closed deals in front of it.
+    Page<Opportunity> findByCompanyIdAndStageNotIn(Long companyId, List<OpportunityStage> stages, Pageable pageable);
+
     @Query("SELECT o FROM Opportunity o WHERE o.company.id = :companyId AND " +
            "(LOWER(o.name) LIKE LOWER(CONCAT('%', :keyword, '%')) ESCAPE '!' OR " +
            "LOWER(o.client.clientCompanyName) LIKE LOWER(CONCAT('%', :keyword, '%')) ESCAPE '!') AND " +
@@ -43,20 +46,19 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, Long> 
         @Param("closedStages") List<OpportunityStage> closedStages,
         @Param("cutoff") java.time.LocalDateTime cutoff, Pageable pageable);
 
-    // Cross-company (runs outside an HTTP request context - scheduler), matching
-    // the convention used by LicenseExpiryScheduler. staleNotifiedAt IS NULL is
-    // what makes this fire once per staleness period, not every scheduler run.
+    // Cross-company: runs from a scheduler with no request context, as in LicenseExpiryScheduler. staleNotifiedAt IS NULL makes it fire once per staleness period, not every run.
     @Query("SELECT o FROM Opportunity o WHERE o.stage NOT IN :closedStages AND o.deleted = false " +
            "AND ((o.lastActivityAt IS NOT NULL AND o.lastActivityAt < :cutoff) " +
            "OR (o.lastActivityAt IS NULL AND o.createdAt < :cutoff)) " +
            "AND o.staleNotifiedAt IS NULL AND o.owner IS NOT NULL")
-    List<Opportunity> findNewlyStaleOpportunities(@Param("closedStages") List<OpportunityStage> closedStages,
-        @Param("cutoff") java.time.LocalDateTime cutoff);
+    // Paged: unpaged, the scheduler loaded every company's matching rows into one transaction, growing without bound as tenants are added.
+    Page<Opportunity> findNewlyStaleOpportunities(@Param("closedStages") List<OpportunityStage> closedStages,
+        @Param("cutoff") java.time.LocalDateTime cutoff, Pageable pageable);
 
-    // Pipeline summary: count, total and weighted value per stage
+    // Pipeline summary per stage; the divisor is the integer 100, not 100.0, which promoted the expression to floating point and returned 1234.5600000000002.
     @Query("SELECT o.stage AS stage, COUNT(o) AS dealCount, " +
            "COALESCE(SUM(o.amount), 0) AS totalAmount, " +
-           "COALESCE(SUM(o.amount * o.probability / 100.0), 0) AS weightedAmount " +
+           "COALESCE(SUM(o.amount * o.probability / 100), 0) AS weightedAmount " +
            "FROM Opportunity o WHERE o.company.id = :companyId AND o.deleted = false " +
            "GROUP BY o.stage")
     List<PipelineStageSummary> summarizePipeline(@Param("companyId") Long companyId);

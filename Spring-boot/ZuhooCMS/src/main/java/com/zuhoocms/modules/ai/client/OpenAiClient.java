@@ -4,7 +4,6 @@ import com.zuhoocms.modules.ai.exception.AiProviderException;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.*;
@@ -26,11 +25,8 @@ public class OpenAiClient implements AiHttpClient {
     @Qualifier("aiRestTemplate")
     private final RestTemplate aiRestTemplate;
 
-    @Setter
-    private String apiKey;
-
     @Override
-    public String call(String prompt, String model, double temperature, int maxTokens) {
+    public String call(String apiKey, String prompt, String model, double temperature, int maxTokens) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(apiKey);
@@ -65,16 +61,13 @@ public class OpenAiClient implements AiHttpClient {
     }
 
     private boolean isRetryable(Exception e) {
-        if (e instanceof HttpClientErrorException client) {
-            return client.getStatusCode().value() == 429;
-        }
-        return true;
+        return AiRetryPolicy.isRetryable(e);
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Override
-    public AiToolCallOrText callWithTools(String prompt, String model, double temperature, int maxTokens,
+    public AiToolCallOrText callWithTools(String apiKey, String prompt, String model, double temperature, int maxTokens,
                                            List<AiTool> tools, List<AiToolExchange> priorExchanges) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

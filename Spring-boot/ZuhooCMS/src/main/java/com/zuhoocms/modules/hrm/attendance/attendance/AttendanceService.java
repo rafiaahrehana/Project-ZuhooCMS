@@ -20,11 +20,9 @@ public interface AttendanceService {
     /** The calling user's own Present/Absent/Half Day/On Leave/Holiday/Week Off/Worked Hours breakdown for a month. */
     MyAttendanceMonthlySummaryResponse getMyMonthlySummary(int year, int month);
 
-    // ── Admin / HR actions ───────────────────────────────────────────────────
     /** Manual entry: create an attendance record for any date (admin / HR only). */
     AttendanceResponse createManual(AttendanceRequest request);
 
-    // ── Reads ────────────────────────────────────────────────────────────────
     AttendanceResponse getById(Long id);
 
     AttendanceResponse getByEmployeeAndDate(Long employeeId, LocalDate date);
@@ -45,14 +43,12 @@ public interface AttendanceService {
 
     List<AttendanceResponse> getAbsentees(LocalDate date);
 
-    // ── Dashboard counts ─────────────────────────────────────────────────────
     long countPresent(Long companyId, LocalDate date);
 
     long countLate(Long companyId, LocalDate date);
 
     long countAbsent(Long companyId, LocalDate date);
 
-    // ── Mutations ────────────────────────────────────────────────────────────
     void updateStatus(Long id, AttendanceStatus status);
 
     void approveAttendance(Long id, String approverName);

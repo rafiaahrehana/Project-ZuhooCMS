@@ -57,21 +57,14 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Seeds the read-only demo tenant that "See Demo" on the landing page drops
- * visitors into.
- *
- * Runs at startup when app.demo.enabled=true and the demo subdomain does not
- * exist yet, so wiping the database (the plan for the AWS deploy) recreates the
- * demo automatically on next boot.
- *
- * The cast is hand-written rather than faker-generated on purpose: a curated
- * Bangladeshi company reads like a real business, random names attached to
- * random numbers read like a test database. All dates are relative to today so
- * the demo looks freshly alive in any month.
+ * Seeds the read-only demo tenant behind "See Demo" on the landing page.
+ * Runs at startup when app.demo.enabled=true and the demo subdomain is free, so wiping the database recreates it on next boot.
+ * The cast is hand-written and all dates are relative to today, so the demo reads as a real business in any month.
  */
 @Slf4j
 @Component
@@ -109,13 +102,17 @@ public class DemoDataSeeder implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        // Keyed on the demo owner, not the subdomain: the demo tenant is whatever company the demo user owns.
+        if (userRepository.findByEmail(DEMO_OWNER_EMAIL).isPresent()) {
+            return;
+        }
         if (companyRepository.existsBySubdomain(DEMO_SUBDOMAIN)) {
+            log.warn("Demo tenant not seeded: subdomain '{}' is held by another company", DEMO_SUBDOMAIN);
             return;
         }
         log.info("Seeding demo tenant '{}'...", DEMO_SUBDOMAIN);
         seedCompanyAndOwner();
-        // Persist the default payroll policy while we are in a read-write
-        // transaction - the salary sheet's read path must never have to.
+        // Persist the default payroll policy here, in a read-write transaction: the salary sheet's read path must not have to.
         payrollSettingsService.getOrCreate(company.getId());
         List<Department> departments = seedDepartments();
         seedStaff(departments);
@@ -130,16 +127,12 @@ public class DemoDataSeeder implements ApplicationRunner {
         log.info("Demo tenant seeded: company id {}, {} employees.", company.getId(), staff.size());
     }
 
-    // ── Company ─────────────────────────────────────────────────
-
     private void seedCompanyAndOwner() {
         owner = userRepository.save(User.builder()
                 .firstName("Tanvir Ahmed")
                 .lastName("Chowdhury")
                 .email(DEMO_OWNER_EMAIL)
-                // Random password, never told to anyone: the demo session
-                // endpoint mints tokens directly, and nobody should be able to
-                // log into the demo account with credentials.
+                // Random password nobody is told: the demo session endpoint mints tokens directly, so credential login must not work.
                 .password(passwordEncoder.encode(java.util.UUID.randomUUID().toString()))
                 .role(Role.COMPANY_OWNER)
                 .active(true)
@@ -172,8 +165,6 @@ public class DemoDataSeeder implements ApplicationRunner {
         }
         return out;
     }
-
-    // ── People ──────────────────────────────────────────────────
 
     private record Person(String first, String last, String title, int dept, long basic) {}
 
@@ -219,8 +210,7 @@ public class DemoDataSeeder implements ApplicationRunner {
                     .build());
             staff.add(emp);
 
-            // Approved, effective-dated structure - what payroll and the
-            // salary sheet actually read.
+            // Approved, effective-dated structure - what payroll and the salary sheet actually read.
             BigDecimal gross = basic.add(pct(basic, 40)).add(pct(basic, 10)).add(pct(basic, 10));
             salaryStructureRepository.save(SalaryStructure.builder()
                     .employee(emp).company(company)
@@ -239,14 +229,18 @@ public class DemoDataSeeder implements ApplicationRunner {
     }
 
     private Shift seedShift() {
+        LocalTime start = LocalTime.of(9, 0);
+        LocalTime end = LocalTime.of(18, 0);
         Shift shift = shiftRepository.save(Shift.builder()
                 .name("General Shift")
                 .shiftType(ShiftType.MORNING)
-                .startTime(LocalTime.of(9, 0))
-                .endTime(LocalTime.of(18, 0))
+                .startTime(start)
+                .endTime(end)
                 .gracePeriodMinutes(10)
                 .weeklyOffDays("FRI,SAT")
                 .active(true)
+                // workingMinutes is persisted, normally computed by create/update, so seeded rows must set it or the shift shows "09:00 - 18:00 - 0h".
+                .workingMinutes(ChronoUnit.MINUTES.between(start, end))
                 .company(company)
                 .build());
         for (Employee emp : staff) {
@@ -258,18 +252,9 @@ public class DemoDataSeeder implements ApplicationRunner {
         return shift;
     }
 
-    /**
-     * ~40 working days back from yesterday. Mostly present, a deterministic
-     * scatter of lates and a few absences, so the HR dashboard tiles, the Late
-     * column and the salary sheet's absence deductions all have real shape.
-     * Deterministic (keyed on day/employee index), not random: the same demo
-     * should look the same on every reseed.
-     */
+    /** ~40 working days back from yesterday; lates/absences are keyed on day+employee index, not random, so every reseed looks the same. */
     private void seedAttendance(Shift shift) {
-        // Today gets check-ins with no check-out (the team is mid-shift), so
-        // "Present Today" on the HR dashboard is alive on the day the demo is
-        // viewed. Safe from the absentee scheduler, which only settles past
-        // days. Skipped on the weekly off days, honestly.
+        // Today gets check-ins with no check-out so "Present Today" is alive; safe from the absentee scheduler, which only settles past days.
         DayOfWeek today = LocalDate.now().getDayOfWeek();
         if (today != DayOfWeek.FRIDAY && today != DayOfWeek.SATURDAY) {
             int e = 0;
@@ -381,8 +366,6 @@ public class DemoDataSeeder implements ApplicationRunner {
         }
     }
 
-    // ── CRM ─────────────────────────────────────────────────────
-
     private List<Client> seedClients() {
         List<Client> out = new ArrayList<>();
         String[][] rows = {
@@ -433,8 +416,7 @@ public class DemoDataSeeder implements ApplicationRunner {
             lead.setAssignedTo(staff.get(8));
             Lead saved = leadRepository.save(lead);
 
-            // Two follow-ups due this week feed the dashboard's list; one is
-            // already overdue so the notify-once scheduler has something real.
+            // Two follow-ups due this week, one already overdue so the notify-once scheduler has something real.
             if (i < 2) {
                 crmActivityRepository.save(CrmActivity.builder()
                         .type(CrmActivityType.CALL)
@@ -503,11 +485,8 @@ public class DemoDataSeeder implements ApplicationRunner {
         return opportunityRepository.save(o);
     }
 
-    // ── Finance ─────────────────────────────────────────────────
-
     private void seedFinance(List<Client> clients) {
-        // Invoices: paid, partially paid and one overdue, so every status badge
-        // and the finance dashboard's outstanding tile are real.
+        // Paid, partially paid and overdue, so every status badge and the outstanding tile are real.
         invoice("DEMO-INV-0001", clients.get(0), 450_000, InvoiceStatus.PAID, -40, -10,
                 "Annual maintenance contract - year 1");
         invoice("DEMO-INV-0002", clients.get(1), 300_000, InvoiceStatus.PAID, -35, -20,
@@ -546,8 +525,7 @@ public class DemoDataSeeder implements ApplicationRunner {
             i++;
         }
 
-        // Budgets per expense category; software deliberately runs slightly
-        // over so the budget bar shows a genuine warning, not a decorated one.
+        // SOFTWARE is deliberately budgeted under its expenses so the budget bar shows a genuine warning.
         int year = LocalDate.now().getYear();
         budget("RENT", year, 1_100_000);
         budget("UTILITIES", year, 300_000);
@@ -595,8 +573,6 @@ public class DemoDataSeeder implements ApplicationRunner {
         b.setAmount(BigDecimal.valueOf(amount));
         budgetRepository.save(b);
     }
-
-    // ── Helpers ─────────────────────────────────────────────────
 
     private static BigDecimal pct(BigDecimal base, int percent) {
         return base.multiply(BigDecimal.valueOf(percent))

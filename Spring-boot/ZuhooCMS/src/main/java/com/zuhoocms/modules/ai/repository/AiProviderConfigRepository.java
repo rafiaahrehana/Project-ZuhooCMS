@@ -11,9 +11,7 @@ public interface AiProviderConfigRepository extends JpaRepository<AiProviderConf
 
     Optional<AiProviderConfig> findByCompanyIdAndActiveTrue(Long companyId);
 
-    // A company can save one config per provider (uq_ai_config_company_provider) -
-    // this is the upsert lookup so re-saving the same provider updates its existing
-    // row instead of colliding with the unique constraint.
+    // Upsert lookup for uq_ai_config_company_provider: re-saving a provider updates its row instead of colliding with the unique constraint.
     Optional<AiProviderConfig> findByCompanyIdAndAiProviderType(Long companyId, AiProviderType aiProviderType);
 
     List<AiProviderConfig> findByCompanyIdOrderByAiProviderType(Long companyId);

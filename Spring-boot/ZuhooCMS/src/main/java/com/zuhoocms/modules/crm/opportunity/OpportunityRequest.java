@@ -17,8 +17,7 @@ public class OpportunityRequest {
 
     private String description;
 
-    // Not @NotNull: required for direct create() (checked in OpportunityServiceImpl),
-    // but an Opportunity created from a Lead (createFromLead) has no Client until it's Won.
+    // Not @NotNull: create() requires it (checked in OpportunityServiceImpl), but createFromLead has no Client until the deal is Won.
     private Long clientId;
 
     private Long contactId;

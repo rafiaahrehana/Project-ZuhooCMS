@@ -5,11 +5,6 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
-/**
- * FIXES:
- * findByServiceRequestId* — resolves now that base relation is 'serviceRequest' (was 'request')
- * findBy*Visibility*      — resolves now that base field is 'visibility' (was 'boolean internal')
- */
 public interface RequestCommentRepository extends JpaRepository<RequestComment, Long> {
 
     Page<RequestComment> findByServiceRequestIdOrderByCreatedAtDesc(

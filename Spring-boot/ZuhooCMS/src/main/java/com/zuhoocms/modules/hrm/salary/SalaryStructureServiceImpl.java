@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 @Slf4j
@@ -40,15 +41,26 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
     public SalaryStructureResponse create(SalaryStructureRequest request) {
         authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_CREATE);
         Long companyId = requireCompanyId();
-        Employee employee = employeeRepository.findByIdAndCompanyId(request.getEmployeeId(), companyId)
+        if (request.getEffectiveFrom() == null) {
+            throw new BadRequestException("Effective from date is required");
+        }
+        // Row lock on the employee: two simultaneous creates otherwise both find the same (or no) active structure and leave two open-ended structures behind.
+        Employee employee = salaryStructureRepository.lockEmployee(request.getEmployeeId(), companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + request.getEmployeeId()));
 
-        // Expire any current active structure
-        salaryStructureRepository.findByEmployeeIdAndEffectiveToIsNull(request.getEmployeeId())
-            .ifPresent(existing -> {
-                existing.setEffectiveTo(request.getEffectiveFrom().minusDays(1));
-                salaryStructureRepository.save(existing);
-            });
+        List<SalaryStructure> open = salaryStructureRepository
+            .findByCompanyIdAndEmployeeIdAndEffectiveToIsNullOrderByEffectiveFromDesc(companyId, employee.getId());
+        for (SalaryStructure existing : open) {
+            if (!request.getEffectiveFrom().isAfter(existing.getEffectiveFrom())) {
+                throw new BadRequestException("The new structure must start after the current one, which starts on "
+                    + existing.getEffectiveFrom());
+            }
+        }
+        // Expire current structures the day before the new one starts; more than one open-ended row exists only in legacy data, and all are closed.
+        for (SalaryStructure existing : open) {
+            existing.setEffectiveTo(request.getEffectiveFrom().minusDays(1));
+            salaryStructureRepository.save(existing);
+        }
 
         SalaryStructure s = SalaryStructure.builder()
             .employee(employee)
@@ -67,18 +79,12 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
             .approvedBy(securityUtil.getCurrentUser())
             .build();
 
-        salaryStructureRepository.save(s);
+        salaryStructureRepository.saveAndFlush(s);
 
-        employee.setBasicSalary(request.getBasicSalary());
-        employee.setHouseRent(orZero(request.getHouseRent()));
-        employee.setMedicalAllowance(orZero(request.getMedicalAllowance()));
-        employee.setTransportAllowance(orZero(request.getTransportAllowance()));
-        employee.setSalaryStructure(s);
-        employeeRepository.save(employee);
+        // A future-dated structure must not change the profile yet; the profile follows today's structure, and SalaryStructureActivationScheduler applies it on its start date.
+        syncEmployeeToStructureInEffect(employee, companyId);
 
-        // Best-effort notification — a failed email must NEVER roll back the salary
-        // structure that was just saved. (Previously this re-threw, aborting the whole
-        // @Transactional create, so structures silently never persisted.)
+        // Best-effort notification: re-throwing aborted the @Transactional create, so a failed email silently discarded the saved structure.
         if (employee.getUser() != null) {
             try {
                 Company fullCompany = companyRepository.findById(companyId).orElse(null);
@@ -100,14 +106,36 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
     @Transactional
     public SalaryStructureResponse update(Long id, SalaryStructureRequest request) {
         authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_CREATE);
+        Long companyId = requireCompanyId();
         SalaryStructure s = findInTenant(id);
 
-        // Only the current (active) structure may be edited. Superseded historical
-        // structures are locked to preserve payroll history — supersede them with a
-        // new structure instead.
+        // Only the active structure may be edited; superseded ones are locked to preserve payroll history.
         if (s.getEffectiveTo() != null) {
             throw new BadRequestException(
                 "Only the current salary structure can be edited. Create a new one to supersede this.");
+        }
+        if (request.getEffectiveFrom() == null) {
+            throw new BadRequestException("Effective from date is required");
+        }
+        Long employeeId = s.getEmployee().getId();
+        Employee employee = salaryStructureRepository.lockEmployee(employeeId, companyId)
+            .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + employeeId));
+
+        // Moving effectiveFrom keeps ranges contiguous: the predecessor is re-closed the day before the new start, which may not reach back to its own start or the range inverts.
+        if (!request.getEffectiveFrom().equals(s.getEffectiveFrom())) {
+            SalaryStructure predecessor = salaryStructureRepository
+                .findByCompanyIdAndEmployeeIdOrderByEffectiveFromDesc(companyId, employeeId).stream()
+                .filter(other -> !other.getId().equals(s.getId()))
+                .filter(other -> other.getEffectiveTo() != null)
+                .findFirst().orElse(null);
+            if (predecessor != null) {
+                if (!request.getEffectiveFrom().isAfter(predecessor.getEffectiveFrom())) {
+                    throw new BadRequestException("Effective from must be after the previous structure's start ("
+                        + predecessor.getEffectiveFrom() + ")");
+                }
+                predecessor.setEffectiveTo(request.getEffectiveFrom().minusDays(1));
+                salaryStructureRepository.save(predecessor);
+            }
         }
 
         s.setEffectiveFrom(request.getEffectiveFrom());
@@ -121,17 +149,10 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
         s.setProvidentFund(orZero(request.getProvidentFund()));
         s.setTaxDeduction(orZero(request.getTaxDeduction()));
         s.setNotes(request.getNotes());
-        salaryStructureRepository.save(s);
+        salaryStructureRepository.saveAndFlush(s);
 
-        // Keep the employee's denormalized salary fields in sync.
-        Employee employee = s.getEmployee();
-        if (employee != null) {
-            employee.setBasicSalary(request.getBasicSalary());
-            employee.setHouseRent(orZero(request.getHouseRent()));
-            employee.setMedicalAllowance(orZero(request.getMedicalAllowance()));
-            employee.setTransportAllowance(orZero(request.getTransportAllowance()));
-            employeeRepository.save(employee);
-        }
+        // Syncs the employee's denormalized salary fields with the structure in effect today, not necessarily this one if it is future-dated.
+        syncEmployeeToStructureInEffect(employee, companyId);
 
         return SalaryStructureMapper.toSalaryStructureResponse(s);
     }
@@ -139,6 +160,7 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
     @Override
     @Transactional(readOnly = true)
     public SalaryStructureResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.SALARY_STRUCTURE_VIEW);
         return SalaryStructureMapper.toSalaryStructureResponse(findInTenant(id));
     }
 
@@ -146,19 +168,18 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
     @Transactional(readOnly = true)
     public SalaryStructureResponse getActiveForEmployee(Long employeeId) {
         requireViewOrOwn(employeeId);
-        SalaryStructure s = salaryStructureRepository.findByEmployeeIdAndEffectiveToIsNull(employeeId)
+        Long companyId = requireCompanyId();
+        // The structure in effect today; if only a future-dated one exists so far, that one.
+        SalaryStructure s = salaryStructureRepository
+            .findInEffectForEmployeeOnDate(companyId, employeeId, LocalDate.now()).stream().findFirst()
+            .or(() -> salaryStructureRepository
+                .findByCompanyIdAndEmployeeIdAndEffectiveToIsNullOrderByEffectiveFromDesc(companyId, employeeId)
+                .stream().findFirst())
             .orElseThrow(() -> new ResourceNotFoundException("No active salary structure for employee: " + employeeId));
         return SalaryStructureMapper.toSalaryStructureResponse(s);
     }
 
-    /**
-     * Unlike listAll/listForEmployee (which check SALARY_STRUCTURE_VIEW),
-     * these two per-employee lookups had no check at all - any authenticated
-     * colleague could read anyone's exact basic salary, allowances, PF, and
-     * full structure history just by supplying an employeeId. An employee
-     * viewing their own structure is still allowed with no special
-     * permission, same self-service carve-out used for payslips/attendance.
-     */
+    /** These per-employee lookups had no permission check, so any colleague could read anyone's salary by employeeId; viewing your own still needs none, as for payslips and attendance. */
     private void requireViewOrOwn(Long employeeId) {
         if (authorizationService.hasPermission(PermissionCode.SALARY_STRUCTURE_VIEW)) {
             return;
@@ -191,7 +212,8 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
     @Transactional(readOnly = true)
     public List<SalaryStructureResponse> historyForEmployee(Long employeeId) {
         requireViewOrOwn(employeeId);
-        return salaryStructureRepository.findByEmployeeIdOrderByEffectiveFromDesc(employeeId)
+        return salaryStructureRepository
+            .findByCompanyIdAndEmployeeIdOrderByEffectiveFromDesc(requireCompanyId(), employeeId)
             .stream().map(SalaryStructureMapper::toSalaryStructureResponse).toList();
     }
 
@@ -204,6 +226,34 @@ public class SalaryStructureServiceImpl implements SalaryStructureService {
             throw new BadRequestException("Cannot delete the currently active salary structure. Supersede it by creating a new one.");
         }
         s.softDelete();
+    }
+
+    @Override
+    @Transactional
+    public int applyDueStructures() {
+        int applied = 0;
+        for (SalaryStructure s : salaryStructureRepository.findDueNotYetApplied(LocalDate.now())) {
+            applyToEmployee(s.getEmployee(), s);
+            applied++;
+        }
+        if (applied > 0) log.info("Applied {} salary structure(s) whose effective date has arrived", applied);
+        return applied;
+    }
+
+    /** Copies the structure in effect today (if any) onto the employee profile; leaves the profile unchanged otherwise. */
+    private void syncEmployeeToStructureInEffect(Employee employee, Long companyId) {
+        salaryStructureRepository.findInEffectForEmployeeOnDate(companyId, employee.getId(), LocalDate.now())
+            .stream().findFirst()
+            .ifPresent(current -> applyToEmployee(employee, current));
+    }
+
+    private void applyToEmployee(Employee employee, SalaryStructure s) {
+        employee.setBasicSalary(s.getBasicSalary());
+        employee.setHouseRent(orZero(s.getHouseRent()));
+        employee.setMedicalAllowance(orZero(s.getMedicalAllowance()));
+        employee.setTransportAllowance(orZero(s.getTransportAllowance()));
+        employee.setSalaryStructure(s);
+        employeeRepository.save(employee);
     }
 
     private SalaryStructure findInTenant(Long id) {

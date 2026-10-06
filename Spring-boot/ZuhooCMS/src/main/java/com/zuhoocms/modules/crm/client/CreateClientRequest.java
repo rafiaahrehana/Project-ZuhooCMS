@@ -11,8 +11,7 @@ import java.math.BigDecimal;
 @Data
 public class CreateClientRequest {
 
-    // First/last name, email and password are only required when provisionPortalLogin=true
-    // (validated in ClientServiceImpl, not here, since they're conditionally required).
+    // Name, email and password are required only when provisionPortalLogin=true, so they are validated in ClientServiceImpl rather than here.
     @Size(min = 2, max = 50, message = "First name must be between 2 and 50 characters")
     private String firstName;
 
@@ -25,9 +24,7 @@ public class CreateClientRequest {
     @Size(min = 8, message = "Password must be at least 8 characters")
     private String password;
 
-    // When true (default false), a portal login (User) is created and linked to the Client
-    // in the same step. When false, the Client is created without a User - a login can be
-    // provisioned later. See ClientServiceImpl.create().
+    // True creates and links a portal login (User) in the same step; false leaves the Client without one, to be provisioned later. See ClientServiceImpl.create().
     private Boolean provisionPortalLogin = false;
 
     @Size(max = 30, message = "Phone must not exceed 30 characters")

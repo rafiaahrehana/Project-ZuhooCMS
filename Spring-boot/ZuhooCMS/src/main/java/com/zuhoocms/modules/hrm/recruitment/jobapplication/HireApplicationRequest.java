@@ -8,12 +8,7 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-/**
- * HR-supplied onboarding details for hiring an OFFERED candidate.
- * Applicant name/email/phone come from the JobApplication itself; everything
- * here is what the application doesn't already know (portal password, salary,
- * org placement) — same split CreateEmployeeRequest uses for a manual hire.
- */
+/** HR-supplied onboarding details for hiring an OFFERED candidate: name/email/phone come from the JobApplication, this carries what it doesn't know (portal password, salary, org placement). */
 @Data
 public class HireApplicationRequest {
     @NotBlank(message = "Password is required")

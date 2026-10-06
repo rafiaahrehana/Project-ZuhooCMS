@@ -13,9 +13,11 @@ public interface SupportMessageService {
     SupportMessageResponse update(Long id, SupportMessageRequest request);
     SupportMessageResponse delete(Long id);
 
-    // CLIENT-facing: posts/reads messages on the client's own CUSTOMER_SUPPORT
-    // ticket. isInternal is always forced false here - a client can never see or
-    // create an internal staff note.
+    // Client-facing: isInternal is always forced false, so a client can never see or create an internal staff note.
     SupportMessageResponse createForClient(SupportMessageRequest request);
     List<SupportMessageResponse> getClientMessages(Long ticketId);
+
+    // Company-side Client Chat, 404 for any other ticket; same paths/shapes as servicedesk-service.
+    List<SupportMessageResponse> getClientTicketMessagesForCompany(Long ticketId);
+    SupportMessageResponse replyToClientTicket(Long ticketId, ClientTicketReplyRequest request);
 }

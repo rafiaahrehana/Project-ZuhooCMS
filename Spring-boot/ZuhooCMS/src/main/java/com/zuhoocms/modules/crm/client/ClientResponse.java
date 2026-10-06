@@ -30,7 +30,6 @@ public class ClientResponse {
     private LocalDate onboardedAt;
     private LocalDateTime createdAt;
 
-    // Account-level fields
     private String billingAddress;
     private String shippingAddress;
     private String tags;
@@ -42,18 +41,10 @@ public class ClientResponse {
     // Normalized shared-taxonomy tags (distinct from the legacy free-text `tags` field above).
     private java.util.List<com.zuhoocms.modules.crm.tag.TagResponse> tagList;
 
-    // Set only right after creation, when a possible-duplicate Client was found.
-    // A nudge, not a block - the Client is created either way.
+    // Set only right after creation when a possible duplicate was found; a nudge, not a block, since the Client is created either way.
     private com.zuhoocms.modules.crm.duplicate.DuplicateMatch possibleDuplicate;
 
-    /**
-     * Only populated by inviteToPortal(): whether the invite email actually left
-     * the server. Null on every other response.
-     *
-     * The login is created either way, so a false here means "account ready, but
-     * the client has not been told" - which needs a different message to staff
-     * than plain success.
-     */
+    /** Only populated by inviteToPortal(), null elsewhere: the login is created either way, so false means "account ready, client not told" and needs its own message to staff. */
     private Boolean inviteEmailSent;
     /** Why the invite email failed, when inviteEmailSent is false. */
     private String inviteEmailError;

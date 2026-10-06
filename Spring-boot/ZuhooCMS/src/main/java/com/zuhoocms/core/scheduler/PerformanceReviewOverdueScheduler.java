@@ -14,19 +14,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * PerformanceReview.reviewPeriodEnd is captured when a review is created but,
- * unlike almost every other deadline in this codebase, nothing ever flagged one
- * passing with the review still not finalised - a "review every 6 months"
- * policy had nothing in the system enforcing or even flagging it, entirely
- * tracked outside the app.
- */
+/** Flags a PerformanceReview.reviewPeriodEnd that passed with the review still not finalised; nothing else in the app tracks that. */
 @Component
 @RequiredArgsConstructor
 public class PerformanceReviewOverdueScheduler {
 
-    // Grace period after the review period ends before nagging - the manager
-    // needs time to actually conduct the review, not get flagged the day after.
+    // Grace period so the manager has time to conduct the review before being flagged.
     private static final int GRACE_DAYS = 14;
 
     private final PerformanceReviewRepository reviewRepository;

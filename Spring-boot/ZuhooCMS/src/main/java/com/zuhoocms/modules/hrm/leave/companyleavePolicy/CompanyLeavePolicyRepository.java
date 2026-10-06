@@ -6,6 +6,7 @@ import com.zuhoocms.enums.LeaveType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -19,6 +20,17 @@ public interface CompanyLeavePolicyRepository extends JpaRepository<CompanyLeave
     List<CompanyLeavePolicy> findByCompanyIdAndActiveTrue(Long companyId);
 
     Page<CompanyLeavePolicy> findByCompanyId(Long companyId, Pageable pageable);
+
+    Optional<CompanyLeavePolicy> findByCompanyIdAndLeaveTypeAndEmploymentType(
+        Long companyId, LeaveType leaveType, EmploymentType employmentType);
+
+    /** Un-deletes a soft-deleted row so create can reuse it instead of hitting the unique constraint. */
+    @Modifying
+    @Query(nativeQuery = true, value = "update company_leave_policies set deleted = false, deleted_at = null "
+        + "where company_id = :companyId and leave_type = :leaveType and employment_type = :employmentType and deleted = true")
+    int reviveDeleted(@Param("companyId") Long companyId,
+                      @Param("leaveType") String leaveType,
+                      @Param("employmentType") String employmentType);
 
     @Query("""
         SELECT p FROM CompanyLeavePolicy p

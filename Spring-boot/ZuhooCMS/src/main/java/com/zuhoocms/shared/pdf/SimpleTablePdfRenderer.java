@@ -8,12 +8,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
-/**
- * Renders a simple title + table as a downloadable PDF (list exports - employees, leads,
- * etc). Builds a hand-written XHTML string (openhtmltopdf requires well-formed XML input,
- * not lenient HTML5) and converts it with openhtmltopdf/PDFBox, same approach as
- * InvoicePdfService but generic enough to share across any "export this list" endpoint.
- */
+/** Renders a title + table as a PDF for list exports; the markup is hand-written XHTML because openhtmltopdf requires well-formed XML, not lenient HTML5. */
 @Component
 public class SimpleTablePdfRenderer {
 

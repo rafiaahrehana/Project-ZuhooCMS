@@ -29,27 +29,14 @@ public class CreateServiceRequestRequest {
 
     private LocalDateTime slaDeadline;
 
-    /**
-     * Optional — if the client is raising this request under an existing
-     * active subscription, provide the subscription ID here.
-     * The service will validate quota and decrement requestsUsed.
-     * When provided, agreedPrice is set to ZERO (included in package).
-     */
+    /** Optional: when set, quota is consumed and agreedPrice becomes ZERO (included in the package). */
     private Long subscriptionId;
 
-    /**
-     * Payment choice and method — reserved for future payment gateway integration.
-     * Currently not used in the create flow; the backend generates an invoice
-     * automatically when agreedPrice > 0.
-     */
+    /** Not read by the create flow: an invoice is generated automatically when agreedPrice > 0. */
     private com.zuhoocms.enums.PaymentChoice paymentChoice;
 
     private com.zuhoocms.enums.PaymentMethod paymentMethod;
 
-    /**
-     * Answers to the service's dynamic form fields (defined by the admin
-     * per service), keyed by ServiceFormField id. Required fields are
-     * validated server-side against the service's field definitions.
-     */
+    /** Keyed by ServiceFormField id; required fields are validated server-side. */
     private java.util.Map<String, String> formData;
 }

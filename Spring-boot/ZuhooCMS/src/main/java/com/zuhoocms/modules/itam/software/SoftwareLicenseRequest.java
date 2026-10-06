@@ -5,17 +5,12 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-// AllArgsConstructor access is package-private (not public): Jackson picks a visible
-// all-args constructor as its deserialization "creator" over the no-args+setters path,
-// and a creator must supply every parameter - a JSON body omitting a primitive
-// int/boolean field (e.g. autoRenew, never sent by the frontend form) then fails with
-// "Cannot map null into type int/boolean" before @Valid even runs. Restricting
-// visibility stops Jackson from seeing it, so it falls back to no-args+setters, which
-// correctly leaves missing primitives at their Java default (0/false).
+// AllArgsConstructor is package-private so Jackson cannot use it as a creator: a body omitting a primitive field failed with "Cannot map null into type int/boolean" before @Valid ran; no-args+setters leaves missing primitives at 0/false.
 @Data @NoArgsConstructor @AllArgsConstructor(access = AccessLevel.PACKAGE) @Builder
 public class SoftwareLicenseRequest {
 
     @NotBlank(message = "License key is required")
+    @Size(max = 200, message = "License key must be at most 200 characters")
     private String licenseKey;
 
     @NotBlank(message = "Software name is required")
@@ -35,11 +30,12 @@ public class SoftwareLicenseRequest {
     @NotNull(message = "License purchase date is required")
     private LocalDate licensePurchaseDate;
 
+    // 0 is valid for PERPETUAL/OPEN_SOURCE; SUBSCRIPTION/TRIAL must exceed 0 - see SoftwareLicenseServiceImpl.validateByType().
     @NotNull(message = "License cost is required")
-    @DecimalMin(value = "0.0", inclusive = false)
+    @DecimalMin(value = "0.0", message = "License cost cannot be negative")
     private BigDecimal licenseCost;
 
-    @NotNull(message = "License expiry date is required")
+    // Optional for PERPETUAL/OPEN_SOURCE; required for SUBSCRIPTION/TRIAL - see validateByType().
     private LocalDate licenseExpiryDate;
 
     @NotNull(message = "Renewal type is required")
@@ -51,8 +47,6 @@ public class SoftwareLicenseRequest {
     private String vendor;
     private String accountEmail;
     private String licenseUrl;
-    private String username;
-    private String passwordHash;
 
     private String installationLocation;
     private int estimatedUserCount;
@@ -60,12 +54,7 @@ public class SoftwareLicenseRequest {
     private String notes;
     private String renewalNotes;
 
-    // Boolean (not boolean) - the frontend "Add License" form has no auto-renew
-    // control, so this key is simply absent from the JSON body. Jackson binds
-    // SoftwareLicenseRequest via its all-args constructor (Lombok @AllArgsConstructor
-    // + parameter-names), and for a *primitive* constructor parameter that's missing
-    // from the payload, it fails with "Cannot map `null` into type `boolean`" instead
-    // of defaulting - only wrapper types tolerate a missing/null value here.
+    // Boolean, not boolean: the form never sends autoRenew, and a missing primitive fails with "Cannot map `null` into type `boolean`".
     private Boolean autoRenew;
 
     public boolean isAutoRenewOrDefault() {

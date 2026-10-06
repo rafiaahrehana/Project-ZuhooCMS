@@ -1,5 +1,6 @@
 package com.zuhoocms.modules.hrm.recruitment;
 
+import com.zuhoocms.core.base.SoftDeletedProxies;
 import com.zuhoocms.enums.ApplicationSource;
 import com.zuhoocms.enums.ApplicationStatus;
 import com.zuhoocms.enums.JobPostingStatus;
@@ -57,9 +58,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
         JobPosting posting = jobPostingRepository.findByIdAndCompanyId(jobPostingId, companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Job posting not found: " + jobPostingId));
 
-        // PublicCareersController.requireOpenPosting() already blocked this on
-        // the public entry point - a staff member logging an application here
-        // could still do it against a posting whose deadline already passed.
+        // Also block a past-deadline posting on the staff entry point; only PublicCareersController.requireOpenPosting() checked it.
         if (posting.getStatus() != JobPostingStatus.OPEN
                 || (posting.getDeadline() != null && posting.getDeadline().isBefore(java.time.LocalDate.now()))) {
             throw new BadRequestException("This position is no longer accepting applications");
@@ -68,20 +67,15 @@ public class RecruitmentServiceImpl implements RecruitmentService {
         ApplicationSource source = request.getSource() != null ? request.getSource() : ApplicationSource.DIRECT;
         Candidate candidate = candidateService.findOrCreate(companyId, request.getApplicantName(),
             request.getApplicantEmail(), request.getApplicantPhone(), source,
-            request.getResumeUrl(), request.getLinkedInUrl(), request.getPortfolioUrl());
+            com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getResumeUrl()), request.getLinkedInUrl(), request.getPortfolioUrl());
 
-        // Set once, on first referral - findOrCreate() may return a candidate that
-        // already exists from an earlier, unrelated application, whose original
-        // attribution shouldn't be overwritten by a later referral.
+        // Set once, on first referral: findOrCreate() may return a candidate from an earlier unrelated application whose original attribution must not be overwritten.
         if (request.getReferredByEmployeeId() != null && candidate.getReferredByEmployee() == null) {
             employeeRepository.findByIdAndCompanyId(request.getReferredByEmployeeId(), companyId)
                 .ifPresent(candidate::setReferredByEmployee);
         }
 
-        // OFFER_REJECTED included alongside REJECTED/WITHDRAWN - a declined
-        // offer is just as much a closed chapter as an outright rejection or
-        // withdrawal, per the same reasoning TalentPoolController's guard
-        // already applies to this exact status.
+        // OFFER_REJECTED included alongside REJECTED/WITHDRAWN: a declined offer is as closed as a rejection, as in TalentPoolController's guard.
         if (applicationRepository.existsByJobPostingIdAndCandidateIdAndStatusNotIn(
                 jobPostingId, candidate.getId(),
                 java.util.List.of(ApplicationStatus.REJECTED, ApplicationStatus.WITHDRAWN, ApplicationStatus.OFFER_REJECTED))) {
@@ -92,6 +86,11 @@ public class RecruitmentServiceImpl implements RecruitmentService {
             .jobPosting(posting)
             .company(companyRef(companyId))
             .candidate(candidate)
+            .applicantName(request.getApplicantName())
+            .applicantPhone(request.getApplicantPhone())
+            .resumeUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getResumeUrl()))
+            .linkedInUrl(request.getLinkedInUrl())
+            .portfolioUrl(request.getPortfolioUrl())
             .coverLetter(request.getCoverLetter())
             .source(source)
             .status(ApplicationStatus.APPLIED)
@@ -106,6 +105,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
     @Override
     @Transactional(readOnly = true)
     public JobApplicationResponse getById(Long id) {
+        authorizationService.checkPermission(PermissionCode.APPLICATION_VIEW);
         return RecruitmentMapper.toJobApplicationResponse(findInTenant(id));
     }
 
@@ -137,31 +137,20 @@ public class RecruitmentServiceImpl implements RecruitmentService {
     @Transactional
     public JobApplicationResponse updateStatus(Long id, ApplicationStatus status, String notes) {
         authorizationService.checkPermission(PermissionCode.APPLICATION_UPDATE);
-        // HIRED is only reachable through hire() - it's the only path that
-        // actually creates the Employee record (portal login, payroll
-        // eligibility, onboarding). Setting it here left an application
-        // permanently stuck: it displayed as Hired with no employee behind
-        // it, and hire() itself requires status OFFER_ACCEPTED, so there was
-        // no way back once this generic dropdown was used by mistake.
+        // HIRED is only reachable through hire(), the only path that creates the Employee record; setting it here left an application displaying as Hired with no employee and no way back, since hire() requires OFFER_ACCEPTED.
         if (status == ApplicationStatus.HIRED) {
             throw new BadRequestException(
                     "Use the Hire action to mark a candidate as hired - it creates their employee record, "
                             + "which setting status alone does not do");
         }
-        // The four offer sub-statuses only move through JobOfferController's
-        // dedicated actions (create/send/accept/decline/withdraw) - letting
-        // this generic dropdown also set them was how a candidate could end
-        // up emailed an offer twice, once from here and once from Offers.
+        // The four offer sub-statuses move only through JobOfferController's actions; letting this generic dropdown set them emailed a candidate the offer twice.
         if (OFFER_SUB_STATUSES.contains(status)) {
             throw new BadRequestException(
                     "Offer status changes only happen from the Offers screen - create, send, accept, "
                             + "decline or withdraw the offer there");
         }
         JobApplication application = findInTenant(id);
-        // Moving OFF an offer sub-status (or HIRED) through this generic path is
-        // just as unsafe as moving onto one: the JobOffer record stays exactly
-        // where it was, so a later accept()/decline()/withdraw() on that
-        // now-stale offer silently overwrites whatever this call just set.
+        // Moving OFF an offer sub-status or HIRED is equally unsafe: the JobOffer record stays put, so a later accept()/decline()/withdraw() on it silently overwrites whatever this call set.
         if (application.getStatus() == ApplicationStatus.HIRED || OFFER_SUB_STATUSES.contains(application.getStatus())) {
             throw new BadRequestException(
                     "This application has an active offer or is already hired - use the Offers screen or "
@@ -171,9 +160,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
             .orElseThrow(() -> new BadRequestException("Employee profile not found"));
         application.setStatus(status);
         if (notes != null) application.setInterviewNotes(notes);
-        // rejectionReason existed on the entity but was never set by any code
-        // path - no recorded reason exists anywhere for later
-        // compliance/analytics questions about why a candidate was passed on.
+        // Record rejectionReason: it existed on the entity but no code path set it, leaving no record for later compliance questions.
         if (status == ApplicationStatus.REJECTED && notes != null) {
             application.setRejectionReason(notes);
         }
@@ -198,10 +185,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
         if (request.getScoreInterview() != null) application.setScoreInterview(request.getScoreInterview());
         if (request.getScoreCommunication() != null) application.setScoreCommunication(request.getScoreCommunication());
 
-        // Renormalized over whichever subscores are actually set, so a
-        // partial evaluation (e.g. before an interview has happened) still
-        // produces an honest score instead of silently under-scoring against
-        // the full weight of criteria nobody has rated yet.
+        // Renormalized over whichever subscores are set, so a partial evaluation isn't silently under-scored against the full weight of unrated criteria.
         java.util.Map<String, Integer> present = new java.util.LinkedHashMap<>();
         if (application.getScoreEducation() != null) present.put("education", application.getScoreEducation());
         if (application.getScoreExperience() != null) present.put("experience", application.getScoreExperience());
@@ -224,14 +208,12 @@ public class RecruitmentServiceImpl implements RecruitmentService {
     @Override
     @Transactional
     public EmployeeResponse hire(Long id, HireApplicationRequest request) {
-        // EMPLOYEE_CREATE, not APPLICATION_UPDATE - this creates a real Employee
-        // record (portal login, payroll eligibility), which is a materially
-        // bigger action than updating an application's pipeline status, and
-        // the frontend's Hire button is already gated on EMPLOYEE_CREATE.
+        // EMPLOYEE_CREATE, not APPLICATION_UPDATE: this creates a real Employee record (portal login, payroll eligibility), and the frontend's Hire button is gated the same way.
         authorizationService.checkPermission(PermissionCode.EMPLOYEE_CREATE);
         JobApplication application = findInTenant(id);
 
-        if (application.getConvertedEmployee() != null) {
+        // id() off the FK, not a proxy read: terminating the hired employee soft-deletes the row, and the proxy then throws.
+        if (SoftDeletedProxies.id(application.getConvertedEmployee()) != null) {
             throw new BadRequestException("This application has already been converted to an employee");
         }
         if (application.getStatus() != ApplicationStatus.OFFER_ACCEPTED) {
@@ -239,12 +221,17 @@ public class RecruitmentServiceImpl implements RecruitmentService {
                 "Only candidates with status OFFER_ACCEPTED can be hired. Current status: " + application.getStatus());
         }
 
-        JobPosting posting = application.getJobPosting();
-        Candidate candidate = application.getCandidate();
+        // loadable(), not a null check: both proxies are non-null and throw once the row is soft-deleted, and hiring
+        // needs the candidate's email to create the login, so there is nothing to fall back to.
+        JobPosting posting = SoftDeletedProxies.loadable(application.getJobPosting());
+        Candidate candidate = SoftDeletedProxies.loadable(application.getCandidate());
+        if (candidate == null) {
+            throw new BadRequestException(
+                "This application's candidate record has been deleted and the application can no longer be hired");
+        }
         String[] name = splitApplicantName(candidate.getName());
 
-        // The accepted offer is the agreed terms - anything the hire form left
-        // blank defaults from it, so what HR sends is what the employee gets.
+        // The accepted offer is the agreed terms: anything the hire form leaves blank defaults from it, so what HR sent is what the employee gets.
         com.zuhoocms.modules.hrm.recruitment.offer.JobOffer acceptedOffer =
             jobOfferRepository.findByJobApplicationIdOrderByCreatedAtDesc(application.getId()).stream()
                 .filter(o -> o.getStatus() == com.zuhoocms.modules.hrm.recruitment.offer.JobOffer.Status.ACCEPTED)
@@ -272,7 +259,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
             : (posting != null ? posting.getEmploymentType() : null));
         createRequest.setDepartmentId(request.getDepartmentId() != null
             ? request.getDepartmentId()
-            : (posting != null && posting.getDepartment() != null ? posting.getDepartment().getId() : null));
+            : (posting != null ? SoftDeletedProxies.id(posting.getDepartment()) : null));
         createRequest.setDesignationId(request.getDesignationId());
         createRequest.setReportingManagerId(request.getReportingManagerId());
         createRequest.setShiftId(request.getShiftId());
@@ -290,8 +277,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
         createRequest.setEmergencyContactPhone(request.getEmergencyContactPhone());
         createRequest.setEmergencyContactRelation(request.getEmergencyContactRelation());
 
-        // Delegates to the same onboarding path as a manual hire: portal user creation,
-        // notification defaults, and the welcome email all happen inside employeeService.create().
+        // Same onboarding path as a manual hire: portal user, notification defaults and welcome email all happen inside employeeService.create().
         EmployeeResponse employeeResponse = employeeService.create(createRequest);
 
         Employee employee = employeeRepository.findByIdAndCompanyId(employeeResponse.getId(), requireCompanyId())
@@ -303,9 +289,7 @@ public class RecruitmentServiceImpl implements RecruitmentService {
         employeeRepository.findByUserId(securityUtil.getCurrentUser().getId())
             .ifPresent(reviewer -> application.setReviewedBy(reviewer.getUser()));
 
-        // Previously the posting stayed OPEN forever once every vacancy was
-        // filled - nothing here ever looked back at it, so a filled role kept
-        // accepting new applications and showing up as open on the careers page.
+        // Close the posting once every vacancy is filled: it stayed OPEN forever, still accepting applications and showing on the careers page.
         if (posting != null && posting.getStatus() == JobPostingStatus.OPEN && posting.getVacancies() != null) {
             long hiredCount = applicationRepository.countByCompanyIdAndJobPostingIdAndStatus(
                 requireCompanyId(), posting.getId(), ApplicationStatus.HIRED);

@@ -104,9 +104,7 @@ public class EducationQualificationServiceImpl implements EducationQualification
         return c;
     }
 
-    // COMPANY_OWNER and anyone with EMPLOYEE_UPDATE/EMPLOYEE_VIEW can manage any
-    // employee's qualifications; everyone else may only touch their own record
-    // (mirrors the self-ownership fallback used by Expense/Leave elsewhere).
+    // COMPANY_OWNER and EMPLOYEE_UPDATE/EMPLOYEE_VIEW holders manage any employee's qualifications; everyone else only their own, as in Expense/Leave.
     private void requireOwnEmployee(Long employeeId) {
         User currentUser = securityUtil.getCurrentUser();
         Employee currentEmployee = currentUser != null

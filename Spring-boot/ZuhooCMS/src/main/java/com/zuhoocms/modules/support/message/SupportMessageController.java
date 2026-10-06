@@ -5,7 +5,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import com.zuhoocms.modules.support.SupportPaging;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -21,9 +22,7 @@ public class SupportMessageController {
     private final SupportMessageService service;
 
     @PostMapping
-    // SUPPORT_MANAGER added: the role could already read a ticket's internal
-    // notes (getInternalNotes) and delete a message (delete), but not post
-    // one - so a manager could open a conversation and had no way to reply.
+    // SUPPORT_MANAGER is included: the role can read internal notes and delete messages, so without it a manager could open a conversation but not reply.
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Create Message")
     public ResponseEntity<SupportMessageResponse> create(@Valid @RequestBody SupportMessageRequest request) {
@@ -31,24 +30,24 @@ public class SupportMessageController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Get Message by ID")
     public ResponseEntity<SupportMessageResponse> getById(@PathVariable Long id) {
         return ResponseEntity.ok(service.getById(id));
     }
 
     @GetMapping("/ticket/{ticketId}")
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Get Messages by Ticket")
     public ResponseEntity<Page<SupportMessageResponse>> getByTicket(
             @PathVariable Long ticketId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(service.getByTicket(ticketId, PageRequest.of(page, size)));
+        return ResponseEntity.ok(service.getByTicket(ticketId, SupportPaging.of(page, size, Sort.by("createdAt").ascending())));
     }
 
     @GetMapping("/ticket/{ticketId}/external")
-    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Get External Messages by Ticket")
     public ResponseEntity<List<SupportMessageResponse>> getExternalMessages(@PathVariable Long ticketId) {
         return ResponseEntity.ok(service.getExternalMessages(ticketId));
@@ -62,7 +61,8 @@ public class SupportMessageController {
     }
 
     @PatchMapping("/{id}")
-    @PreAuthorize("hasAnyRole('SUPPORT_AGENT', 'COMPANY_OWNER', 'EMPLOYEE')")
+    // Author-only - enforced in the service.
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Update Message")
     public ResponseEntity<SupportMessageResponse> update(
             @PathVariable Long id,
@@ -71,15 +71,14 @@ public class SupportMessageController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('SUPPORT_MANAGER') or hasRole('COMPANY_OWNER')")
+    // Author, platform manager/admin, or the owning COMPANY_OWNER - enforced in the service.
+    @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE', 'SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     @Operation(summary = "Delete Message")
     public ResponseEntity<SupportMessageResponse> delete(@PathVariable Long id) {
         return ResponseEntity.ok(service.delete(id));
     }
 
-    // ── CLIENT-facing ────────────────────────────────────────────
-    // Messages on the client's own CUSTOMER_SUPPORT ticket - ownership-checked
-    // in the service, and always external (isInternal forced false).
+    // Client-facing: messages on the client's own CUSTOMER_SUPPORT ticket, ownership-checked in the service and always external (isInternal forced false).
 
     @PostMapping("/client")
     @PreAuthorize("hasRole('CLIENT')")

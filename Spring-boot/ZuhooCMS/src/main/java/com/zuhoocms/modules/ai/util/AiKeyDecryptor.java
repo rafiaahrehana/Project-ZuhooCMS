@@ -13,10 +13,8 @@ import java.security.SecureRandom;
 import java.util.Base64;
 
 /**
- * Encrypts/decrypts API keys stored in ai_provider_configs using AES-256-GCM.
- * The key comes from ai.key-encryption.secret (AI_KEY_ENCRYPTION_SECRET env var in
- * production) - a base64-encoded 256-bit key. Stored value layout: base64(IV || ciphertext),
- * where the GCM ciphertext already carries its own 16-byte authentication tag.
+ * AES-256-GCM for the API keys in ai_provider_configs, keyed by ai.key-encryption.secret (AI_KEY_ENCRYPTION_SECRET), a base64 256-bit key.
+ * Stored layout is base64(IV || ciphertext); the GCM ciphertext carries its own 16-byte authentication tag.
  */
 @Component
 public class AiKeyDecryptor {
@@ -28,7 +26,15 @@ public class AiKeyDecryptor {
     private final SecretKey secretKey;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public AiKeyDecryptor(@Value("${ai.key-encryption.secret}") String base64Secret) {
+    public AiKeyDecryptor(@Value("${ai.key-encryption.secret:}") String base64Secret) {
+        // No committed default: fail fast with a message that says what to set.
+        if (base64Secret == null || base64Secret.isBlank()) {
+            throw new IllegalStateException(
+                "AI_KEY_ENCRYPTION_SECRET is not set. Set the AI_KEY_ENCRYPTION_SECRET environment variable "
+                    + "(or add it to the gitignored Spring-boot/ZuhooCMS/.env - see .env.example) to a base64-"
+                    + "encoded 32-byte key, e.g. from 'openssl rand -base64 32'. Keep the existing value if "
+                    + "companies already saved AI keys - a new one cannot decrypt them.");
+        }
         byte[] keyBytes;
         try {
             keyBytes = Base64.getDecoder().decode(base64Secret);

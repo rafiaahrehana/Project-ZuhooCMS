@@ -6,11 +6,7 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
-/**
- * One row per gateway checkout attempt. tranId is what we send to SSLCommerz
- * and what its callbacks/IPN echo back; companyId is captured at initiate time
- * (authenticated) because callbacks arrive with no security context.
- */
+/** One row per gateway checkout attempt; companyId is captured at initiate time because callbacks arrive with no security context. */
 @Entity
 @Table(name = "payment_gateway_transactions",
        indexes = @Index(name = "idx_pgt_tran_id", columnList = "tranId", unique = true))
@@ -47,6 +43,7 @@ public class PaymentGatewayTransaction {
     @Column(nullable = false, length = 30)
     private GatewayTransactionStatus status;
 
+    /** SSLCommerz validation id; unique where present (partial index uq_pgt_val_id, see GatewaySchemaMigrationRunner) so one validation settles exactly one row. */
     private String valId;
     private String bankTranId;
     private String cardType;
@@ -55,4 +52,26 @@ public class PaymentGatewayTransaction {
     private LocalDateTime initiatedAt;
 
     private LocalDateTime completedAt;
+
+    /** status string the validation API returned (VALID / VALIDATED ...). */
+    @Column(length = 30)
+    private String validationStatus;
+
+    /** Amount the validation API confirmed was charged. */
+    @Column(precision = 15, scale = 2)
+    private BigDecimal validatedAmount;
+
+    private LocalDateTime validatedAt;
+
+    /** false = charged but not yet applied (see applyError), retried by GatewayApplyRetryScheduler; NULL means a legacy row applied in the SUCCESS transaction, so the retry job ignores NULL. */
+    private Boolean applied;
+
+    private LocalDateTime appliedAt;
+
+    @Column(length = 1000)
+    private String applyError;
+
+    private Integer applyAttempts;
+
+    private LocalDateTime lastApplyAttemptAt;
 }

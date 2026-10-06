@@ -73,13 +73,8 @@ public class CreateEmployeeRequest {
     @Size(max = 100)
     private String bankAccountNumber;
     /**
-     * Bangladesh Bank routing number: exactly 9 digits (bank 3 + district 2 +
-     * branch 3 + check 1). Optional, but if supplied it must be well-formed -
-     * a malformed number is rejected by the bank and the salary bounces.
-     *
-     * Only the FORMAT is enforced. The 9th digit is a check digit, but the
-     * authoritative algorithm is not implemented here: a wrong implementation
-     * would reject valid routing numbers, which is worse than not checking.
+     * Bangladesh Bank routing number: 9 digits (bank 3 + district 2 + branch 3 + check 1); a malformed number bounces the salary.
+     * Only the FORMAT is enforced - the 9th check digit's authoritative algorithm is not implemented, as a wrong one would reject valid numbers.
      */
     @Pattern(regexp = "^$|^[0-9]{9}$",
              message = "Routing number must be exactly 9 digits")

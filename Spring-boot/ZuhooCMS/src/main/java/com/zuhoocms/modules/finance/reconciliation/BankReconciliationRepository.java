@@ -19,9 +19,19 @@ public interface BankReconciliationRepository extends JpaRepository<BankReconcil
     List<BankReconciliation> findByCompanyIdAndReconciledFalse(Long companyId);
 
     /**
-     * Used by BankReconciliationOverdueScheduler - matches on the exact day a pending
-     * reconciliation crosses the overdue threshold, so it's flagged once rather than
-     * every day it stays pending (no extra "already notified" column needed).
+     * Matches on the exact day a pending reconciliation crosses the overdue threshold, so it is flagged once rather than every day.
+     *
+     * @deprecated an exact-day match loses the reminder whenever a run is skipped (app down, weekend, cron changed). Use
+     * {@link #findByCompanyIdAndReconciledFalseAndOverdueNotifiedAtIsNullAndReconciliationDateLessThanEqual},
+     * which catches the whole backlog and de-duplicates on overdueNotifiedAt.
      */
+    @Deprecated
     List<BankReconciliation> findByCompanyIdAndReconciledFalseAndReconciliationDate(Long companyId, LocalDate reconciliationDate);
+
+    /** Every still-open reconciliation past the overdue threshold with no reminder sent: catches the whole backlog while overdueNotifiedAt keeps it to one reminder each. */
+    List<BankReconciliation> findByCompanyIdAndReconciledFalseAndOverdueNotifiedAtIsNullAndReconciliationDateLessThanEqual(
+            Long companyId, LocalDate threshold);
+
+    /** Guards "one open reconciliation per bank account": two sessions on the same account each clear a different subset of the same GL lines and neither reaches a zero difference. */
+    Optional<BankReconciliation> findFirstByCompanyIdAndBankAccountIdAndReconciledFalse(Long companyId, Long bankAccountId);
 }

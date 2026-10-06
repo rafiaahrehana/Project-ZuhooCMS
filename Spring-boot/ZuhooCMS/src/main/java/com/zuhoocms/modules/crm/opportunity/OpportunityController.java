@@ -35,13 +35,15 @@ public class OpportunityController {
     @GetMapping
     public ResponseEntity<Page<OpportunityResponse>> listAll(
             @RequestParam(required = false) OpportunityStage stage,
+            // Optional and defaulted off, so existing callers are unaffected.
+            @RequestParam(required = false) Boolean openOnly,
             @RequestParam(required = false) Long clientId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) Long tagId,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(opportunityService.listAll(stage, clientId, ownerId, tagId, keyword,
+        return ResponseEntity.ok(opportunityService.listAll(stage, openOnly, clientId, ownerId, tagId, keyword,
                 PageRequest.of(page, size, Sort.by("createdAt").descending())));
     }
 
@@ -76,7 +78,9 @@ public class OpportunityController {
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")
     @GetMapping("/{id}/won-duplicate-check")
     public ResponseEntity<com.zuhoocms.modules.crm.duplicate.DuplicateMatch> previewWonDuplicate(@PathVariable Long id) {
-        return ResponseEntity.ok(opportunityService.previewWonDuplicate(id));
+        // 204, not ResponseEntity.ok(null), which is a 200 with zero content length and not valid JSON; pipeline-board.ts sees a 204 as a null body and takes its existing falsy branch.
+        com.zuhoocms.modules.crm.duplicate.DuplicateMatch match = opportunityService.previewWonDuplicate(id);
+        return match != null ? ResponseEntity.ok(match) : ResponseEntity.noContent().build();
     }
 
     @PreAuthorize("hasAnyRole('COMPANY_OWNER', 'EMPLOYEE')")

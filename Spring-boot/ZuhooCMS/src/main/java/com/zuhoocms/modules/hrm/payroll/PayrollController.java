@@ -35,11 +35,7 @@ public class PayrollController {
         return new ResponseEntity<>(payrollService.create(request), HttpStatus.CREATED);
     }
 
-    /**
-     * Generates a DRAFT payroll for every active employee who has a salary
-     * structure and doesn't already have one for this period - the batch
-     * "run payroll" action every real company needs monthly.
-     */
+    /** Generates a DRAFT payroll for every active employee with a salary structure and no line yet for this period. */
     @PostMapping("/generate")
     public ResponseEntity<BulkPayrollResult> generateForAllEmployees(
             @RequestParam int month,
@@ -65,9 +61,7 @@ public class PayrollController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "24") int size) {
         
-        // Allow if user has PAYROLL_VIEW permission
         if (!authorizationService.hasPermission(PermissionCode.PAYROLL_VIEW)) {
-            // Otherwise, check if they are requesting their own payroll records
             com.zuhoocms.auth.user.User currentUser = securityUtil.getCurrentUser();
             if (currentUser == null) {
                 throw new ForbiddenException("Access denied");
@@ -85,7 +79,6 @@ public class PayrollController {
 
     @GetMapping("/{id}")
     public ResponseEntity<PayrollResponse> getById(@PathVariable Long id) {
-        // Fetch the payroll to check permissions
         PayrollResponse res = payrollService.getById(id);
         
         if (!authorizationService.hasPermission(PermissionCode.PAYROLL_VIEW)) {
@@ -102,14 +95,7 @@ public class PayrollController {
         return ResponseEntity.ok(res);
     }
 
-    /**
-     * Payslip PDF for one payroll record.
-     *
-     * No permission check here on purpose: the service enforces "PAYROLL_VIEW
-     * sees anyone's, everyone else only their own", so an employee can download
-     * their own payslip without being granted a company-wide payroll
-     * permission.
-     */
+    /** Payslip PDF; no check here on purpose - the service enforces own-payslip access, so an employee needs no company-wide payroll permission. */
     @GetMapping(value = "/{id}/payslip", produces = org.springframework.http.MediaType.APPLICATION_PDF_VALUE)
     public ResponseEntity<byte[]> payslipPdf(@PathVariable Long id) {
         PayslipDocument doc = payrollService.generatePayslipPdf(id);
@@ -119,12 +105,7 @@ public class PayrollController {
                 .body(doc.content());
     }
 
-    /**
-     * Bank disbursement sheet for a pay period - APPROVED payrolls only.
-     * Finance uploads this to the bank's corporate portal for bulk salary
-     * transfer, then returns here to mark each row paid. Downloading it does
-     * not move any money and does not change payroll status.
-     */
+    /** Bank disbursement sheet for a period, APPROVED payrolls only; downloading moves no money and does not change payroll status. */
     @GetMapping(value = "/disbursement", produces = "text/csv")
     public ResponseEntity<String> disbursementCsv(
             @RequestParam int month,

@@ -52,6 +52,9 @@ public class EmployeeServiceImpl implements EmployeeService {
     private final com.zuhoocms.shared.address.AddressMapper addressMapper;
     private final SecurityUtil securityUtil;
     private final AuthorizationService authorizationService;
+    private final com.zuhoocms.modules.itam.offboarding.OffboardingChecklistService offboardingChecklistService;
+    private final EmployeeUserResolver userResolver;
+    private final com.zuhoocms.auth.token.TokenRepository tokenRepository;
 
     private Long requireCompanyId() {
         Long companyId = securityUtil.getCurrentCompanyId();
@@ -71,9 +74,14 @@ public class EmployeeServiceImpl implements EmployeeService {
                 .orElseThrow(() -> new ResourceNotFoundException("Employee not found with id: " + id));
     }
 
+    /**
+     * Backs getMyProfile/updateMyProfile, which return and mutate this row wholesale (nationalId, taxId,
+     * emergency contacts, salary fields). Scoped to the active company: findByUserId alone served, and let the
+     * caller overwrite, an employee record belonging to a different tenant.
+     */
     private Employee findCurrentEmployee() {
         User user = securityUtil.getCurrentUser();
-        return employeeRepository.findByUserId(user.getId())
+        return employeeRepository.findByUserIdAndCompanyId(user.getId(), requireCompanyId())
                 .orElseThrow(() -> new ResourceNotFoundException("Employee profile not found."));
     }
 
@@ -97,7 +105,7 @@ public class EmployeeServiceImpl implements EmployeeService {
                 .role(Role.EMPLOYEE)
                 .active(true)
                 .emailVerified(true)
-                .image(request.getProfileImageUrl())
+                .image(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl()))
                 .build();
         userRepository.save(user);
 
@@ -111,7 +119,7 @@ public class EmployeeServiceImpl implements EmployeeService {
                 .employeeNumber(EmployeeNumberGenerator.next(employeeRepository, company.getId()))
                 .officialEmail(request.getOfficialEmail())
                 .workPhone(request.getWorkPhone())
-                .profileImageUrl(request.getProfileImageUrl())
+                .profileImageUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl()))
                 .nationalId(request.getNationalId())
                 .taxId(request.getTaxId())
                 .costCenter(request.getCostCenter())
@@ -157,11 +165,10 @@ public class EmployeeServiceImpl implements EmployeeService {
 
     private void sendWelcomeEmail(User user, Company company) {
         try {
-            // company is already loaded — no redundant DB lookup needed
             EmailBranding.Data branding = emailBranding.from(company);
             emailService.sendEmployeeWelcomeEmail(user.getEmail(), user.getFirstName(), branding);
         } catch (Exception ex) {
-            // Email failure must not fail employee creation — log and continue
+            // Email failure must not fail employee creation.
             log.error("Welcome email failed for platformuser {}: {}", user.getEmail(), ex.getMessage());
         }
     }
@@ -173,13 +180,8 @@ public class EmployeeServiceImpl implements EmployeeService {
             emp.setEmploymentType(request.getEmploymentType());
         if (request.getEmploymentStatus() != null) {
             emp.setEmploymentStatus(request.getEmploymentStatus());
-            // active drives payroll eligibility (findByCompanyIdAndActiveTrue) and
-            // headcount counts, independently of employmentStatus - without this,
-            // picking RESIGNED/TERMINATED/RETIRED/SUSPENDED from this ordinary edit
-            // form (the obvious place an HR admin would record a departure) left
-            // someone fully paid and portal-logged-in with a status that says
-            // otherwise. dedicated terminate() below still does the fuller
-            // soft-delete flow - this only keeps the two flags from diverging.
+            // active drives payroll eligibility (findByCompanyIdAndActiveTrue) and headcount independently of employmentStatus; a terminal status set here otherwise left someone fully paid.
+            // The login is deactivated, never soft-deleted: the employee row stays visible, and a soft-deleted user behind it fails every later list/detail/edit/delete.
             if (isTerminalStatus(request.getEmploymentStatus())) {
                 emp.setActive(false);
                 deactivatePortalUser(emp);
@@ -245,10 +247,10 @@ public class EmployeeServiceImpl implements EmployeeService {
         if (request.getOfficialEmail() != null)
             emp.setOfficialEmail(request.getOfficialEmail());
         if (request.getProfileImageUrl() != null) {
-            emp.setProfileImageUrl(request.getProfileImageUrl());
-            User user = emp.getUser();
+            emp.setProfileImageUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl(), emp.getProfileImageUrl()));
+            User user = userResolver.liveUser(emp);
             if (user != null) {
-                user.setImage(request.getProfileImageUrl());
+                user.setImage(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl(), user.getImage()));
             }
         }
         if (request.getLocation() != null) {
@@ -279,10 +281,39 @@ public class EmployeeServiceImpl implements EmployeeService {
                 || status == EmploymentStatus.RETIRED || status == EmploymentStatus.SUSPENDED;
     }
 
+    /** Edit-form departure/suspension: login switched off (active=false, honoured by isEnabled()/login/refresh) and refresh tokens revoked, but NOT soft-deleted, so the user stays loadable. */
     private void deactivatePortalUser(Employee emp) {
-        User user = emp.getUser();
-        if (user == null)
+        Long userId = userResolver.userId(emp);
+        if (userId == null)
             return;
+        User user = userResolver.liveUser(emp);
+        if (user != null) {
+            user.setActive(false);
+            userRepository.save(user);
+        }
+        tokenRepository.revokeAllByUserIdAndType(userId, com.zuhoocms.auth.token.TokenType.REFRESH);
+    }
+
+    /** SUSPENDED -> ACTIVE from the edit form: employee and login are active again. */
+    private void reactivatePortalUser(Employee emp, Long companyId) {
+        emp.setActive(true);
+        if (userResolver.userId(emp) == null)
+            return;
+        User user = userResolver.liveUser(emp);
+        if (user != null) {
+            user.setActive(true);
+            userRepository.save(user);
+        } else {
+            // Suspended under the old code, which soft-deleted the login - restore it.
+            userResolver.restoreUser(emp.getId(), companyId);
+        }
+    }
+
+    /** DELETE/terminate, unlike the edit-form path: the login is deactivated and soft-deleted. */
+    private void removePortalUser(Employee emp) {
+        User user = userResolver.liveUser(emp);
+        if (user == null)
+            return; // none, or already soft-deleted
         user.setActive(false);
         user.softDelete();
         userRepository.save(user);
@@ -326,11 +357,55 @@ public class EmployeeServiceImpl implements EmployeeService {
         return employeeMapper.toDTO(employee);
     }
 
+    /**
+     * Withholds pay and bank details from a caller who may not see the workforce.
+     *
+     * <p>create, update and delete on this service each check their EMPLOYEE_* code; the reads checked nothing at
+     * all, and EMPLOYEE_VIEW existed in the enum without ever being used here. So any employee of the company could
+     * list every colleague and read their basic salary, bank name, account number and routing number. Confirmed on a
+     * device with a role holding only the four OFFBOARDING_* codes.
+     *
+     * <p>Redacted rather than refused, because the list is what every person-picker in both clients is built on -
+     * offboarding, manual attendance, leave approval, asset assignment. Gating it outright would take those away from
+     * the roles that legitimately need to choose a colleague. Names stay visible; pay does not. This is the same
+     * shape as the company bank details on CompanyController.me.
+     *
+     * <p>Your own record is never redacted: an employee may always see their own pay.
+     */
+    private EmployeeResponse withheldIfNotPermitted(EmployeeResponse dto, Long currentUserId) {
+        if (dto == null || authorizationService.hasPermission(PermissionCode.EMPLOYEE_VIEW)) {
+            return dto;
+        }
+        if (currentUserId != null && currentUserId.equals(dto.getUserId())) {
+            return dto;
+        }
+        // The same set the microservice withholds, which got this right from the start: pay, bank, national ID and
+        // tax ID. The pay components matter as much as basicSalary - house rent and the allowances reconstruct most
+        // of a salary between them - and a national ID is identity data that no colleague needs to pick a name from
+        // a list.
+        dto.setBasicSalary(null);
+        dto.setHouseRent(null);
+        dto.setMedicalAllowance(null);
+        dto.setTransportAllowance(null);
+        dto.setBankName(null);
+        dto.setBankAccountNumber(null);
+        dto.setBankRoutingNumber(null);
+        dto.setNationalId(null);
+        dto.setTaxId(null);
+        return dto;
+    }
+
+    /** The caller's own user id, or null when there is no authenticated user. */
+    private Long currentUserIdOrNull() {
+        User current = securityUtil.getCurrentUser();
+        return current != null ? current.getId() : null;
+    }
+
     @Override
     @Transactional(readOnly = true)
     public EmployeeResponse getById(Long id) {
 
-        return employeeMapper.toDTO(findEmployeeById(id));
+        return withheldIfNotPermitted(employeeMapper.toDTO(findEmployeeById(id)), currentUserIdOrNull());
     }
 
     @Override
@@ -377,10 +452,10 @@ public class EmployeeServiceImpl implements EmployeeService {
             }
         }
         if (request.getProfileImageUrl() != null) {
-            emp.setProfileImageUrl(request.getProfileImageUrl());
+            emp.setProfileImageUrl(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl(), emp.getProfileImageUrl()));
             User user = emp.getUser();
             if (user != null) {
-                user.setImage(request.getProfileImageUrl());
+                user.setImage(com.zuhoocms.shared.storage.FileReferencePolicy.requireOwn(request.getProfileImageUrl(), user.getImage()));
             }
         }
 
@@ -409,7 +484,6 @@ public class EmployeeServiceImpl implements EmployeeService {
         boolean hasStatus = status != null;
         boolean hasDept = departmentId != null;
 
-        // 1. No search text active
         if (!hasSearch) {
             Page<Employee> page;
             if (hasDept && hasStatus) {
@@ -421,10 +495,10 @@ public class EmployeeServiceImpl implements EmployeeService {
             } else {
                 page = employeeRepository.findByCompanyIdExcludingOwner(companyId, ownerUserId, pageable);
             }
-            return page.map(employeeMapper::toDTO);
+            final Long meId = currentUserIdOrNull();
+            return page.map(e -> withheldIfNotPermitted(employeeMapper.toDTO(e), meId));
         }
 
-        // 2. Search text active
         String searchKeyword = search.trim();
         Page<Employee> page;
         if (hasStatus) {
@@ -434,7 +508,8 @@ public class EmployeeServiceImpl implements EmployeeService {
             page = employeeRepository.searchEmployeesWithoutStatus(
                     companyId, departmentId, ownerUserId, searchKeyword, pageable);
         }
-        return page.map(employeeMapper::toDTO);
+        final Long meId2 = currentUserIdOrNull();
+        return page.map(e -> withheldIfNotPermitted(employeeMapper.toDTO(e), meId2));
     }
 
     @Override
@@ -444,11 +519,30 @@ public class EmployeeServiceImpl implements EmployeeService {
 
         Long companyId = requireCompanyId();
         Employee emp = findEmployeeById(id);
+        EmploymentStatus previousStatus = emp.getEmploymentStatus();
         updateEmployeeDetails(emp, request);
         updateEmployeeRelationships(emp, request, companyId);
+        if (previousStatus == EmploymentStatus.SUSPENDED && emp.getEmploymentStatus() == EmploymentStatus.ACTIVE) {
+            reactivatePortalUser(emp, companyId);
+        }
         employeeRepository.save(emp);
 
+        if (emp.getEmploymentStatus() != previousStatus) {
+            startOffboardingIfDeparted(emp, companyId);
+        }
+
         return employeeMapper.toDTO(emp);
+    }
+
+    /**
+     * A departure recorded from the edit form gets the same offboarding checklist and OFFBOARDING_CREATED notification as terminate(), in the same transaction.
+     * createForTermination is idempotent under the employee row lock, so a later DELETE or re-save never creates a second checklist; assets and licence seats are deliberately not released.
+     */
+    private void startOffboardingIfDeparted(Employee emp, Long companyId) {
+        EmploymentStatus status = emp.getEmploymentStatus();
+        if (status == EmploymentStatus.TERMINATED || status == EmploymentStatus.RESIGNED) {
+            offboardingChecklistService.createForTermination(emp.getId(), companyId);
+        }
     }
 
     @Override
@@ -460,33 +554,40 @@ public class EmployeeServiceImpl implements EmployeeService {
         emp.setActive(false);
         emp.setEmploymentStatus(EmploymentStatus.TERMINATED);
         emp.softDelete();
-        deactivatePortalUser(emp);
+        // Resolved before the user is soft-deleted, and tolerant of one already soft-deleted (read via company-scoped native SQL).
+        Long companyId = requireCompanyId();
+        User liveUser = userResolver.liveUser(emp);
+        EmployeeUserResolver.UserSnapshot legacyUser = liveUser == null && emp.getUser() != null
+                ? userResolver.snapshot(emp.getId(), companyId) : null;
+        String userEmail = liveUser != null ? liveUser.getEmail() : legacyUser != null ? legacyUser.email() : null;
+        String userFirstName = liveUser != null ? liveUser.getFirstName() : legacyUser != null ? legacyUser.firstName() : null;
+        String fullName = userResolver.fullName(emp);
+        removePortalUser(emp);
 
-        if (emp.getUser() != null) {
+        // Same transaction: a terminated employee always has an offboarding checklist; assets and licence seats are NOT released here, the checklist tracks collecting them.
+        startOffboardingIfDeparted(emp, companyId);
+
+        if (userEmail != null) {
             try {
                 EmailBranding.Data branding = emailBranding.from(emp.getCompany());
-                emailService.sendTerminationEmail(
-                        emp.getUser().getEmail(), emp.getUser().getFirstName(), branding);
+                emailService.sendTerminationEmail(userEmail, userFirstName, branding);
             } catch (Exception ex) {
-                // Best-effort notification — a failed email must not roll back the termination.
+                // Best-effort: a failed email must not roll back the termination.
                 log.warn("Termination email failed for employee {} (termination still saved): {}",
                         emp.getId(), ex.getMessage());
             }
         }
 
-        // Only the terminated employee themselves was ever told - grep-confirmed
-        // AnnouncementServiceImpl was the only caller of NotificationService in
-        // this whole slice (Employee/Department/Designation/Shift/Holiday).
-        // Nobody was prompted to actually collect the badge/laptop or reassign
-        // their work. Notify the reporting manager, or the owner if there isn't one.
-        Employee manager = emp.getReportingManager();
-        User recipient = manager != null ? manager.getUser() : null;
+        // Notify the reporting manager to collect assets and reassign work; previously only the terminated employee was told.
+        // A soft-deleted manager (or manager's login) would throw here, so it falls back to the owner, as with no manager.
+        Employee manager = userResolver.loadable(emp.getReportingManager());
+        User recipient = manager != null ? userResolver.liveUser(manager) : null;
         if (recipient == null) recipient = emp.getCompany().getOwner();
         if (recipient != null) {
             notificationService.send(CreateNotificationRequest.of(
                     com.zuhoocms.enums.NotificationType.EMPLOYEE_TERMINATED,
                     "Employee terminated",
-                    emp.getFullName() + " has been terminated - reassign their work and confirm asset return.",
+                    fullName + " has been terminated - reassign their work and confirm asset return.",
                     "/hrm/employees/" + emp.getId(),
                     recipient.getId(),
                     emp.getCompany().getId()));
@@ -496,7 +597,8 @@ public class EmployeeServiceImpl implements EmployeeService {
     @Override
     @Transactional(readOnly = true)
     public long getEmployeeCount() {
-        return employeeRepository.countByCompanyId(requireCompanyId());
+        // Active only, matching HrDashboardServiceImpl's headcount: countByCompanyId included resigned/deactivated staff, so the two figures disagreed.
+        return employeeRepository.countByCompanyIdAndActiveTrue(requireCompanyId());
     }
 
     @Override

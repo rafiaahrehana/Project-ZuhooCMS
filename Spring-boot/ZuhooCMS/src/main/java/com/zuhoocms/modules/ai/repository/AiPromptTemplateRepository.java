@@ -13,11 +13,7 @@ import java.util.List;
 
 public interface AiPromptTemplateRepository extends JpaRepository<AiPromptTemplate, Long> {
 
-    /**
-     * Returns the active template for a feature scoped to a company,
-     * falling back to the platform default (company IS NULL) if none exists.
-     * Company-specific record wins — sorted by company_id DESC NULLS LAST.
-     */
+    /** Active template for a feature, company-specific winning over the platform default (company IS NULL) via company_id DESC NULLS LAST. */
     @Query("""
         SELECT t FROM AiPromptTemplate t
         WHERE t.feature = :feature

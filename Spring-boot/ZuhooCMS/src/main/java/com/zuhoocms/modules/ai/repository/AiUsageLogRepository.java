@@ -19,11 +19,7 @@ public interface AiUsageLogRepository extends JpaRepository<AiUsageLog, Long> {
     @Query("SELECT COUNT(l) FROM AiUsageLog l WHERE l.user.id = :userId AND l.logDate = :date")
     long countByUserAndDate(@Param("userId") Long userId, @Param("date") LocalDate date);
 
-    /**
-     * Requests by one user since a point in time - backs the rolling hourly
-     * per-user quota (ai.hourly-user-limit). Uses createdAt, not logDate, so the
-     * window slides continuously instead of resetting at midnight.
-     */
+    /** Backs the rolling hourly per-user quota (ai.hourly-user-limit); uses createdAt, not logDate, so the window slides instead of resetting at midnight. */
     @Query("SELECT COUNT(l) FROM AiUsageLog l WHERE l.user.id = :userId AND l.createdAt >= :since")
     long countByUserSince(@Param("userId") Long userId, @Param("since") LocalDateTime since);
 

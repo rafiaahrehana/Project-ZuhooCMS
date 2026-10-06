@@ -15,13 +15,7 @@ public class HrDashboardController {
 
     private final HrDashboardService hrDashboardService;
 
-    /**
-     * HR overview for the active company.
-     *
-     * The role gate above only narrows this to company users; the real check is
-     * EMPLOYEE_VIEW inside the service, so an ordinary employee who happens to
-     * hold the EMPLOYEE role cannot read company-wide payroll and headcount.
-     */
+    /** HR overview for the active company; the role gate only narrows to company users, the real check is EMPLOYEE_VIEW inside the service. */
     @GetMapping("/summary")
     public ResponseEntity<HrDashboardResponse> summary() {
         return ResponseEntity.ok(hrDashboardService.getSummary());

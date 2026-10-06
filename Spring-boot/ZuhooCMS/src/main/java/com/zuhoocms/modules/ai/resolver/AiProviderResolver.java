@@ -31,6 +31,10 @@ public class AiProviderResolver {
     private final AiKeyDecryptor keyDecryptor;
 
     public AiProviderAdapter resolve(Long companyId) {
+        // ai.force-mock (default false): guarantees no real provider is called, whatever is saved in ai_provider_configs.
+        if (aiProperties.isForceMock()) {
+            return new MockProviderAdapter(mockAiClient);
+        }
         if (companyId != null) {
             Optional<AiProviderConfig> config =
                 configRepository.findByCompanyIdAndActiveTrue(companyId);
@@ -46,7 +50,6 @@ public class AiProviderResolver {
             return buildFromConfig(globalConfig.get());
         }
 
-        // Fallback to application.properties defaults
         return buildFromDefaults();
     }
 
@@ -58,77 +61,53 @@ public class AiProviderResolver {
         String apiKey = resolveApiKey(config);
         double temp   = config.getTemperature() != null
             ? config.getTemperature().doubleValue() : 0.7;
-        // Null would NPE on unboxing, and a small saved value starves Gemini
-        // 2.x thinking models (their reasoning tokens count against the output
-        // budget, so a 256-token cap truncates the answer mid-sentence).
+        // Null would NPE on unboxing, and a small saved value starves Gemini 2.x thinking models, whose reasoning tokens share the output budget.
         Integer configured = config.getMaxTokens();
         int maxTokens = (configured == null || configured < 1024) ? 2048 : configured;
 
-        /*
-         * FIX: all switch cases used config.getProvider() and config.getModel()
-         * which do not exist on AiProviderConfig. Entity getters are:
-         *   getProvider()  (not getProvider())
-         *   getAiModel()         (not getModel())
-         */
+        // The key travels straight into the adapter, never onto the singleton client bean - see AiHttpClient.call for the cross-tenant key leak that caused.
         return switch (config.getAiProviderType()) {
-            case GEMINI -> {
-                geminiClient.setApiKey(apiKey);
-                yield new GeminiProviderAdapter(geminiClient, config.getAiModel(), temp, maxTokens);
-            }
-            case CLAUDE -> {
-                claudeClient.setApiKey(apiKey);
-                yield new ClaudeProviderAdapter(claudeClient, config.getAiModel(), temp, maxTokens);
-            }
-            case OPENAI -> {
-                openAiClient.setApiKey(apiKey);
-                yield new OpenAiProviderAdapter(openAiClient, config.getAiModel(), temp, maxTokens);
-            }
-            case GROQ -> {
-                groqClient.setApiKey(apiKey);
-                yield new GroqProviderAdapter(groqClient, config.getAiModel(), temp, maxTokens);
-            }
+            case GEMINI -> new GeminiProviderAdapter(geminiClient, apiKey, config.getAiModel(), temp, maxTokens);
+            case CLAUDE -> new ClaudeProviderAdapter(claudeClient, apiKey, config.getAiModel(), temp, maxTokens);
+            case OPENAI -> new OpenAiProviderAdapter(openAiClient, apiKey, config.getAiModel(), temp, maxTokens);
+            case GROQ -> new GroqProviderAdapter(groqClient, apiKey, config.getAiModel(), temp, maxTokens);
             case MOCK -> new MockProviderAdapter(mockAiClient);
         };
     }
 
     private AiProviderAdapter buildFromDefaults() {
+        if (aiProperties.isForceMock()) {
+            return new MockProviderAdapter(mockAiClient);
+        }
         return switch (aiProperties.getDefaultProvider()) {
-            case GEMINI -> {
-                geminiClient.setApiKey(aiProperties.getGemini().getApiKey());
-                yield new GeminiProviderAdapter(
+            case GEMINI -> new GeminiProviderAdapter(
                     geminiClient,
+                    aiProperties.getGemini().getApiKey(),
                     aiProperties.getDefaultModel(),
                     aiProperties.getGemini().getTemperature(),
                     aiProperties.getGemini().getMaxTokens()
                 );
-            }
-            case CLAUDE -> {
-                claudeClient.setApiKey(aiProperties.getClaude().getApiKey());
-                yield new ClaudeProviderAdapter(
+            case CLAUDE -> new ClaudeProviderAdapter(
                     claudeClient,
+                    aiProperties.getClaude().getApiKey(),
                     aiProperties.getDefaultModel(),
                     aiProperties.getClaude().getTemperature(),
                     aiProperties.getClaude().getMaxTokens()
                 );
-            }
-            case OPENAI -> {
-                openAiClient.setApiKey(aiProperties.getOpenai().getApiKey());
-                yield new OpenAiProviderAdapter(
+            case OPENAI -> new OpenAiProviderAdapter(
                     openAiClient,
+                    aiProperties.getOpenai().getApiKey(),
                     aiProperties.getDefaultModel(),
                     aiProperties.getOpenai().getTemperature(),
                     aiProperties.getOpenai().getMaxTokens()
                 );
-            }
-            case GROQ -> {
-                groqClient.setApiKey(aiProperties.getGroq().getApiKey());
-                yield new GroqProviderAdapter(
+            case GROQ -> new GroqProviderAdapter(
                     groqClient,
+                    aiProperties.getGroq().getApiKey(),
                     aiProperties.getDefaultModel(),
                     aiProperties.getGroq().getTemperature(),
                     aiProperties.getGroq().getMaxTokens()
                 );
-            }
             case MOCK -> new MockProviderAdapter(mockAiClient);
         };
     }
@@ -137,7 +116,6 @@ public class AiProviderResolver {
         if (config.getApiKeyEncrypted() != null)
             return keyDecryptor.decrypt(config.getApiKeyEncrypted());
 
-        // FIX: was config.getProvider() — corrected to getProvider()
         return switch (config.getAiProviderType()) {
             case GEMINI -> aiProperties.getGemini().getApiKey();
             case CLAUDE -> aiProperties.getClaude().getApiKey();

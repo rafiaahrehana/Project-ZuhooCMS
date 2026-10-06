@@ -4,7 +4,6 @@ package com.zuhoocms.modules.ai.client;
 import com.zuhoocms.modules.ai.exception.AiProviderException;
 import com.zuhoocms.modules.ai.tool.AiTool;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.*;
@@ -27,11 +26,8 @@ public class ClaudeClient implements AiHttpClient {
     @Qualifier("aiRestTemplate")
     private final RestTemplate aiRestTemplate;
 
-    @Setter
-    private String apiKey;
-
     @Override
-    public String call(String prompt, String model, double temperature, int maxTokens) {
+    public String call(String apiKey, String prompt, String model, double temperature, int maxTokens) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("x-api-key", apiKey);
@@ -65,14 +61,11 @@ public class ClaudeClient implements AiHttpClient {
     }
 
     private boolean isRetryable(Exception e) {
-        if (e instanceof HttpClientErrorException client) {
-            return client.getStatusCode().value() == 429;
-        }
-        return true;
+        return AiRetryPolicy.isRetryable(e);
     }
 
     @Override
-    public AiToolCallOrText callWithTools(String prompt, String model, double temperature, int maxTokens,
+    public AiToolCallOrText callWithTools(String apiKey, String prompt, String model, double temperature, int maxTokens,
                                            List<AiTool> tools, List<AiToolExchange> priorExchanges) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -95,8 +88,7 @@ public class ClaudeClient implements AiHttpClient {
         body.put("max_tokens", maxTokens);
         body.put("temperature", temperature);
         body.put("messages", messages);
-        // Omitted once a tool result is already in play, forcing a text-only
-        // reply - the v1 agent loop handles at most one tool call per turn.
+        // Omitted once a tool result is in play, forcing a text-only reply: the v1 agent loop handles at most one tool call per turn.
         if (priorExchanges.isEmpty()) {
             body.put("tools", tools.stream().map(t -> (Object) Map.of(
                 "name", t.name(), "description", t.description(), "input_schema", t.parametersSchema()

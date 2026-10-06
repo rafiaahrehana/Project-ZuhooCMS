@@ -18,11 +18,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/**
- * The person, distinct from any one application. One candidate can apply to
- * several job postings over time - each of those is its own JobApplication
- * row pointing back here.
- */
+/** The person, distinct from any one application: each of a candidate's applications is its own JobApplication row pointing back here. */
 @Entity
 @Table(name = "recruitment_candidates")
 @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder

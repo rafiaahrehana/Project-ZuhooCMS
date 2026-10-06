@@ -42,11 +42,46 @@ public class User extends BaseEntity implements UserDetails {
     @JoinColumn(name = "address_id")
     private Address location;
 
+    /** Set by JwtAuthFilter on the request principal only, never persisted; JPA uses field access, so the getRole() override below cannot alter the {@code role} column even if this instance is saved. */
+    @Transient
+    @JsonIgnore
+    private Role impersonatedRole;
+
+    @Transient
+    @JsonIgnore
+    private String impersonationSessionId;
+
+    /** Effective role for this request, so every isPlatformUser()/getRole() branch treats an impersonating admin as a tenant. */
+    public Role getRole() {
+        return impersonatedRole != null ? impersonatedRole : role;
+    }
+
+    /** The role actually stored for this account, ignoring any impersonation. */
+    @JsonIgnore
+    public Role getRealRole() {
+        return role;
+    }
+
+    @JsonIgnore
+    public boolean isImpersonationPrincipal() {
+        return impersonatedRole != null;
+    }
+
     public boolean isPlatformUser() {
-        return role == Role.SUPER_ADMIN || role == Role.SYSTEM_ADMIN || 
-               role == Role.SUPPORT_AGENT || role == Role.SUPPORT_MANAGER || 
-               role == Role.MARKETING_MANAGER || role == Role.PLATFORM_ACCOUNTANT || 
-               role == Role.SALES_MANAGER;
+        return isPlatformRole(getRole());
+    }
+
+    /** Platform-ness of the stored role - true for an impersonating platform admin too. */
+    @JsonIgnore
+    public boolean isRealPlatformUser() {
+        return isPlatformRole(role);
+    }
+
+    private static boolean isPlatformRole(Role r) {
+        return r == Role.SUPER_ADMIN || r == Role.SYSTEM_ADMIN ||
+               r == Role.SUPPORT_AGENT || r == Role.SUPPORT_MANAGER ||
+               r == Role.MARKETING_MANAGER || r == Role.PLATFORM_ACCOUNTANT ||
+               r == Role.SALES_MANAGER;
     }
 
     public boolean isTenantUser() {
@@ -67,27 +102,37 @@ public class User extends BaseEntity implements UserDetails {
 
     private java.time.LocalDateTime emailVerificationCodeExpiresAt;
 
+    // Throttles the otherwise brute-forceable 6-digit code: AuthServiceImpl.verifyEmail() invalidates the code at the threshold, forcing a fresh resendVerification().
+    @Builder.Default
+    private int emailVerificationAttempts = 0;
+
     /** 6-digit code shown in the "Reset your password" email; cleared once used. */
     @Column(length = 6)
     private String passwordResetCode;
 
     private java.time.LocalDateTime passwordResetCodeExpiresAt;
 
+    // Same throttle for the password-reset code: AuthServiceImpl.resolveUserFromResetCode() invalidates it at the threshold.
+    @Builder.Default
+    private int passwordResetAttempts = 0;
+
+    // Brute-force login protection: AuthServiceImpl.login() increments this per BadCredentialsException and sets lockedUntil at the threshold.
+    @Builder.Default
+    private int failedLoginAttempts = 0;
+
+    private java.time.LocalDateTime lockedUntil;
+
     @Builder.Default
     private String languagePreference = "EN";
 
-    /**
-     * When a CustomRole is deleted, this field must be explicitly set to NULL
-     * in the service layer before deletion. CascadeType.SET_NULL is not a valid
-     * JPA type and has been removed intentionally.
-     */
+    /** JPA has no CascadeType.SET_NULL, so the service layer must null this out explicitly before deleting a CustomRole. */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "custom_role_id")
     private CustomRole customRole;
 
     @Override
     public @NonNull Collection<? extends GrantedAuthority> getAuthorities() {
-        return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
+        return List.of(new SimpleGrantedAuthority("ROLE_" + getRole().name()));
     }
 
     @Override
@@ -97,12 +142,13 @@ public class User extends BaseEntity implements UserDetails {
 
     @Override
     public boolean isAccountNonLocked() {
-        return true;
+        return lockedUntil == null || lockedUntil.isBefore(java.time.LocalDateTime.now());
     }
 
     @Override
     public boolean isEnabled() {
-        return !isDeleted();
+        // Must check `active`: PlatformUserService.deactivate() only sets active=false, so ignoring it lets a deactivated user keep logging in and using issued refresh tokens.
+        return !isDeleted() && active;
     }
 
     public String getFullName() {

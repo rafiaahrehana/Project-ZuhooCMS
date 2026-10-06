@@ -22,11 +22,7 @@ public interface BankReconciliationService {
     /** Attaches the actual bank statement file (already uploaded via /api/upload) for audit trail. */
     BankReconciliationResponse attachStatement(Long id, AttachStatementRequest request);
 
-    /**
-     * Imports a bank-statement CSV (date, description, amount - positive = deposit,
-     * negative = withdrawal; header row auto-detected) and auto-clears uncleared GL
-     * transactions whose amount and direction match. Returns matched/unmatched summary.
-     */
+    /** Imports a bank-statement CSV (date, description, amount; positive = deposit, header auto-detected) and auto-clears uncleared GL transactions whose amount and direction match. */
     StatementImportResult importStatement(Long id, org.springframework.web.multipart.MultipartFile file);
 
     /** Throws if the adjusted difference (GL vs. bank statement + outstanding items) isn't ~zero. */

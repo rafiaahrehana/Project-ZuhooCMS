@@ -36,10 +36,10 @@ public interface LeaveService {
     List<LeaveBalanceResponse> getBalancesForEmployee(Long employeeId, int year);
 
     /**
-     * Chargeable APPROVED unpaid-leave days for one employee inside one
-     * month, clipped to the month and skipping weekly off days and holidays
-     * - what payroll deducts as leave-without-pay.
+     * Chargeable APPROVED unpaid-leave days in one month, clipped to it and skipping weekly off days and holidays - what
+     * payroll deducts as leave-without-pay. companyId is explicit because payroll calls this off a scheduler thread,
+     * where Hibernate's tenantFilter is not enabled.
      */
-    int unpaidLeaveDays(Long employeeId, int month, int year);
+    int unpaidLeaveDays(Long employeeId, Long companyId, int month, int year);
 
 }

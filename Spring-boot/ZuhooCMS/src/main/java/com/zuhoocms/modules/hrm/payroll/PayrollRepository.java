@@ -24,11 +24,7 @@ public interface PayrollRepository extends JpaRepository<Payroll, Long> {
 
     Page<Payroll> findByCompanyId(Long companyId, Pageable pageable);
 
-    /**
-     * All payrolls for a period in one status, employee (and their bank details)
-     * fetched eagerly - the bank disbursement export reads those per row and
-     * would otherwise fire a query per employee.
-     */
+    /** Payrolls for a period in one status with employee and bank details fetched eagerly - the disbursement export would otherwise fire a query per employee. */
     @Query("""
         SELECT p FROM Payroll p
         LEFT JOIN FETCH p.employee e
@@ -59,4 +55,29 @@ public interface PayrollRepository extends JpaRepository<Payroll, Long> {
         @Param("month") int month,
         @Param("year") int year,
         @Param("status") PayrollStatus status);
+
+    /** Row-locked load for markPaid - two concurrent pays serialize on this row. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT p FROM Payroll p WHERE p.id = :id AND p.company.id = :companyId")
+    Optional<Payroll> findByIdAndCompanyIdForUpdate(@Param("id") Long id, @Param("companyId") Long companyId);
+
+    /** A soft-deleted line still holds the (employee_id, pay_month, pay_year) unique key; native so @SQLRestriction(deleted = false) does not hide it. */
+    @Query(value = "SELECT id FROM payrolls WHERE employee_id = :employeeId AND pay_month = :month "
+            + "AND pay_year = :year AND deleted = true LIMIT 1", nativeQuery = true)
+    Optional<Long> findSoftDeletedId(@Param("employeeId") Long employeeId,
+                                     @Param("month") int month, @Param("year") int year);
+
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @Query(value = "UPDATE payrolls SET deleted = false, deleted_at = NULL WHERE id = :id", nativeQuery = true)
+    int reviveById(@Param("id") Long id);
+
+    /** Installment money earmarked on not-yet-paid lines; paid lines have already reduced remainingBalance. */
+    @Query("""
+        SELECT COALESCE(SUM(p.loanDeductionAmount), 0) FROM Payroll p
+        WHERE p.loanAdvance.id = :loanId
+          AND p.status <> com.zuhoocms.enums.PayrollStatus.PAID
+          AND p.id <> :excludeId
+          AND p.deleted = false
+        """)
+    BigDecimal sumReservedLoanDeduction(@Param("loanId") Long loanId, @Param("excludeId") Long excludeId);
 }

@@ -21,15 +21,11 @@ public class JournalEntryRequest {
     @NotNull(message = "Entry date is required")
     private LocalDate entryDate;
 
-    /**
-     * Multi-line form: at least 2 lines, total debits must equal total credits.
-     * If omitted, the legacy single debit/credit fields below are used instead
-     * (kept so older API callers keep working - the server synthesizes 2 lines).
-     */
+    /** Multi-line form: at least 2 lines, total debits must equal total credits; if omitted the server synthesizes 2 lines from the legacy fields below, so older API callers keep working. */
     @Valid
     private List<JournalEntryLineRequest> lines;
 
-    // ── Legacy 1:1 form (used only when `lines` is absent) ──────────────
+    // Legacy 1:1 form, used only when `lines` is absent.
     private Long debitAccountId;
     private Long creditAccountId;
     @Positive(message = "Amount must be positive")

@@ -32,7 +32,10 @@ public class AttendanceReportServiceImpl implements AttendanceReportService {
         Long companyId = securityUtil.getCurrentCompanyId();
         if (companyId != null) return companyId;
         User user = securityUtil.getCurrentUser();
-        if (user != null) {
+        // Tenant users only. These reports are company-wide, so letting a caller with no tenant context derive a
+        // company from an employee row handed them that whole company's attendance; platform staff and scheduler
+        // threads now get null, which every caller already renders as an empty report.
+        if (user != null && user.isTenantUser()) {
             Employee emp = employeeRepository.findByUserId(user.getId()).orElse(null);
             if (emp != null && emp.getCompany() != null) {
                 return emp.getCompany().getId();
@@ -44,6 +47,7 @@ public class AttendanceReportServiceImpl implements AttendanceReportService {
     @Override
     @Transactional(readOnly = true)
     public DailyAttendanceReport generateDailyReport(LocalDate date) {
+        authorizationService.checkPermission(PermissionCode.ATTENDANCE_VIEW);
         Long companyId = getCompanyId();
         if (companyId == null) {
             return DailyAttendanceReport.builder()
@@ -148,17 +152,20 @@ public class AttendanceReportServiceImpl implements AttendanceReportService {
     @Override
     @Transactional(readOnly = true)
     public EmployeeAttendanceSummary generateEmployeeSummary(Long employeeId, LocalDate start, LocalDate end) {
+        Long companyId = securityUtil.getCurrentCompanyId();
         if (!authorizationService.hasPermission(PermissionCode.ATTENDANCE_VIEW)) {
             User currentUser = securityUtil.getCurrentUser();
-            Employee currentEmployee = currentUser != null
-                    ? employeeRepository.findByUserId(currentUser.getId()).orElse(null)
+            // The ACTIVE company's record: a user with employee rows in two tenants matched on the wrong one, so the
+            // "you can only view your own" check compared this company's employeeId against another company's id.
+            Employee currentEmployee = currentUser != null && companyId != null
+                    ? employeeRepository.findByUserIdAndCompanyId(currentUser.getId(), companyId).orElse(null)
                     : null;
             if (currentEmployee == null || employeeId == null || !currentEmployee.getId().equals(employeeId)) {
                 throw new ForbiddenException("Access denied: you can only view your own attendance summary");
             }
         }
         List<Attendance> attendances = attendanceRepository
-                .findByEmployeeAndDateRange(employeeId, start, end);
+                .findByEmployeeAndDateRange(companyId, employeeId, start, end);
 
         long presentCount = attendances.stream()
                 .filter(a -> a.getStatus() == AttendanceStatus.PRESENT)
@@ -187,7 +194,8 @@ public class AttendanceReportServiceImpl implements AttendanceReportService {
     @Transactional(readOnly = true)
     public DepartmentAttendanceReport generateDepartmentReport(String department, LocalDate date) {
         authorizationService.checkPermission(PermissionCode.ATTENDANCE_VIEW);
-        List<Employee> employees = employeeRepository.findByDepartment(securityUtil.getCurrentCompanyId(), department);
+        Long companyId = securityUtil.getCurrentCompanyId();
+        List<Employee> employees = employeeRepository.findByDepartment(companyId, department);
 
         long presentCount = 0;
         long lateCount = 0;
@@ -195,7 +203,7 @@ public class AttendanceReportServiceImpl implements AttendanceReportService {
 
         for (Employee emp : employees) {
             List<Attendance> att = attendanceRepository
-                    .findByEmployeeAndDateRange(emp.getId(), date, date);
+                    .findByEmployeeAndDateRange(companyId, emp.getId(), date, date);
 
             for (Attendance a : att) {
                 if (a.getStatus() == AttendanceStatus.PRESENT) presentCount++;

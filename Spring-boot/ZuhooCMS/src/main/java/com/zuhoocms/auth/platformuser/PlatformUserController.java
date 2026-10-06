@@ -35,9 +35,7 @@ public class PlatformUserController {
         return ResponseEntity.ok(platformUserService.getById(id));
     }
 
-    // NOTE: not @Valid here - PlatformUserRequest.password is @NotBlank for create,
-    // but on update the password should be optional (only changed if provided).
-    // Other required fields are still checked in PlatformUserService.update().
+    // Deliberately not @Valid: PlatformUserRequest.password is @NotBlank for create but optional on update; the other fields are checked in PlatformUserService.update().
     @PatchMapping("/{id}")
     public ResponseEntity<UserResponse> update(@PathVariable Long id, @RequestBody PlatformUserRequest request) {
         return ResponseEntity.ok(platformUserService.update(id, request));

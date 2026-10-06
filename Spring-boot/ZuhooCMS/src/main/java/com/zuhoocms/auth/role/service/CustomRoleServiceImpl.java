@@ -45,6 +45,12 @@ public class CustomRoleServiceImpl implements CustomRoleService {
 
         Long companyId = securityUtil.getCurrentCompanyId();
 
+        // Trimmed BEFORE the uniqueness check, because the name is stored trimmed (CustomRoleMapper.toEntity) and was
+        // checked untrimmed: " Admin " missed an existing "Admin" here and then hit UNIQUE (company_id, name), so the
+        // caller got a generic 409 instead of the clear 400 this very line is trying to give them. @NotBlank means it
+        // cannot be null. The microservice already trims first.
+        request.setName(request.getName().trim());
+
         if (customRoleRepository.existsByCompanyIdAndNameIgnoreCase(companyId, request.getName())) {
             throw new BadRequestException("Role already exists.");
         }
@@ -72,13 +78,16 @@ public class CustomRoleServiceImpl implements CustomRoleService {
             throw new BadRequestException("System roles cannot be updated.");
         }
 
-        // Guard against renaming to an existing role name within the same company
+        // Same ordering fix as create: trimmed once, then compared and stored, so a rename differing only by
+        // whitespace cannot slip past this check into the database constraint.
+        request.setName(request.getName().trim());
+
         if (!role.getName().equalsIgnoreCase(request.getName()) &&
             customRoleRepository.existsByCompanyIdAndNameIgnoreCase(companyId, request.getName())) {
             throw new BadRequestException("A role with that name already exists.");
         }
 
-        role.setName(request.getName().trim());
+        role.setName(request.getName());
         role.setDescription(request.getDescription());
 
         return CustomRoleMapper.toResponse(role);
@@ -96,10 +105,7 @@ public class CustomRoleServiceImpl implements CustomRoleService {
             throw new BadRequestException("System roles cannot be deleted.");
         }
 
-        // Deleting used to silently strip every assigned user's permissions with
-        // no warning - clearCustomRoleForAllUsers() below wipes the role from
-        // them instantly, and nobody found out until they lost access. Block it
-        // instead so an admin has to reassign those users first.
+        // Blocked while users are assigned: clearCustomRoleForAllUsers() below would silently strip their permissions, so the admin must reassign them first.
         long assignedUsers = userRepository.countByCustomRoleId(role.getId());
         if (assignedUsers > 0) {
             throw new BadRequestException(
@@ -107,8 +113,7 @@ public class CustomRoleServiceImpl implements CustomRoleService {
                     + " user(s). Reassign them to a different role first.");
         }
 
-        // Nullify customRole FK on all users before soft-deleting.
-        // Replaces the invalid CascadeType.SET_NULL that was removed from User.customRole.
+        // Stands in for the CascadeType.SET_NULL that JPA does not have (see User.customRole).
         userRepository.clearCustomRoleForAllUsers(role.getId());
         rolePermissionRepository.deleteByCustomRoleId(role.getId());
 
@@ -162,10 +167,7 @@ public class CustomRoleServiceImpl implements CustomRoleService {
 
         List<String> before = getPermissions(roleId);
 
-        // Flush the delete before re-inserting - Hibernate's default flush order runs
-        // inserts before deletes within the same flush, so without this, re-saving an
-        // unchanged (or overlapping) permission set violates the
-        // (custom_role_id, permission_id) unique constraint on every save.
+        // Flush the delete first: Hibernate orders inserts before deletes in one flush, so an overlapping permission set violates the (custom_role_id, permission_id) unique constraint.
         rolePermissionRepository.deleteByCustomRoleId(role.getId());
         rolePermissionRepository.flush();
 
@@ -180,10 +182,7 @@ public class CustomRoleServiceImpl implements CustomRoleService {
         }
 
         List<String> after = getPermissions(roleId);
-        // The one action here with real teeth: this can grant a role access to
-        // salary data, financial records, or anything else in the permission
-        // catalog - previously this was the one write path in the whole class
-        // that left no audit trail at all.
+        // Audited because this can grant a role access to salary or financial data, or anything else in the permission catalog.
         auditService.log(AuditEntityType.ROLE, role.getId(), AuditAction.PERMISSION_CHANGE,
                 String.join(",", before), String.join(",", after), securityUtil.getCurrentUser(), companyId, null);
 

@@ -3,7 +3,7 @@ package com.zuhoocms.modules.support.agent;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import com.zuhoocms.modules.support.SupportPaging;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -29,7 +29,7 @@ public class SupportAgentController {
     public ResponseEntity<Page<SupportAgentResponse>> getAll(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(agentService.getAll(PageRequest.of(page, size)));
+        return ResponseEntity.ok(agentService.getAll(SupportPaging.of(page, size)));
     }
 
     @GetMapping("/{id}")
@@ -50,12 +50,10 @@ public class SupportAgentController {
             @PathVariable SupportAgentStatus status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(agentService.getByStatus(status, PageRequest.of(page, size)));
+        return ResponseEntity.ok(agentService.getByStatus(status, SupportPaging.of(page, size)));
     }
 
-    // Also needed by whoever can assign a ticket to an agent (see
-    // SupportTicketController#assign) - COMPANY_OWNER/EMPLOYEE need this to populate
-    // the assignee picker, not just to manage agent records.
+    // COMPANY_OWNER/EMPLOYEE need this to populate the assignee picker, not just to manage agent records - see SupportTicketController#assign.
     @GetMapping("/available")
     @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'SUPPORT_MANAGER', 'SUPPORT_AGENT', 'COMPANY_OWNER', 'EMPLOYEE')")
     public ResponseEntity<List<SupportAgentResponse>> getAvailable() {
@@ -71,7 +69,8 @@ public class SupportAgentController {
     }
 
     @PatchMapping("/{id}/status")
-    @PreAuthorize("hasRole('SUPER_ADMIN') OR hasRole('SUPPORT_MANAGER')")
+    // The agent themself, or a manager/admin - enforced in the service.
+    @PreAuthorize("hasAnyRole('SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     public ResponseEntity<Void> updateStatus(
             @PathVariable Long id,
             @RequestParam SupportAgentStatus status) {
@@ -80,7 +79,8 @@ public class SupportAgentController {
     }
 
     @PatchMapping("/{id}/accepting-tickets")
-    @PreAuthorize("hasRole('SUPPORT_AGENT') OR hasRole('SUPPORT_MANAGER')")
+    // The agent themself, or a manager/admin - enforced in the service.
+    @PreAuthorize("hasAnyRole('SUPPORT_AGENT', 'SUPPORT_MANAGER', 'SUPER_ADMIN', 'SYSTEM_ADMIN')")
     public ResponseEntity<Void> updateAcceptingTickets(
             @PathVariable Long id,
             @RequestParam boolean accepting) {

@@ -25,10 +25,7 @@ public class ServicePackageRequest {
     private String descriptionBn;
     private String iconUrl;
 
-    /**
-     * Flat price per billing cycle. If null, the system sums the included
-     * service prices and applies discountPercent.
-     */
+    /** Flat price per billing cycle; null means sum the included service prices and apply discountPercent. */
     @DecimalMin(value = "0.00", message = "Package price must be zero or positive")
     private BigDecimal packagePrice;
 
@@ -38,9 +35,7 @@ public class ServicePackageRequest {
     @NotNull(message = "Billing cycle is required")
     private BillingCycle billingCycle;
 
-    /**
-     * Max requests per billing period. Leave null for unlimited.
-     */
+    /** Max requests per billing period; null = unlimited. */
     @Min(value = 1, message = "Request quota must be at least 1")
     private Integer requestQuota;
 
@@ -48,8 +43,9 @@ public class ServicePackageRequest {
 
     private Integer deliveryDays;
     private String terms;
-    private boolean featured;
-    private boolean popular;
+    /** Boxed, so an update can tell "not mentioned" from "set to false". See ServicePackageServiceImpl.update. */
+    private Boolean featured;
+    private Boolean popular;
 
     /** IDs of CompanyService records to include in this package. */
     private List<Long> serviceIds;

@@ -6,10 +6,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 
-/**
- * Every field is nullable and only applied when present, so the settings page
- * can send a partial update without wiping the fields it did not render.
- */
+/** Every field is nullable and applied only when present, so a partial update does not wipe fields the page did not render. */
 @Data
 public class PayrollSettingsRequest {
 

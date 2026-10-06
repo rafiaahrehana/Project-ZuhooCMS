@@ -11,8 +11,8 @@ public class SupportAgentRequest {
     private String department;
     private String specialization;
 
-    @Builder.Default
-    private SupportAgentStatus status = SupportAgentStatus.ACTIVE;
+    // No default: null on update means "keep the current status"; create() treats null as ACTIVE.
+    private SupportAgentStatus status;
 
     @Min(value = 1)
     @Builder.Default

@@ -71,12 +71,8 @@ public class DepartmentServiceImpl implements DepartmentService {
     @Override
     @Transactional(readOnly = true)
     public Page<DepartmentResponse> listAll(Pageable pageable) {
-        // Deliberately NOT gated by DEPARTMENT_VIEW: this endpoint doubles as a
-        // cross-module picker (Announcements, Holidays, Job Postings all use it to
-        // populate a department dropdown) for users who may lack DEPARTMENT_VIEW but
-        // hold whatever permission actually governs that other module. The HRM
-        // "Departments" admin page is gated at the frontend sidebar/route level only,
-        // until this endpoint is split into a full admin view vs a lightweight picker.
+        // Deliberately NOT gated by DEPARTMENT_VIEW: doubles as a cross-module dropdown picker (Announcements, Holidays, Job Postings).
+        // The Departments admin page is gated at the frontend route level only, until this endpoint is split into admin view vs picker.
         return departmentRepository.findByCompanyId(requireCompanyId(), pageable)
             .map(DepartmentMapper::toResponse);
     }
@@ -114,10 +110,7 @@ public class DepartmentServiceImpl implements DepartmentService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                     "Parent department not found: " + request.getParentDepartmentId()));
 
-            // The direct-reference check above only catches A -> A. Walking the new
-            // parent's own chain catches the longer cycle too (A -> B -> A), which
-            // would otherwise corrupt the hierarchy - anything reading up the parent
-            // chain would loop forever.
+            // The check above only catches A -> A; walking the new parent's chain catches A -> B -> A, which would loop forever when reading up the hierarchy.
             Department walker = parent;
             while (walker != null) {
                 if (walker.getId().equals(id)) {
@@ -139,9 +132,7 @@ public class DepartmentServiceImpl implements DepartmentService {
             dept.setEmployee(null);
         }
 
-        // Only AnnouncementServiceImpl called NotificationService anywhere in this
-        // slice - a department-head change (who now approves that department's
-        // requests) told nobody it had happened.
+        // Notify on a department-head change: it decides who approves that department's requests, and previously told nobody.
         Employee newHead = dept.getEmployee();
         boolean headChanged = (previousHead == null) != (newHead == null)
                 || (previousHead != null && newHead != null && !previousHead.getId().equals(newHead.getId()));
@@ -187,8 +178,7 @@ public class DepartmentServiceImpl implements DepartmentService {
     private Employee findEmployeeInTenant(Long employeeId, Long companyId) {
         Employee employee = employeeRepository.findByIdAndCompanyId(employeeId, companyId)
             .orElseThrow(() -> new ResourceNotFoundException("Employee not found: " + employeeId));
-        // The frontend picker already filters these out, but only the server can
-        // actually enforce it - this was previously a UI-only exclusion.
+        // Server-side enforcement: the frontend picker filters non-active employees out, but that was a UI-only exclusion.
         if (employee.getEmploymentStatus() != com.zuhoocms.enums.EmploymentStatus.ACTIVE) {
             throw new BadRequestException(
                 "Cannot set " + employee.getFullName() + " as department head - they are "

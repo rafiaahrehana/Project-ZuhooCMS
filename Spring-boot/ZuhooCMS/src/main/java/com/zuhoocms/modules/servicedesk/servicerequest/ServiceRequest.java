@@ -53,17 +53,32 @@ public class ServiceRequest extends BaseEntity {
     @Builder.Default
     private Integer currentStage = 0;
 
-    // SLA tracking
     private Integer slaHours;
     private LocalDateTime slaDeadline;
     @Builder.Default
     private boolean slaBreach = false;
 
-    // Government reference
+    // Breach history: slaBreach only flags the current deadline and is cleared on a new stage, so these keep the total record.
+    private LocalDateTime firstBreachedAt;
+
+    @org.hibernate.annotations.ColumnDefault("0")
+    private Integer breachCount;
+
+    // Set while in WAITING_CLIENT: the SLA clock is paused and the deadline is pushed out by the paused duration on resume.
+    private LocalDateTime slaPausedAt;
+
+    // Stamped when the 48h unpaid-invoice reminder goes out, so a delayed or skipped scheduler run can't drop or repeat it.
+    private LocalDateTime paymentReminderSentAt;
+
+    // True when this request consumed a unit beyond the subscription quota, decided at create time; overageInvoiceId records the completion invoice so it is billed exactly once.
+    @org.hibernate.annotations.ColumnDefault("false")
+    private Boolean overageConsumed;
+
+    private Long overageInvoiceId;
+
     private String govRefNumber;
     private String govRefType;
 
-    // Embedded Quotation tracking
     @Column(precision = 12, scale = 2)
     private java.math.BigDecimal quotationAmount;
     
@@ -78,7 +93,6 @@ public class ServiceRequest extends BaseEntity {
     @Enumerated(EnumType.STRING)
     private com.zuhoocms.enums.QuotationStatus quotationStatus;
 
-    // Client rating after completion
     private Integer clientRating;
 
     @Column(columnDefinition = "TEXT")
@@ -86,10 +100,7 @@ public class ServiceRequest extends BaseEntity {
 
     private LocalDateTime ratedAt;
 
-    /**
-     * Client answers to the service's dynamic form fields, keyed by
-     * ServiceFormField id, serialized as a JSON object.
-     */
+    /** Client answers to the dynamic form fields, keyed by ServiceFormField id, serialized as a JSON object. */
     @Column(columnDefinition = "TEXT")
     private String formDataJson;
 
@@ -109,12 +120,7 @@ public class ServiceRequest extends BaseEntity {
     @JoinColumn(name = "assigned_employee_id")
     private Employee assignedEmployee;
 
-    /**
-     * Set when this request is raised under a package subscription.
-     * NULL = standalone pay-per-request.
-     * When set, ServiceRequestServiceImpl calls packageService.consumeQuota()
-     * to decrement the subscriber's remaining request count.
-     */
+    /** Set when raised under a package subscription (NULL = standalone pay-per-request), in which case create() calls packageService.consumeQuota(). */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "subscription_id")
     private PackageSubscription subscription;
@@ -131,6 +137,13 @@ public class ServiceRequest extends BaseEntity {
     private boolean permanentlyClosed = false;
 
     private Long invoiceId;
+
+    /** Marks the current deadline as breached and keeps the breach history. */
+    public void markSlaBreached(LocalDateTime at) {
+        this.slaBreach = true;
+        this.breachCount = (this.breachCount != null ? this.breachCount : 0) + 1;
+        if (this.firstBreachedAt == null) this.firstBreachedAt = at;
+    }
 
     public void submitQuotation(java.math.BigDecimal amount, String currency, String notes, LocalDateTime validUntil) {
         this.quotationAmount = amount;

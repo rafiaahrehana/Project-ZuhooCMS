@@ -99,8 +99,7 @@ public class TaskServiceImpl implements TaskService {
         Long companyId = requireCompanyId();
         ServiceRequest sr = findServiceRequestInTenant(requestId);
         guardNotClosed(sr);
-        Task task = taskRepository.findByIdAndCompanyId(taskId, companyId)
-            .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
+        Task task = findTaskOfRequest(taskId, sr, companyId);
 
         if (request.getTitle()       != null) task.setTitle(request.getTitle());
         if (request.getDescription() != null) task.setDescription(request.getDescription());
@@ -139,9 +138,18 @@ public class TaskServiceImpl implements TaskService {
     public void deleteTask(Long requestId, Long taskId) {
         ServiceRequest sr = findServiceRequestInTenant(requestId);
         guardNotClosed(sr);
-        Task task = taskRepository.findByIdAndCompanyId(taskId, requireCompanyId())
-            .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
+        Task task = findTaskOfRequest(taskId, sr, requireCompanyId());
         task.softDelete();
+    }
+
+    /** The task must belong to the request in the path: checking only the company let a caller act on any task by pairing their request id with another request's task id. */
+    private Task findTaskOfRequest(Long taskId, ServiceRequest sr, Long companyId) {
+        Task task = taskRepository.findByIdAndCompanyId(taskId, companyId)
+            .orElseThrow(() -> new ResourceNotFoundException("Task not found: " + taskId));
+        if (task.getServiceRequest() == null || !task.getServiceRequest().getId().equals(sr.getId())) {
+            throw new ResourceNotFoundException("Task not found: " + taskId);
+        }
+        return task;
     }
 
     private void guardNotClosed(ServiceRequest sr) {
