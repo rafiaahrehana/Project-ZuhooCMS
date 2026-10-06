@@ -1,0 +1,46 @@
+<div class="position-relative">
+  <label class="form-label small fw-semibold text-secondary mb-1">{{ label }}</label>
+  <div class="form-control form-control-sm d-flex flex-wrap align-items-center gap-1 border-light-subtle rounded-2" style="min-height: 34px; height: auto;">
+    @for (tag of tags; track tag) {
+      <span class="badge rounded-pill text-bg-light border d-inline-flex align-items-center gap-1">
+        {{ tag }}
+        <!-- Was a bare <i> with a click handler, so a tag could only be removed with a mouse.
+             Same glyph, same box: a button with no chrome of its own. -->
+        <button
+          type="button"
+          class="border-0 bg-transparent p-0 d-inline-flex align-items-center"
+          style="cursor: pointer; color: inherit; line-height: 1;"
+          [attr.aria-label]="'Remove ' + tag"
+          (click)="removeTag(tag)">
+          <i class="bi bi-x-circle-fill" style="font-size: 0.75rem;"></i>
+        </button>
+      </span>
+    }
+    <input
+      type="text"
+      class="border-0 flex-grow-1"
+      style="outline: none; min-width: 120px;"
+      [placeholder]="tags.length ? '' : placeholder"
+      [(ngModel)]="draft"
+      (input)="onInput()"
+      (keydown)="onKeydown($event)"
+      (focus)="showSuggestions = true"
+      (blur)="onBlur($event)"
+      role="combobox"
+      aria-autocomplete="list"
+      aria-haspopup="listbox"
+      [attr.aria-controls]="listId"
+      [attr.aria-expanded]="showSuggestions && suggestions.length ? 'true' : 'false'"
+    />
+  </div>
+  @if (showSuggestions && suggestions.length) {
+    <!-- The class is a focus hook only, with no styles of its own: it lets the list stay
+         open while the keyboard walks into it instead of closing on the input's blur. -->
+    <div class="list-group position-absolute w-100 shadow-sm skill-tag-suggestions" role="listbox" [id]="listId" style="z-index: 1000; max-height: 180px; overflow-y: auto;">
+      @for (s of suggestions; track s) {
+        <button type="button" class="list-group-item list-group-item-action py-1 small" role="option" aria-selected="false"
+                (mousedown)="selectSuggestion(s)" (keydown)="onSuggestionKeydown($event, s)" (blur)="onBlur($event)">{{ s }}</button>
+      }
+    </div>
+  }
+</div>

@@ -1,0 +1,111 @@
+// Two rings spin while each chip counter-rotates to cancel both the ring's spin and its resting angle, keeping labels upright.
+// The landing's prefers-reduced-motion catch-all kills these animations, leaving a static map.
+
+.radial {
+  --outer-r: clamp(180px, 26vw, 285px);
+  --inner-r: clamp(105px, 15vw, 160px);
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  width: min(100%, calc(var(--outer-r) * 2 + 180px));
+  height: calc(var(--outer-r) * 2 + 110px);
+}
+
+// Pause the whole constellation while the visitor reads a chip.
+.radial:hover .radial-ring,
+.radial:hover .mod-chip { animation-play-state: paused; }
+
+.radial-hub {
+  position: absolute;
+  z-index: 2;
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.25rem;
+  text-align: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1.15;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(var(--accent-rgb), 0.55), transparent 70%),
+    linear-gradient(160deg, #101720, #0C1211);
+  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  box-shadow:
+    0 0 40px rgba(var(--accent-rgb), 0.35),
+    inset 0 0 24px rgba(var(--accent-rgb), 0.18);
+
+  i { font-size: 1.5rem; color: var(--accent); }
+}
+
+.radial-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 255, 255, 0.13);
+  animation: radialSpin 70s linear infinite;
+  will-change: transform;
+
+  &.ring-outer {
+    width: calc(var(--outer-r) * 2);
+    height: calc(var(--outer-r) * 2);
+  }
+  &.ring-inner {
+    width: calc(var(--inner-r) * 2);
+    height: calc(var(--inner-r) * 2);
+    border-color: rgba(var(--accent-rgb), 0.22);
+    animation-direction: reverse;
+    animation-duration: 48s;
+  }
+}
+
+// Each holder parks its chip at --a degrees, --r from the centre; width/height 0 is load-bearing, since a sized holder would pivot around a point varying with the chip's text length.
+.mod-holder {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: rotate(var(--a)) translateX(var(--r));
+}
+
+.mod-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #E7ECEF;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
+  backdrop-filter: blur(6px);
+  transform: translate(-50%, -50%);
+
+  i { color: var(--accent); font-size: 0.9rem; }
+}
+
+// Turns -360 over the ring's +360, cancelling rotation and resting angle; the static transform matches the from-frame so reduced motion still leaves labels upright.
+.radial-ring .mod-chip {
+  transform: translate(-50%, -50%) rotate(calc(var(--a) * -1));
+  animation: chipCounterSpin 70s linear infinite;
+}
+.ring-inner .mod-chip {
+  animation-direction: reverse;   // inner ring itself spins in reverse
+  animation-duration: 48s;
+}
+
+@keyframes radialSpin { to { transform: rotate(360deg); } }
+@keyframes chipCounterSpin {
+  from { transform: translate(-50%, -50%) rotate(calc(var(--a) * -1)); }
+  to   { transform: translate(-50%, -50%) rotate(calc(var(--a) * -1 - 360deg)); }
+}
+
+.mod-grid .mod-chip.static {
+  transform: none;
+  animation: none;
+}

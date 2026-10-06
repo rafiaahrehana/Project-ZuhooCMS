@@ -1,0 +1,10 @@
+// Grey, not .table-danger: a table full of red stops meaning anything, and the STATUS badge already says expired.
+// Set via --bs-table-bg, the variable Bootstrap's own .table-* classes use, so it composes with striping and hover.
+.row-expired {
+  --bs-table-bg: #f1f3f5;
+  --bs-table-hover-bg: #e9ecef;
+  color: var(--bos-muted);
+
+  // Keep the primary identifier readable - the row is de-emphasised, not disabled.
+  td:first-child { color: var(--bos-text); }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZuhooCMS</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The bare mark, not the squircle chip, so the favicon does not shrink inside the tab. -->
+  <link rel="icon" type="image/png" href="brand/mark-on-light.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Linked here, not @import'ed in global.scss: an @import is inlined into styles.css at build time, bloating the bundle and blocking first paint. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <!--
+    Production API base, overridable in a deployed build without rebuilding (see src/environments/environment.prod.ts).
+    Left commented out, so a production build talks to /api on its own origin - which nginx.conf proxies to the backend.
+    Uncomment and edit when the API lives on its own host; it must be absolute, because the chat WebSocket URL is derived from it.
+    Ignored by `ng serve` and by `--configuration gateway`, which keep their own environment files.
+  -->
+  <script>
+    // window.ZUHOO_API_URL = 'https://api.zuhoo.app/api';
+  </script>
+  <!-- Theme resolved before first paint: ThemeService repeats this after bootstrap, which is too late to stop a dark-mode user seeing a white page. Inline to avoid another blocking request. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('bos-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-bs-theme', t);
+      } catch (e) { /* private mode: fall through to light */ }
+    })();
+  </script>
+</head>
+<body class="bg-light">
+  <app-root></app-root>
+</body>
+</html>

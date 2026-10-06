@@ -1,0 +1,101 @@
+<div class="sidebar-wrapper h-100 d-flex flex-column">
+
+  <div class="sidebar-scroll flex-grow-1">
+    @if (showGroupLabels) {
+      <!-- Search only for the ~70-item grouped menu; a permission-filtered flat list rarely needs it. -->
+      <div class="sidebar-search">
+        <i class="bi bi-search"></i>
+        <input type="text" placeholder="Search menu..." [value]="searchQuery"
+               (input)="onSearchInput($any($event.target).value)" [attr.aria-label]="'Search menu'" />
+        @if (searchQuery) {
+          <button type="button" class="sidebar-search-clear" (click)="clearSearch()" aria-label="Clear search">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        }
+      </div>
+    }
+
+    <ul class="nav flex-column mb-2">
+      @if (showGroupLabels) {
+        @if (searchQuery.trim()) {
+          <!-- Results stay flat: the group structure is what search skips past. -->
+          @if (searchResults.length === 0) {
+            <li class="sidebar-search-empty">No matching pages</li>
+          } @else {
+            @for (item of searchResults; track item.link) {
+              <li class="nav-item">
+                <a class="sidebar-link" [routerLink]="item.link" routerLinkActive="active" [attr.aria-label]="item.label">
+                  <i class="bi {{ item.icon }}"></i><span>{{ item.label }}</span>
+                </a>
+              </li>
+            }
+          }
+        } @else {
+          <!-- Collapsible groups; Dashboards is a group like any other, see Sidebar.dashboardGroup. -->
+          @for (group of visibleGroups; track group.label) {
+            @if (group.items.length === 1) {
+              <!-- A one-row dropdown is just friction: link straight to it. -->
+              <li class="nav-item">
+                <a class="sidebar-link" [routerLink]="group.items[0].link" routerLinkActive="active"
+                   [attr.aria-label]="group.items[0].label" [attr.data-tooltip]="group.items[0].label">
+                  <i class="bi {{ group.items[0].icon }}"></i><span>{{ group.items[0].label }}</span>
+                </a>
+              </li>
+            } @else {
+            <button type="button"
+                    class="sidebar-link sidebar-parent w-100 border-0 bg-transparent"
+                    [class.is-open]="isExpanded(group.label)"
+                    (click)="toggleGroup(group.label)"
+                    [attr.aria-expanded]="isExpanded(group.label)"
+                    [attr.aria-label]="group.label"
+                    [attr.data-tooltip]="group.label">
+              <i class="bi {{ group.icon }}"></i>
+              <span class="flex-grow-1 text-start">{{ group.label }}</span>
+              <i class="bi bi-chevron-down sidebar-chevron"></i>
+            </button>
+
+            @if (isExpanded(group.label)) {
+              <!-- No section captions by request; item order in sidebar.ts still keeps related items adjacent. -->
+              <div class="sidebar-submenu">
+                @for (item of group.items; track item.link) {
+                  <a class="sidebar-sublink" [routerLink]="item.link" routerLinkActive="active" [attr.aria-label]="item.label">
+                    <i class="bi {{ item.icon }} sublink-icon"></i>{{ item.label }}
+                  </a>
+                }
+              </div>
+            }
+            }
+          }
+        }
+      } @else {
+        <!-- Flat and always visible: the group rows are also the collapse toggles, so dropping them requires flattening. -->
+        @for (item of flatItems; track item.link) {
+          <li class="nav-item">
+            <a class="sidebar-link" [routerLink]="item.link" routerLinkActive="active" [attr.aria-label]="item.label" [attr.data-tooltip]="item.label">
+              <i class="bi {{ item.icon }}"></i><span>{{ item.label }}</span>
+            </a>
+          </li>
+        }
+      }
+    </ul>
+  </div>
+
+  @if (isOwner) {
+    <div class="mx-2 mt-2 pt-2 upgrade-divider">
+      <a [routerLink]="['/subscriptionPlan']" class="upgrade-card d-block p-2 rounded-3 text-decoration-none">
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <div class="upgrade-gem rounded-circle d-flex align-items-center justify-content-center">
+            <i class="bi bi-gem" style="font-size: 0.7rem;"></i>
+          </div>
+          <span class="fw-semibold" style="font-size: 0.75rem;">
+            {{ subscriptionPlan === 'PRO' ? 'Upgrade to Enterprise' : 'Upgrade to Premium' }}
+          </span>
+        </div>
+        <span class="d-block btn btn-primary btn-sm w-100 fw-medium" style="font-size: 0.7rem; padding: 0.25rem 0.5rem; border-radius: 5px;">
+          {{ subscriptionPlan === 'PRO' ? 'Upgrade' : 'Upgrade Now' }}
+        </span>
+      </a>
+    </div>
+  }
+
+</div>

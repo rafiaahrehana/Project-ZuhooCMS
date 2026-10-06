@@ -1,0 +1,195 @@
+.section-label {
+  color: var(--bos-brand);
+  font-weight: bold;
+  border-bottom: 1px solid var(--bos-brand);
+  padding-bottom: 4px;
+  margin-bottom: 12px;
+}
+
+// One accent per card, set inline from the component; mixes resolve against --bos-bg-card rather than literal white so the same rules work in both themes.
+.employee-card {
+  position: relative;
+  padding: 1.1rem 1.1rem 0.9rem;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--card-accent, #6366f1) 9%, var(--bos-bg-card));
+  border: 1px solid color-mix(in srgb, var(--card-accent, #6366f1) 20%, var(--bos-bg-card));
+  box-shadow: var(--bos-shadow-sm);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+
+  &:hover {
+    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--card-accent, #6366f1) 42%, var(--bos-bg-card));
+    box-shadow: var(--bos-shadow-card);
+  }
+}
+
+.ec-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+
+.ec-avatar {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  // The ring is where the accent actually registers; the wash behind it is deliberately faint.
+  border: 2px solid var(--card-accent, #6366f1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--card-accent, #6366f1) 18%, transparent);
+}
+
+.ec-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: var(--card-accent, #6366f1);
+}
+
+.ec-identity {
+  min-width: 0;   // lets the truncation below actually bite
+  flex: 1 1 auto;
+}
+
+.ec-name {
+  display: block;
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.25;
+  color: var(--bos-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &:hover { color: var(--card-accent, #6366f1); }
+}
+
+.ec-role {
+  font-size: 0.78rem;
+  font-weight: 500;
+  // --bos-muted measured 4.0-4.3:1 against the tinted card, just under AA; the secondary step clears it.
+  color: var(--bos-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ec-menu { flex: 0 0 auto; align-self: flex-start; }
+
+.ec-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  flex: 1 1 auto;
+}
+
+.ec-panel {
+  min-width: 0;
+  padding: 0.6rem 0.65rem;
+  border-radius: 12px;
+  // Plain surface, not another tint: a second tint flattens the panels into the wash behind them.
+  background: var(--bos-bg-card);
+  border: 1px solid color-mix(in srgb, var(--card-accent, #6366f1) 16%, var(--bos-bg-card));
+}
+
+.ec-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--bos-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  i {
+    flex: 0 0 auto;
+    font-size: 0.8rem;
+    color: var(--card-accent, #6366f1);
+  }
+}
+
+.ec-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  line-height: 1.7;
+  color: var(--bos-text-secondary);
+
+  i {
+    flex: 0 0 12px;
+    width: 12px;
+    font-size: 0.72rem;
+    color: var(--bos-muted);
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.ec-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--card-accent, #6366f1) 20%, var(--bos-bg-card));
+}
+
+.ec-salary {
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--bos-text);
+}
+
+// Says the structure is missing rather than inventing a number: the old fallback of 15,000 read as a real salary.
+.ec-salary-empty {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--bos-muted);
+}
+
+.ec-pill {
+  margin-left: auto;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+// Ink is the darker end of each hue to clear AA on its pale fill; mid-tone .text-* on a -subtle fill lands around 2.7:1.
+.pill-active { background: rgb(15 155 122 / 0.16); color: #0A5C48; }
+.pill-warn   { background: rgb(200 121 20 / 0.18); color: #7A4A0C; }
+.pill-info   { background: rgb(12 157 200 / 0.16); color: #075B74; }
+.pill-danger { background: rgb(224 82 100 / 0.16); color: #8B2733; }
+.pill-muted  { background: rgb(104 119 137 / 0.16); color: #3F4A57; }
+
+:host-context(:root[data-theme='dark']) {
+  .pill-active { background: rgb(52 211 153 / 0.20); color: #6EE7B7; }
+  .pill-warn   { background: rgb(251 191 36 / 0.20); color: #FCD34D; }
+  .pill-info   { background: rgb(56 189 248 / 0.20); color: #7DD3FC; }
+  .pill-danger { background: rgb(248 113 113 / 0.20); color: #FCA5A5; }
+  .pill-muted  { background: rgb(147 162 184 / 0.18); color: #C7D3E3; }
+}
+
+// Below this the two panels stop being readable side by side.
+@media (max-width: 420px) {
+  .ec-panels { grid-template-columns: 1fr; }
+}

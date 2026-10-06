@@ -1,0 +1,43 @@
+// Must match the 40px circle of the other header actions; view encapsulation stops navbar.scss at this boundary, so the size is repeated here.
+.btn-nav-action {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--bos-muted);
+  cursor: pointer;
+  transition: background-color var(--bos-transition), color var(--bos-transition);
+
+  &:hover {
+    background-color: var(--bos-bg-hover);
+    color: var(--bos-brand);
+  }
+}
+
+// Pinned 2px inside the corner, not Bootstrap's .translate-middle, which hangs half the badge outside the 40px button.
+// The 2px ring follows --bos-navbar-bg so the badge separates from the bell glyph in both themes with no dark-mode rule.
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  border: 2px solid var(--bos-navbar-bg);
+  background-color: #FB7185;
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.notification-item:hover {
+  background-color: #f8fafc;
+}
